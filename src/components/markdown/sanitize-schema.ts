@@ -20,7 +20,12 @@ export const chatSafeSchema = {
   ],
   attributes: {
     ...defaultSchema.attributes,
-    "*": [...(defaultSchema.attributes?.["*"] || []), "className", "style"],
+    // "*" 不放行 style：模型输出的任意内联样式（如 background-image: url(...)）
+    // 会在渲染时发起网络/本地协议请求。span/div 单独放行 style 服务于 rehype-raw
+    // 保留的原始 HTML 片段；KaTeX 不依赖该白名单——两条管线（react-markdown 与
+    // Streamdown 聊天气泡）的 rehype-katex 都排在 rehypeSanitize 之后执行，其
+    // 输出除 span/div 外还含 svg 与 MathML 标签，若先过本 schema 会被剥掉。
+    "*": [...(defaultSchema.attributes?.["*"] || []), "className"],
     video: ["src", "controls", "width", "height", "muted", "autoplay", "loop"],
     audio: ["src", "controls"],
     source: ["src", "type"],

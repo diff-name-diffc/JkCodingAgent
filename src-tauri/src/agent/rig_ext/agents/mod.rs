@@ -22,10 +22,8 @@ use rig::tool::PortableDynamicTool;
 
 use crate::agent::rig_ext::tool_result::RigToolResultPolicy;
 use crate::agent::rig_ext::tools::spec::ToolSpec;
+use crate::mcp::registry::MCP_TOOL_NAME_PREFIX;
 use crate::mcp::ResolvedMcpTool;
-
-/// MCP 工具名契约前缀（见 `mcp/registry.rs` 的 canonical 名）。
-const MCP_TOOL_NAME_PREFIX: &str = "mcp__";
 
 /// 子智能体工具名（允许列表豁免用）。
 pub(crate) const SUB_AGENT_TOOL_NAMES: [&str; 2] = ["list_sub_agents", "call_sub_agent"];
@@ -94,11 +92,7 @@ pub(crate) fn tool_result_policies_from_specs() -> Vec<(String, RigToolResultPol
             let spec = ToolSpec::new(name, "", serde_json::json!({}));
             (
                 name.to_string(),
-                RigToolResultPolicy {
-                    default_compress: spec.result_policy.default_compress,
-                    force_compress_after_chars: spec.result_policy.force_compress_after_chars,
-                    persist_raw_artifact: spec.result_policy.persist_raw_artifact,
-                },
+                RigToolResultPolicy::from(&spec.result_policy),
             )
         })
         .collect()

@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { BrainCircuit, ChevronDown, ChevronRight, Clock3, Gauge, Play, RotateCcw, Square, X } from "lucide-react";
 import type { AgentActivity, GraphBaseToolGroup, GraphDefinition, GraphHarnessCatalog, GraphPlanStatus, GraphRunDetail } from "../../types";
-import { useToast } from "../Toast";
+import { toast } from "../Toast";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -39,7 +39,6 @@ interface GraphNodeDrawerProps {
  */
 export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   const { planId, nodeId, planStatus, actionPending, onClose, onSelectNode, onStart, onCancel } = props;
-  const { showToast } = useToast();
   const snapshot = useGraphPlan(planId);
   const plan = snapshot.plan;
   const definition = useMemo(() => parseGraphDefinition(plan), [plan]);
@@ -67,15 +66,15 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
     let alive = true;
     invoke<GraphRunDetail>("graph_run_get", { runId: selectedRunId })
       .then((detail) => { if (alive) setRunDetail(detail); })
-      .catch((error) => { if (alive) showToast(`加载运行详情失败：${String(error)}`, "warning"); });
+      .catch((error) => { if (alive) toast.warning(`加载运行详情失败：${String(error)}`); });
     return () => { alive = false; };
-  }, [selectedRunId, showToast]);
+  }, [selectedRunId]);
   useEffect(() => {
     if (plan?.status !== "draft" || !plan.workspaceId) return;
     invoke<GraphHarnessCatalog>("graph_harness_catalog_get", { workspaceId: plan.workspaceId })
       .then(setCatalog)
-      .catch((error) => showToast(`加载 Harness 目录失败：${String(error)}`, "warning"));
-  }, [plan?.status, plan?.workspaceId, showToast]);
+      .catch((error) => toast.warning(`加载 Harness 目录失败：${String(error)}`));
+  }, [plan?.status, plan?.workspaceId]);
 
   const historicalRun = runDetail?.nodeRuns.find((item) => item.nodeId === nodeId) ?? null;
   const currentRun = plan?.nodeRuns.find((item) => item.nodeId === nodeId) ?? null;
@@ -133,7 +132,7 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
       });
       return true;
     } catch (error) {
-      showToast(`保存节点配置失败：${error instanceof Error ? error.message : String(error)}`, "warning");
+      toast.warning(`保存节点配置失败：${error instanceof Error ? error.message : String(error)}`);
       return false;
     } finally {
       pendingSaves.current -= 1;
@@ -220,7 +219,14 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
             </Select>
             <Select value={node.baseToolGroup} onValueChange={(baseToolGroup) => void patchNode({ baseToolGroup: baseToolGroup as GraphBaseToolGroup })} disabled={saving}>
               <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="read_only">只读规划 · ACP plan 模式</SelectItem><SelectItem value="coding">编码执行 · ACP acceptEdits 模式</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="read_only">只读调研（注入只读纪律约束）</SelectItem><SelectItem value="coding">编码执行（可修改文件）</SelectItem></SelectContent>
+            </Select>
+            <Select value={node.usePlanMode ? "plan" : "bypass"} onValueChange={(mode) => void patchNode({ usePlanMode: mode === "plan" })} disabled={saving}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="bypass">全权限执行 · bypassPermissions（默认）</SelectItem>
+                <SelectItem value="plan">先计划后执行 · plan（复杂任务）</SelectItem>
+              </SelectContent>
             </Select>
             <Select value={node.exportPolicy ?? "summary"} onValueChange={(exportPolicy) => void patchNode({ exportPolicy: exportPolicy as "summary" | "full" })} disabled={saving}>
               <SelectTrigger><SelectValue placeholder="下游导出策略" /></SelectTrigger>

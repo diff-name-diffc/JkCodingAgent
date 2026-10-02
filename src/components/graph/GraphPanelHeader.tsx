@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Maximize2, Minimize2, Play, RotateCcw, Square, X } from "lucide-react";
+import { Maximize2, Minimize2, Play, RefreshCw, RotateCcw, Square, X } from "lucide-react";
 import type { GraphDefinition, GraphNodeStatus, GraphPlanRecord, GraphPlanStatus } from "../../types";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
@@ -17,6 +17,9 @@ interface GraphPanelHeaderProps {
   onResumeCheckpoint: () => void;
   onCancel: () => void;
   onClose: () => void;
+  /** 对最近一次已收尾的运行重新执行验收（验收模型修复/复检结论）。 */
+  onReverify: () => void;
+  reverifyPending: boolean;
   /** 扩大/还原占满主区（UI-13：切换布局不触发任务重跑）。 */
   onExpandMainArea?: () => void;
   mainAreaExpanded?: boolean;
@@ -27,6 +30,8 @@ interface GraphPanelHeaderProps {
  * 操作语义：draft →「确认执行」(full)；failed/cancelled →「从断点继续」(resume，主)
  * +「完整重跑」(full)；completed →「完整重跑」(full)；running →「停止」，
  * 高危写检查点暂停时另显「继续执行」(graph_run_resume)。
+ * 已收尾的计划另配「重新验收」icon 按钮（graph_run_reverify）：
+ * 验收模型修复后补救「未能验收」结论，或对既有结论复检。
  */
 export function GraphPanelHeader({
   plan,
@@ -39,6 +44,8 @@ export function GraphPanelHeader({
   onResumeCheckpoint,
   onCancel,
   onClose,
+  onReverify,
+  reverifyPending,
   onExpandMainArea,
   mainAreaExpanded = false,
 }: GraphPanelHeaderProps) {
@@ -47,6 +54,9 @@ export function GraphPanelHeader({
   const canResumeRun = planStatus === "failed" || planStatus === "cancelled";
   const canFullRerun = planStatus === "completed";
   const canCancel = planStatus === "running";
+  // 重验收入口：存在已收尾的运行（非 running 的计划 + 最近一次 run 已出验收字段）
+  // 才有意义——验收失败/未能验收时用户修复验收模型后在此补救，也可对既有结论复检。
+  const canReverify = planStatus !== "running" && planStatus !== "draft" && Boolean(plan?.runs?.[0]);
 
   // ── 头部统计：任务数 / 最大并行（最大层宽）/ 状态计数 / 整体进度 ──
   const stats = useMemo(() => {
@@ -113,6 +123,23 @@ export function GraphPanelHeader({
             <span className="ai-graph-header-pill-label">验收</span>
             <StatusPill domain="verdict" status={latestVerdict.status} label={latestVerdict.label} />
           </span>
+        )}
+        {canReverify && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="ai-graph-header-reverify"
+            aria-label="重新验收"
+            title={
+              latestVerdict?.status === "unknown"
+                ? "重新验收：验收模型修复后重跑验收评审（当前未能验收）"
+                : "重新验收：对最近一次已结束的运行重跑验收评审"
+            }
+            onClick={onReverify}
+            disabled={reverifyPending || actionPending}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", reverifyPending && "animate-spin")} />
+          </Button>
         )}
         {canStart && (
           <Button size="sm" onClick={() => onStart("full")} disabled={actionPending || !plan}>

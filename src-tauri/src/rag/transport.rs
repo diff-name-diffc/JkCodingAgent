@@ -38,22 +38,21 @@ impl RagTransport {
 
     /// `POST /config/reload`——把新配置推送到 sidecar 内存。
     ///
-    /// body 结构与 `rag/src/rag_server/routers/config.py::ReloadPayload` 对齐。
+    /// body 直接序列化 `RagKbConfig`（camelCase），形状与
+    /// `rag/src/rag_server/routers/config.py::ReloadPayload` 字段一一对应；
+    /// Python 侧 pydantic 默认忽略未知字段，配置新增字段不会破坏解析。
     pub async fn reload_config(&self, config: &RagKbConfig) -> Result<Value> {
-        let payload = ReloadPayload::from_config(config);
-        self.post_json("/config/reload", &payload).await
+        self.post_json("/config/reload", config).await
     }
 
     /// `POST /test/qdrant`——由无状态 sidecar 使用本次请求中的配置测试 Qdrant。
     pub async fn test_qdrant(&self, config: &RagKbConfig) -> Result<Value> {
-        let payload = ReloadPayload::from_config(config);
-        self.post_json("/test/qdrant", &payload).await
+        self.post_json("/test/qdrant", config).await
     }
 
     /// `POST /test/embedding`——由无状态 sidecar 使用本次请求中的配置测试 Embedding。
     pub async fn test_embedding(&self, config: &RagKbConfig) -> Result<Value> {
-        let payload = ReloadPayload::from_config(config);
-        self.post_json("/test/embedding", &payload).await
+        self.post_json("/test/embedding", config).await
     }
 
     /// `POST /ingest/jobs`——启动导入任务。
@@ -115,65 +114,7 @@ async fn decode_json_response(method: &str, url: &str, resp: reqwest::Response) 
     serde_json::from_str::<Value>(&body).with_context(|| format!("decode {method} {url} body"))
 }
 
-/// `/config/reload` 请求体。字段名与 Python 侧 ReloadPayload 一致。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReloadPayload {
-    qdrant: QdrantPayload,
-    embedding: EmbeddingPayload,
-    sparse_embedding: SparseEmbeddingPayload,
-    chunking: ChunkingPayload,
-    ocr: OcrPayload,
-    log_level: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct QdrantPayload {
-    url: String,
-    api_key: String,
-    collection_prefix: String,
-    timeout: f64,
-    dense_vector_name: String,
-    sparse_vector_name: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbeddingPayload {
-    provider: String,
-    base_url: String,
-    api_key: String,
-    model: String,
-    dimension: u32,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SparseEmbeddingPayload {
-    provider: String,
-    model: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ChunkingPayload {
-    parent_chunk_size: u32,
-    parent_chunk_overlap: u32,
-    child_chunk_size: u32,
-    child_chunk_overlap: u32,
-    separators: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OcrPayload {
-    enabled: bool,
-    use_cuda: bool,
-    pdf_image_width_ratio: f64,
-    pdf_image_height_ratio: f64,
-}
-
+/// `/ingest/jobs` 请求体。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct IngestPayload {
@@ -187,46 +128,6 @@ struct IngestPayload {
 #[serde(rename_all = "camelCase")]
 struct IngestOptionsPayload {
     replace_existing: bool,
-}
-
-impl ReloadPayload {
-    fn from_config(c: &RagKbConfig) -> Self {
-        Self {
-            qdrant: QdrantPayload {
-                url: c.qdrant.url.clone(),
-                api_key: c.qdrant.api_key.clone(),
-                collection_prefix: c.qdrant.collection_prefix.clone(),
-                timeout: c.qdrant.timeout,
-                dense_vector_name: c.qdrant.dense_vector_name.clone(),
-                sparse_vector_name: c.qdrant.sparse_vector_name.clone(),
-            },
-            embedding: EmbeddingPayload {
-                provider: c.embedding.provider.clone(),
-                base_url: c.embedding.base_url.clone(),
-                api_key: c.embedding.api_key.clone(),
-                model: c.embedding.model.clone(),
-                dimension: c.embedding.dimension,
-            },
-            sparse_embedding: SparseEmbeddingPayload {
-                provider: c.sparse_embedding.provider.clone(),
-                model: c.sparse_embedding.model.clone(),
-            },
-            chunking: ChunkingPayload {
-                parent_chunk_size: c.chunking.parent_chunk_size,
-                parent_chunk_overlap: c.chunking.parent_chunk_overlap,
-                child_chunk_size: c.chunking.child_chunk_size,
-                child_chunk_overlap: c.chunking.child_chunk_overlap,
-                separators: c.chunking.separators.clone(),
-            },
-            ocr: OcrPayload {
-                enabled: c.ocr.enabled,
-                use_cuda: c.ocr.use_cuda,
-                pdf_image_width_ratio: c.ocr.pdf_image_width_ratio,
-                pdf_image_height_ratio: c.ocr.pdf_image_height_ratio,
-            },
-            log_level: c.log_level.clone(),
-        }
-    }
 }
 
 /// 把 "未知端口" 的语义错误统一封装。

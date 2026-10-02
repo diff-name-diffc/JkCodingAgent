@@ -59,7 +59,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ## 可用工具
 
-- `run_tool_program`：只读探索的唯一入口。程序形状、引用方式和每个数据面工具的字段名，以该工具描述里的规则和「当前可调用的数据面工具」清单为准。清单是本轮授权的唯一列表。
+- `run_tool_program`：只读探索的唯一入口。一次调查写一个程序。可调用的名字和字段只看本轮「数据面 SDK」。
 - `message`：向用户发送最终答复（简单问题的收口方式）。
 - `submit_graph`：提交执行图（复杂任务的收口方式）。每轮最多提交一次；提交后等待用户确认，不要重复提交。
 - `graph_plan_report`：读取最近一次执行图的运行报告（验收结论、各节点成败与输出摘要、失败原因、共享 state 键）。
@@ -84,13 +84,14 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
     "injectStateKeys": ["需要注入的 state key"],
     "outputKey": "本节点输出写回 state 的 key",
     "expectedFiles": ["预期读写的文件路径（coding 节点建议填写）"],
-    "exportPolicy": "summary 或 full"
+    "exportPolicy": "summary 或 full",
+    "usePlanMode": "可选，默认 false；复杂改造类节点置 true 先计划后执行"
   }]
 }
 ```
 
-- 每个节点只使用一个主模型。模型与基础工具组必须来自本轮 Harness 目录：模型是 Claude Agent 的选型（default 继承登录态默认模型），`read_only` 对应 plan 只读规划模式，`coding` 对应 acceptEdits 编码模式（自动接受编辑）。
-- 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ 20。
+- 每个节点只使用一个主模型。模型与基础工具组必须来自本轮 Harness 目录：模型是 Claude Agent 的选型（default 继承登录态默认模型）。所有节点默认以 bypassPermissions 全权限模式运行（子智能体自主执行，客户端的全局权限审查 AI 只把关仍浮出的少数请求）；`usePlanMode: true` 的节点以 plan 模式启动（先产出计划，计划完成后系统自动批准并切回 bypassPermissions）；`read_only` 是只读纪律（系统在其输入中注入「不得写文件/执行副作用命令」约束），与权限模式正交。子智能体执行中自发进入计划模式也是允许的。
+- 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ {max_graph_nodes}。
 - 节点完成后 `state[outputKey] = 节点输出的「产出摘要」段`（≤4k，全文保留在节点运行记录中）；下游节点通过 `dependsOn` 收到上游输出、通过 `injectStateKeys` 收到指定 state 值。共享 state 只承载结论摘要：确需上游完整产出时用 `dependsOn` + `exportPolicy=full`，不要靠 injectStateKeys 拉全文。
 - 节点输入由系统装配：总体需求 + 角色 + 子任务 + 上游输出 + 注入的 state 节选。节点拿不到聊天记录，因此 `task` 必须自包含（目标、背景、相关文件/符号、约束、验证方式、期望产出）。
 - `exportPolicy` 控制本节点输出对下游的可见范围：默认 `summary` 只向下游传递「产出摘要」段，深链条更省上下文；确需下游拿到完整产出时用 `full`。
@@ -103,8 +104,8 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 - **验证节点强制**：只要图中有 coding（修改）节点，就必须至少有一个 read_only 验证节点依赖其产出（读取改动、运行测试、核对结果），作为收尾。
 - **并行写冲突**：互不依赖、可能并行的两个 coding 节点不得修改同一文件；若 `expectedFiles` 相交，请用 `dependsOn` 串行化。coding 节点请如实填写 `expectedFiles` 以便系统预检。
 - 根据任务性质选择主模型（含历史成功率参考）；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
-- Harness Engineering：基础工具保持最小，只读任务用 `read_only`（plan 模式），确需修改或命令时用 `coding`（acceptEdits 模式）。
-- 无依赖关系的节点会并行执行（最多 3 个并发）；可并行的子任务请拆成平行节点。
+- Harness Engineering：基础工具保持最小，只读任务用 `read_only`（只读纪律 + 审查把关），确需修改或命令时用 `coding`。复杂改造类 coding 节点（多文件联动、影响面大、方案有分歧）建议 `usePlanMode: true` 让子智能体先计划再执行；简单任务保持默认即可，不要滥用。
+- 无依赖关系的节点会并行执行（最多 {max_parallel_nodes} 个并发）；可并行的子任务请拆成平行节点。
 - 禁止引用 Harness 目录之外的模型；不要生成 subAgent、Claude CLI 或 Codex CLI 节点。
 
 ## 修复与迭代纪律
@@ -115,18 +116,7 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ## 探索纪律
 
-一次调查只写一个 `run_tool_program`。不要直接调用 `read_file` / `list_dir` / `glob` / `grep`，也不要把写入、命令、浏览器或控制面工具写进程序。字段名以工具描述中的数据面清单为准，不要凭记忆改名。
-
-写程序前核对，这些错误会整次拒绝、一步都不执行：
-- `version` 必须为 1。`root.op` 必须为 `sequence`。`steps` 的最后一项是全程序唯一的 `return`。
-- 路径参数叫 `paths`，类型是字符串数组。只读一个文件也写成 `["src/main.rs"]` 或 `["src/main.rs:10-40"]`。没有 `path` 这个字段。
-- `grep` / `glob` 用 `pattern` 或 `patterns`。
-- 引用只有 `{"$ref":{"step":"已完成步骤ID","pointer":"/data"}}`。`/output` 与 `/data` 相同，都是该步全文。不要写 `/data/files`、`/data/entries` 或其他子路径。
-- `$ref` 只用于把整段文本放进 `return.value`。`paths`、`pattern`、`patterns` 必须是字面量。要先看目录或搜索结果时，本程序只 return 那段文本；下一轮再把看到的路径写成字面量。
-- 描述里标了「可并行」的工具才能放进 `parallel`。分支之间不能互相引用。
-- 不要传 `compress` 或 `compress_intent`。超长文本会截断并带标记，截掉的部分不会留下。用 `path:start-end`、`offset`/`limit`、`max_files`、`max_results` 控制体量。`return` 进入后续上下文的上限约 32000 字符，只收本次需要的步骤。
-
-`list_dir` 最多展开两层，文件名后的 `(:N行)` 是总行数，用来决定 `read_file` 的行范围。已知多个互不依赖的路径时，放进同一个 `parallel`，最后用 `return` 把各步 `/data` 收成一个对象。
+一次调查只写一个 `run_tool_program`。不要直接调用 `read_file` / `list_dir` / `glob` / `grep`，也不要把写入、命令、浏览器或协议工具写进程序。用 `await tools.name({ ... })` 组合调用；互不依赖的只读调用放进 `Promise.all`。单次调用失败抛 `ToolCallError`，可以 `try/catch` 后继续。只有 `return` 的值和 `console.log` / `console.error` 回到上下文。字段名以「数据面 SDK」为准。
 
 ## 输出语言
 
@@ -141,15 +131,24 @@ pub(crate) async fn build_static_prompt(root_dir: &Path) -> Result<String> {
         .await
         .map_err(|error| anyhow::anyhow!("读取编排器提示词文件失败：{error}"))?;
 
-    // 版本占位符由常量生成：提示词示例、工具 schema、校验三方同源，
-    // 契约升级时不再需要手工同步提示词里的示例值。
-    let mut prompt = ORCHESTRATOR_ROLE_PROMPT.replace(
-        "\"version\": \"{graph_definition_version}\"",
-        &format!(
-            "\"version\": {}",
-            crate::agent::graph::types::GRAPH_DEFINITION_VERSION
-        ),
-    );
+    // 版本/节点数/并发数上限占位符由常量生成：提示词示例、工具 schema、校验与
+    // 调度实现同源，契约升级时不再需要手工同步提示词里的示例值。
+    let mut prompt = ORCHESTRATOR_ROLE_PROMPT
+        .replace(
+            "\"version\": \"{graph_definition_version}\"",
+            &format!(
+                "\"version\": {}",
+                crate::agent::graph::types::GRAPH_DEFINITION_VERSION
+            ),
+        )
+        .replace(
+            "{max_graph_nodes}",
+            &crate::agent::graph::validate::MAX_GRAPH_NODES.to_string(),
+        )
+        .replace(
+            "{max_parallel_nodes}",
+            &crate::agent::graph::scheduler::MAX_PARALLEL_NODES.to_string(),
+        );
     if !extra.is_empty() {
         prompt.push_str("\n\n---\n\n");
         prompt.push_str(&extra);
@@ -163,16 +162,22 @@ pub(crate) async fn build_static_prompt(root_dir: &Path) -> Result<String> {
 pub(crate) fn build_iteration_system_prompt(
     static_content: &str,
     tool_definitions: &[rig::completion::ToolDefinition],
+    data_plane_sdk: &str,
 ) -> String {
     let tools_block = render_available_tools_block(tool_definitions);
     let local_time = crate::agent::prompt::current_local_time();
-    if tools_block.is_empty() {
-        format!("{static_content}\n\n---\n\n# 系统时间\n\n当前本地时间：{local_time}")
-    } else {
-        format!(
-                "{static_content}\n\n---\n\n{tools_block}\n\n---\n\n# 系统时间\n\n当前本地时间：{local_time}"
-            )
+    let mut prompt = static_content.to_string();
+    if !tools_block.is_empty() {
+        prompt.push_str("\n\n---\n\n");
+        prompt.push_str(&tools_block);
     }
+    if !data_plane_sdk.is_empty() {
+        prompt.push_str("\n\n---\n\n");
+        prompt.push_str(data_plane_sdk);
+    }
+    prompt.push_str("\n\n---\n\n# 系统时间\n\n当前本地时间：");
+    prompt.push_str(&local_time);
+    prompt
 }
 
 /// 渲染 Harness 目录（图节点模型表）+ 既往运行统计注记。
@@ -398,12 +403,33 @@ mod tests {
 
     #[test]
     fn exploration_prompt_states_the_program_contract() {
-        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("paths"));
-        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("没有 `path` 这个字段"));
-        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("/data/files"));
-        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("唯一的 `return`"));
-        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("不要传 `compress`"));
-        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("32000"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("数据面 SDK"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("Promise.all"));
+        assert!(ORCHESTRATOR_ROLE_PROMPT.contains("ToolCallError"));
+        assert!(!ORCHESTRATOR_ROLE_PROMPT.contains("$ref"));
+        assert!(!ORCHESTRATOR_ROLE_PROMPT.contains("\"op\":\"sequence\""));
+        assert!(!ORCHESTRATOR_ROLE_PROMPT.contains("/data/files"));
+        assert!(!ORCHESTRATOR_ROLE_PROMPT.contains("32000"));
+    }
+
+    #[test]
+    fn iteration_prompt_places_the_sdk_between_tools_and_time() {
+        let prompt = super::build_iteration_system_prompt(
+            "ROLE",
+            &[rig::completion::ToolDefinition {
+                name: "run_tool_program".to_string(),
+                description: "探索".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }],
+            "# 数据面 SDK\npaths: string[]\n32000",
+        );
+        let tools = prompt.find("当前实际可用工具").expect("tools");
+        let sdk = prompt.find("# 数据面 SDK").expect("sdk");
+        let time = prompt.find("# 系统时间").expect("time");
+        assert!(tools < sdk && sdk < time);
+        assert!(prompt.contains("paths: string[]"));
+        assert!(prompt.contains("32000"));
+        assert!(!prompt.contains("$ref"));
     }
 
     use std::path::PathBuf;

@@ -25,14 +25,6 @@ fn setup_env(cmd: &mut CommandBuilder) {
     cmd.env("COLORTERM", "truecolor");
 }
 
-#[derive(Clone, Copy)]
-enum PtyEmitMode {
-    Batched {
-        flush_interval: Duration,
-        max_batch_bytes: usize,
-    },
-}
-
 fn emit_pty_event(app: &AppHandle, id: &str, event_name: &str, id_key: &str, data: String) {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -60,19 +52,17 @@ fn spawn_pty_reader(
     id: String,
     event_name: &'static str,
     id_key: &'static str,
-    emit_mode: PtyEmitMode,
     reader: Box<dyn Read + Send>,
     on_finish: Option<Box<dyn FnOnce() + Send>>,
 ) {
+    // 批量发射参数取模块常量（刷新间隔 / 批大小），调用方无需传参。
+    let flush_interval = PTY_EMIT_FLUSH_INTERVAL;
+    let max_batch_bytes = PTY_EMIT_MAX_BATCH_BYTES;
     tokio::task::spawn_blocking(move || {
         let mut reader = reader;
         let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
         // 保存上次读取中不完整的 UTF-8 字节序列
         let mut leftover: Vec<u8> = Vec::new();
-        let PtyEmitMode::Batched {
-            flush_interval,
-            max_batch_bytes,
-        } = emit_mode;
         let (tx, rx) = std::sync::mpsc::sync_channel::<String>(PTY_EMIT_CHANNEL_CAPACITY);
         let emit_app = app.clone();
         let emit_id = id.clone();
@@ -115,14 +105,11 @@ fn spawn_pty_reader(
                             std::str::from_utf8_unchecked(&combined[..valid_len]).to_owned()
                         };
                         if let Some(ref tx) = emit_tx {
-                            match tx.try_send(data) {
-                                Ok(()) => {}
-                                Err(std::sync::mpsc::TrySendError::Full(data)) => {
-                                    emit_pty_event(&app, &id, event_name, id_key, data);
-                                }
-                                Err(std::sync::mpsc::TrySendError::Disconnected(data)) => {
-                                    emit_pty_event(&app, &id, event_name, id_key, data);
-                                }
+                            // 满时阻塞，反压沿 channel → reader → 内核 PTY 缓冲传播（见
+                            // PTY_EMIT_CHANNEL_CAPACITY 注释）；发送失败仅剩 worker 消失
+                            // （panic 兜底）一种可能，直发保证输出不丢。
+                            if let Err(err) = tx.send(data) {
+                                emit_pty_event(&app, &id, event_name, id_key, err.0);
                             }
                         }
                     }
@@ -233,10 +220,6 @@ pub async fn open_shell(
         shell_id,
         "shell-output",
         "shell_id",
-        PtyEmitMode::Batched {
-            flush_interval: PTY_EMIT_FLUSH_INTERVAL,
-            max_batch_bytes: PTY_EMIT_MAX_BATCH_BYTES,
-        },
         reader,
         Some(on_finish),
     );

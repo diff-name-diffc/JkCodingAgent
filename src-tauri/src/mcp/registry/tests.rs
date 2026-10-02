@@ -168,15 +168,14 @@ fn aggregate_statuses_count_enabled_and_healthy() {
         ..healthy.clone()
     };
 
-    let (aggregate, _, _) = aggregate_server_statuses(&[]);
+    let aggregate = aggregate_server_statuses(&[]);
     assert!(matches!(aggregate, McpAggregateStatus::NotConfigured));
-    let (aggregate, enabled, healthy_count) =
-        aggregate_server_statuses(&[healthy.clone(), disabled]);
+    // 仅启用且全部健康的列表 → Healthy（禁用条目不参与健康判定）。
+    let aggregate = aggregate_server_statuses(&[healthy.clone(), disabled]);
     assert!(matches!(aggregate, McpAggregateStatus::Healthy));
-    assert_eq!((enabled, healthy_count), (1, 1));
-    let (aggregate, enabled, healthy_count) = aggregate_server_statuses(&[healthy, failed]);
+    // 启用但存在失败 → Degraded。
+    let aggregate = aggregate_server_statuses(&[healthy, failed]);
     assert!(matches!(aggregate, McpAggregateStatus::Degraded));
-    assert_eq!((enabled, healthy_count), (2, 1));
 }
 
 #[test]

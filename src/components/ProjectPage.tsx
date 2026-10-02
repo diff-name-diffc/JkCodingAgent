@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelCategory, Project } from "../types";
 import { SessionPanel } from "./SessionPanel";
 import { PanelLeftOpen } from "lucide-react";
@@ -13,6 +13,7 @@ import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
 import { useGlobalShortcuts } from "../hooks/use-global-shortcuts";
 import type { ShortcutBinding } from "../lib/keyboard-bindings";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
+import { editorFitsBesideSession } from "./project/workspace-budget";
 import { CONTEXT_TABS, type WorkspacePrefs } from "./project/workspace-prefs";
 import {
   TERMINAL_DOCK_CLOSED,
@@ -165,11 +166,38 @@ export function ProjectPage({
 
   // 执行图意图 → 主区标签同步（UI-13）：store 的 graphPanel 是打开意图，
   // 标签是渲染真值；关标签时按会话+计划匹配清除意图。
+  // 放不下双栏时让出会话栏，否则标签写进状态后编辑区仍被会话挡住，点击像没反应。
+  // openSeq 去重：还原会话后，回调身份变化不能把会话再抢走。
+  const handledGraphOpen = useRef(0);
+  const revealGraphPane = useCallback(
+    (openSeq: number) => {
+      if (handledGraphOpen.current === openSeq) return;
+      handledGraphOpen.current = openSeq;
+      const fits = editorFitsBesideSession({
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        navOpen: !sessionSidebarCollapsed,
+        navWidthPref: contextNavWidth,
+        terminalOpen: terminalDock.visible,
+        terminalHeightPref: terminalHeight,
+        editorRatioPref: editorPaneRatio,
+      });
+      if (!fits) setSessionWorkbenchVisible(false);
+    },
+    [
+      contextNavWidth,
+      editorPaneRatio,
+      sessionSidebarCollapsed,
+      terminalDock.visible,
+      terminalHeight,
+    ],
+  );
   const { closeGraphTab } = useGraphTabSync({
     activeSessionId,
     editorTabs: panels.editorTabs,
     onOpenGraphTab: panels.handleOpenGraphTab,
     onCloseGraphTab: panels.handleCloseGraphTab,
+    onGraphOpenRequest: revealGraphPane,
   });
   // 扩大/还原主区：收起/恢复会话 pane（执行图与浏览器标签共用，切换不触发重跑）。
   const handleExpandMainArea = useCallback(() => {

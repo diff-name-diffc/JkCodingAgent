@@ -17,6 +17,7 @@ mod resolve;
 mod tests;
 
 pub(crate) use call::McpCallError;
+pub(crate) use resolve::MCP_TOOL_NAME_PREFIX;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,10 +36,7 @@ use crate::mcp::transport::{
     build_streamable_http_transport, build_unix_socket_transport, collect_captured_stderr,
     enrich_stdio_error, spawn_stdio_mcp_process, SpawnedStdioMcpProcess,
 };
-use crate::mcp::{
-    McpAggregateStatus, McpScope, McpServerState, McpSnapshot, McpToolTaskSupport,
-    ResolvedMcpTransport,
-};
+use crate::mcp::{McpAggregateStatus, McpScope, McpServerState, McpSnapshot, ResolvedMcpTransport};
 
 const MCP_REFRESH_MAX_AGE: Duration = Duration::from_secs(300);
 
@@ -140,7 +138,7 @@ impl McpRegistry {
                 statuses.sort_by(|left, right| left.name.cmp(&right.name));
                 // 启用/健康计数由 build_status 从最终服务器列表统计，
                 // 这里只取聚合态。
-                let (aggregate, _, _) = aggregate_server_statuses(&statuses);
+                let aggregate = aggregate_server_statuses(&statuses);
 
                 McpSnapshot::new(
                     build_status(
@@ -207,9 +205,6 @@ impl McpRegistry {
         let mut call = CallToolRequestParams::new(tool.original_name.clone());
         if let Some(arguments) = value_to_json_object(arguments)? {
             call = call.with_arguments(arguments);
-        }
-        if matches!(tool.task_support, McpToolTaskSupport::Required) {
-            call = call.with_task(JsonObject::new());
         }
 
         let result = match &server_config.transport {

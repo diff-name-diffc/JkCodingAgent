@@ -126,6 +126,10 @@ fn graph_node_schema() -> Value {
             "outputKey": bounded_identifier("本节点输出写回 state 的唯一 key"),
             "expectedFiles": expected_files,
             "exportPolicy": { "type": "string", "enum": ["summary", "full"] },
+            "usePlanMode": {
+                "type": "boolean",
+                "description": "true = 以 plan 模式启动（先计划后执行，计划完成后自动批准并切回 bypassPermissions）；默认 false（bypassPermissions 全权限）",
+            },
         },
         "required": ["id", "title", "modelRef", "baseToolGroup", "task", "outputKey"],
     })
@@ -217,6 +221,18 @@ mod tests {
         legacy["definition"]["nodes"][0]["specialTools"] =
             json!([{ "source": "aha", "name": "exec" }]);
         assert!(!validator.is_valid(&legacy));
+    }
+
+    #[test]
+    fn schema_accepts_optional_use_plan_mode_boolean() {
+        let validator =
+            jsonschema::draft202012::new(&submit_graph_parameters_schema()).expect("schema");
+        let mut planned = minimal_definition();
+        planned["definition"]["nodes"][0]["usePlanMode"] = json!(true);
+        assert!(validator.is_valid(&planned));
+        // 非布尔值拒绝。
+        planned["definition"]["nodes"][0]["usePlanMode"] = json!("yes");
+        assert!(!validator.is_valid(&planned));
     }
 
     #[test]

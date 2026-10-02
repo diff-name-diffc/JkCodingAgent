@@ -4,11 +4,6 @@ function findLastSeparatorIndex(path: string) {
   return Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
 }
 
-export function getPathBasename(path: string) {
-  const separatorIndex = findLastSeparatorIndex(path);
-  return separatorIndex === -1 ? path : path.slice(separatorIndex + 1);
-}
-
 export function buildSiblingPath(path: string, nextName: string) {
   const separatorIndex = findLastSeparatorIndex(path);
   if (separatorIndex === -1) {

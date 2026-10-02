@@ -8,7 +8,8 @@
 //! 门禁顺序（对齐旧 broker）：
 //! 1. 台账创建 + started（无论后续是否被拒绝，先落痕迹，避免审计缺口）；
 //! 2. 取消检查；
-//! 3. 参数准备（schema 默认值注入 + Draft 2020-12 校验）；
+//! 3. 参数准备（schema 默认值注入 + Draft 2020-12 校验；调度器路径复用
+//!    enqueue 准入产出的 effective 值，裸路径在此计算一次）；
 //! 4. `ToolSafety::Dangerous` 直接拒绝；
 //! 5. `ReviewRequired && !review_self_managed` 走通用审查（未配置审查
 //!    fail-closed 拒绝）；自管审查的工具（local_zsh / ssh_exec /
@@ -24,6 +25,7 @@ use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use tauri::ipc::Channel;
 use tokio::sync::watch;
 
+use super::scheduler::SETTLE_CEILING;
 use super::surface::{ToolCallGuard, ToolCallOutcome, ToolCallTrace, ToolExecutionPolicy};
 use crate::agent::common::cancellation_requested;
 use crate::agent::db::{DispatcherDb, ToolRunTraceContext};
@@ -34,17 +36,7 @@ use crate::agent::rig_ext::tools::run_record::{
     RigToolRunFinish,
 };
 use crate::agent::rig_ext::tools::spec::{ToolSafety, ToolSpec};
-
-/// MCP 动态工具的 canonical 名前缀（见 `mcp/registry.rs`）。
-const MCP_TOOL_NAME_PREFIX: &str = "mcp__";
-
-/// 发出取消/超时信号后，在途工具执行收敛的兜底上限。
-///
-/// 统一超时由 `tools/spec.rs` 策略表声明（最长 60 秒），取消经 `watch` 通道即时
-/// 下发，正常路径远早于此即收敛——这个上限只为兜住真正卡死的工具回调。取
-/// 「最大统一超时的 10 倍」是为了不把正常的慢工具误判为未收敛；自管超时的工具
-/// （`unified_timeout=false`）走下面的提前返回，不受此上限约束。
-const SETTLE_CEILING: Duration = Duration::from_secs(600);
+use crate::mcp::registry::MCP_TOOL_NAME_PREFIX;
 
 /// 应用级策略的构造输入。
 #[derive(Clone)]
@@ -123,15 +115,26 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
         };
 
         // 1. 台账创建 + started：无效参数同样先进入台账（旧实现口径）。
-        let effective_arguments =
-            prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments)
-                .unwrap_or_else(|_| call.function.arguments.clone());
         let registered_context = super::invocation::ToolInvocationContext::current();
+        // 参数准备（默认注入 + 校验）每调用只做一次：调度器路径复用 enqueue
+        // 准入产出的 effective 值（同一纯函数、同一不可变输入，准入已校验）；
+        // 裸路径在此计算，台账与第 3 步校验共用同一结果。
+        let prepared_result = match registered_context
+            .as_ref()
+            .and_then(|context| context.prepared_arguments.clone())
+        {
+            Some(effective) => Ok(effective),
+            None => prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments),
+        };
         let trace = if let Some(context) = registered_context {
             Some(ToolCallTrace {
                 run_id: Some(context.task_id),
             })
         } else {
+            let effective_arguments = match &prepared_result {
+                Ok(effective) => effective.clone(),
+                Err(_) => call.function.arguments.clone(),
+            };
             match start_tool_run(
                 run_context,
                 &spec,
@@ -180,9 +183,9 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
         }
 
         // 3. 参数准备：schema 默认值注入 + 校验（失败回灌可恢复错误）。
-        if let Err(error) =
-            prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments)
-        {
+        // 调度器路径的 prepared 来自 enqueue 准入（已校验）直接放行；裸路径
+        // 复用第 1 步的计算结果，不再重算。
+        if let Err(error) = prepared_result {
             return reject_with(
                 ToolExecutionError::other(error.message).with_code(error.code.to_string()),
             );
@@ -215,8 +218,17 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
         call: &ToolCall,
     ) -> Result<ToolOutput, ToolExecutionError> {
         let (spec, _) = self.spec_for(tool);
-        let arguments = prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments)
-            .map_err(|error| ToolExecutionError::invalid_args(error.message))?;
+        let invocation = super::invocation::ToolInvocationContext::current();
+        // 调度器路径复用 enqueue 准入产出的 effective 值（默认注入 + 已校验）；
+        // 裸路径（顺序批/无上下文）回退计算一次。
+        let arguments = match invocation
+            .as_ref()
+            .and_then(|context| context.prepared_arguments.clone())
+        {
+            Some(prepared) => prepared,
+            None => prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments)
+                .map_err(|error| ToolExecutionError::invalid_args(error.message))?,
+        };
 
         // 等待上限：统一超时工具用自身 `timeout_secs`；自管工具（unified_timeout=false）用
         // 兜底上限 `settle_ceiling_secs`（工具自身预算之外的最后防线，取值 = 最坏合法预算）。
@@ -233,7 +245,6 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
             return tool.execute(arguments).await;
         }
         let deadline = Duration::from_secs(deadline_secs);
-        let invocation = super::invocation::ToolInvocationContext::current();
         let upstream = invocation
             .as_ref()
             .map(|context| context.cancel_rx.clone())
@@ -327,7 +338,6 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
             message_id: outcome.message_id,
             error_kind: outcome.error_kind,
             error_message: outcome.error_message,
-            action_kind: outcome.action_kind,
             metadata_json: None,
         };
         if let Err(error) = finish_tool_run(
@@ -562,6 +572,140 @@ mod tests {
             dropped.load(Ordering::SeqCst),
             0,
             "上限到达不得丢弃仍在收敛的在途执行"
+        );
+    }
+
+    /// 调度器路径：enqueue 准入产出的 effective 参数随 `ToolInvocationContext`
+    /// 流入，execute 直接消费——`prepare_arguments` 不重算，且工具闭包收到的
+    /// 正是这份 effective 值。
+    #[tokio::test]
+    async fn execute_reuses_prepared_arguments_without_recompute() {
+        use super::super::invocation::ToolInvocationContext;
+        use crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS;
+
+        let policy = policy();
+        let received = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let captured = received.clone();
+        let tool = PortableDynamicTool::new(
+            "read_file",
+            "捕获参数",
+            json!({"type":"object"}),
+            move |arguments| {
+                let captured = captured.clone();
+                Box::pin(async move {
+                    *captured.lock().unwrap() = Some(arguments);
+                    Ok(ToolOutput::text("ok"))
+                })
+            },
+        );
+        let call = ToolCall::from_wire(
+            "call",
+            ToolFunction {
+                name: "read_file".into(),
+                arguments: json!({ "paths": ["a.txt"] }),
+            },
+        );
+        let prepared = json!({ "paths": ["a.txt"], "offset": 1 });
+        let (_cancel, cancel_rx) = watch::channel(false);
+        let context = ToolInvocationContext {
+            workspace_id: "workspace".into(),
+            agent_run_id: "run".into(),
+            task_id: "task".into(),
+            tool_call_id: "call".into(),
+            root_request_message_id: "request".into(),
+            cancel_rx,
+            prepared_arguments: Some(prepared.clone()),
+        };
+        PREPARE_ARGUMENTS_CALLS.with(|count| count.set(0));
+        context
+            .scope(policy.execute(&tool, &call))
+            .await
+            .expect("执行成功");
+        assert_eq!(
+            PREPARE_ARGUMENTS_CALLS.with(std::cell::Cell::get),
+            0,
+            "execute 应复用 context 携带的 prepared 参数，不得重算"
+        );
+        assert_eq!(
+            received.lock().unwrap().clone(),
+            Some(prepared),
+            "工具闭包收到的必须是 enqueue 产出的 effective 参数"
+        );
+    }
+
+    /// 调度器路径：before_call 复用 enqueue 准入结果——台账复用登记的
+    /// task_id、校验门不再重查（准入已用同一纯函数对同一不可变输入校验）。
+    #[tokio::test]
+    async fn before_call_reuses_prepared_arguments_without_recompute() {
+        use super::super::invocation::ToolInvocationContext;
+        use crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS;
+
+        let policy = policy();
+        let tool = PortableDynamicTool::new(
+            "read_file",
+            "只读工具",
+            json!({"type":"object"}),
+            move |_| Box::pin(async move { Ok(ToolOutput::text("ok")) }),
+        );
+        let call = ToolCall::from_wire(
+            "call",
+            ToolFunction {
+                name: "read_file".into(),
+                arguments: json!({ "paths": ["a.txt"] }),
+            },
+        );
+        let (_cancel, cancel_rx) = watch::channel(false);
+        let context = ToolInvocationContext {
+            workspace_id: "workspace".into(),
+            agent_run_id: "run".into(),
+            task_id: "task".into(),
+            tool_call_id: "call".into(),
+            root_request_message_id: "request".into(),
+            cancel_rx,
+            prepared_arguments: Some(json!({ "paths": ["a.txt"], "offset": 1 })),
+        };
+        PREPARE_ARGUMENTS_CALLS.with(|count| count.set(0));
+        let guard = context.scope(policy.before_call(&tool, &call)).await;
+        assert!(guard.rejection.is_none(), "已准入参数不应被门禁拒绝");
+        assert_eq!(
+            guard.trace.and_then(|trace| trace.run_id),
+            Some("task".to_string()),
+            "调度器路径应复用登记的 task_id"
+        );
+        assert_eq!(
+            PREPARE_ARGUMENTS_CALLS.with(std::cell::Cell::get),
+            0,
+            "before_call 应复用 context 携带的 prepared 参数，不得重算"
+        );
+    }
+
+    /// 裸路径（顺序批/无上下文）：before_call 的台账与校验门共用同一次
+    /// 参数准备（原实现各算一次）。
+    #[tokio::test]
+    async fn bare_before_call_prepares_arguments_exactly_once() {
+        use crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS;
+
+        let policy = policy();
+        let tool = PortableDynamicTool::new(
+            "read_file",
+            "只读工具",
+            json!({"type":"object"}),
+            move |_| Box::pin(async move { Ok(ToolOutput::text("ok")) }),
+        );
+        let call = ToolCall::from_wire(
+            "call",
+            ToolFunction {
+                name: "read_file".into(),
+                arguments: json!({ "paths": ["a.txt"] }),
+            },
+        );
+        PREPARE_ARGUMENTS_CALLS.with(|count| count.set(0));
+        let guard = policy.before_call(&tool, &call).await;
+        assert!(guard.rejection.is_none());
+        assert_eq!(
+            PREPARE_ARGUMENTS_CALLS.with(std::cell::Cell::get),
+            1,
+            "裸路径 before_call 的台账与校验门应共用一次参数准备"
         );
     }
 }

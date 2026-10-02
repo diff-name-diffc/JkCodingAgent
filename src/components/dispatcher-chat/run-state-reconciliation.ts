@@ -19,6 +19,7 @@ import {
   getDispatcherLiveSessionState,
   notifyDispatcherLiveSessionSubscribers,
   setDispatcherLiveSessionState,
+  type DispatcherLiveSessionState,
 } from "../dispatcherSessionStore";
 import { reconcileSessionMessages } from "./event-channel";
 
@@ -60,14 +61,27 @@ let bootRetryCount = 0;
 const BOOT_RETRY_LIMIT = 3;
 const trackedDetachedRuns = new Set<string>();
 
+/**
+ * 收养/释放的 state 迁移（纯函数）。收养只叠加运行标记与占位文案；
+ * 释放整体复位——轮询期间由运行快照填入的 liveToolCalls 若不清空，
+ * 会在对账后的历史轮次下方残留一份重复的工具活动列表。
+ */
+export function nextDetachedRunState(
+  current: DispatcherLiveSessionState,
+  active: boolean,
+): DispatcherLiveSessionState {
+  if (!active) return createIdleLiveSessionState();
+  return {
+    ...current,
+    hasPendingRun: true,
+    isLoading: true,
+    assistantPlaceholder: DETACHED_RUN_PLACEHOLDER,
+  };
+}
+
 function applyDetachedRunState(sessionId: string, active: boolean) {
   const current = getDispatcherLiveSessionState(sessionId) ?? createIdleLiveSessionState();
-  const next = {
-    ...current,
-    hasPendingRun: active,
-    isLoading: active,
-    assistantPlaceholder: active ? DETACHED_RUN_PLACEHOLDER : null,
-  };
+  const next = nextDetachedRunState(current, active);
   setDispatcherLiveSessionState(sessionId, next);
   notifyDispatcherLiveSessionSubscribers(sessionId, next);
 }

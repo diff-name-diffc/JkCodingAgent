@@ -51,7 +51,9 @@ impl RigLoopHooks {
     /// 以聊天槽位规格构造默认钩子（文案对齐 plain_chat 语义）。
     pub fn from_chat_spec(spec: &PurposeModelSpec) -> Self {
         Self {
-            max_iterations: 200,
+            // 初值占位：生产路径由各 agent 以 config.max_tool_iterations 覆盖
+            // （见 plain_chat/project/architecture_agent 的 run 构建）。
+            max_iterations: crate::agent::config::DEFAULT_MAX_TOOL_ITERATIONS,
             max_tool_calls_per_batch: MAX_TOOL_CALLS_PER_BATCH,
             request_max_tokens: spec.max_tokens,
             request_temperature: spec.temperature,

@@ -3,8 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AhaSettingsV2, ChatCategoryAgentConfig, SubAgentRecord } from "../../types";
 import { queryClient } from "../../lib/query-client";
 import { CHAT_MODELS_QUERY_KEY } from "../../hooks/use-chat-queries";
-import { toast } from "./toast";
-import { withoutChatModelSystemPrompts } from "./providers/provider-registry";
+import { toast } from "../Toast";
 
 export type SaveError = { fieldId?: string; message: string } | null;
 
@@ -177,10 +176,7 @@ async function saveNow(): Promise<boolean> {
   saveError = null;
   notify();
   try {
-    const payload: AhaSettingsV2 = {
-      ...current,
-      chat: withoutChatModelSystemPrompts(current.chat),
-    };
+    const payload: AhaSettingsV2 = { ...current };
     const [result, savedCategoryConfigs] = await Promise.all([
       invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: payload }),
       invoke<ChatCategoryAgentConfig[]>("aha_save_chat_category_agent_configs", {
@@ -193,7 +189,7 @@ async function saveNow(): Promise<boolean> {
     void queryClient.invalidateQueries({ queryKey: CHAT_MODELS_QUERY_KEY });
     if (revision === revisionAtStart) {
       // 保存期间无本地编辑，可用服务端返回值安全回填。
-      settings = { ...result, chat: withoutChatModelSystemPrompts(result.chat) };
+      settings = result;
       chatCategoryConfigs = savedCategoryConfigs;
       if (
         !activeChatCategoryId ||

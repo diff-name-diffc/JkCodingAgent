@@ -7,7 +7,7 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import { FieldLabel } from "../FieldLabel";
 import { Section } from "../Section";
-import { toast } from "../toast";
+import { toast } from "../../Toast";
 import { useAhaSettings } from "../use-aha-settings";
 import {
   loadSshTestRecords,

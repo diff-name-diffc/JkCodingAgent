@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { useToast } from "../../Toast";
 import { publishSaveSource, registerSaveSource } from "../../settings/save-sources";
 import { RagProcessingSections } from "./RagProcessingSections";
 import { RagRuntimeAndImportSections } from "./RagRuntimeAndImportSections";
@@ -16,8 +15,7 @@ interface RagKbConfigPanelProps {
 const RAG_SAVE_SOURCE_ID = "rag-kb-config";
 
 export function RagKbConfigPanel({ projectId, projectPath }: RagKbConfigPanelProps) {
-  const { showToast } = useToast();
-  const controller = useRagKbConfig({ projectId, projectPath, showToast });
+  const controller = useRagKbConfig({ projectId, projectPath });
 
   // 统一保存状态发布：RAG 为手动保存源——dirty 语义是「未保存的修改」而非
   // 「保存中」，聚合层按 mode 区分显示。controller.save 身份随 config 变化，

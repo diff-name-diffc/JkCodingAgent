@@ -4,7 +4,7 @@
 //! 前端可见性（R64）：叶子台账的两条 `ToolRunUpdated`（started / 终态）走
 //! `run_events`（当前 run 的真实事件通道），由前端按 `parentRunId` 挂进
 //! `run_tool_program` 卡片。叶子的工具级事件（`ToolStarted` / `ToolFinished` /
-//! 摘要）**仍然**走空接收端——它们带的是形如 `program-call:step1` 的 wire call id，
+//! 摘要）**仍然**走空接收端——它们带的是形如 `{父调用}:ptc:1` 的 wire call id，
 //! 前端 `toolStarted` 分支会据此新建顶层工具卡片，正是要避免的噪声。
 //!
 //! 构造纪律：`LeafHost::new` 必须在工具回调的 task-local 作用域内调用。`TaskScheduler::new`
@@ -263,21 +263,15 @@ mod tests {
             tool_call_id: "program-call".to_string(),
             root_request_message_id: "anchor".to_string(),
             cancel_rx,
+            prepared_arguments: None,
         };
         (context, cancel_tx)
     }
 
     fn read_file_program() -> Value {
         json!({
-            "version": 1,
-            "root": { "op": "sequence", "steps": [
-                { "op": "call", "id": "first", "tool": "read_file", "arguments": { "path": "a.txt" } },
-                { "op": "call", "id": "second", "tool": "read_file", "arguments": { "path": "b.txt" } },
-                { "op": "return", "value": {
-                    "a": { "$ref": { "step": "first", "pointer": "/data" } },
-                    "b": { "$ref": { "step": "second", "pointer": "/data" } }
-                } }
-            ] }
+            "code": "const a = await tools.read_file({ path: \"a.txt\" }); const b = await tools.read_file({ path: \"b.txt\" }); return { a, b };",
+            "description": "读取两个文件"
         })
     }
 
@@ -397,6 +391,17 @@ mod tests {
         );
 
         let runs = captured.lock().clone();
+        // 修复契约：程序启动前先把父 run 行广播一次（无 parentRunId），前端卡片
+        // 由 toolStarted 只拿到 toolCallId，必须先经这条事件补上 runId，后续叶子的
+        // parentRunId 才能挂进 run_tool_program 卡片——根事件必须先于全部叶子。
+        assert_eq!(
+            runs.len(),
+            5,
+            "父 run 行 1 条 + 两叶子各 started + 终态：{runs:?}"
+        );
+        assert_eq!(runs[0]["id"], json!(parent.id));
+        assert_eq!(runs[0]["parentRunId"], Value::Null);
+        assert_eq!(runs[0]["toolCallId"], json!("program-call"));
         let terminal = runs
             .iter()
             .filter(|run| run.get("finishedAt").is_some_and(Value::is_string))
@@ -409,10 +414,9 @@ mod tests {
             assert_eq!(run["status"], json!("succeeded"));
             assert!(run["durationMs"].is_number(), "终态带耗时：{run}");
         }
-        assert_eq!(terminal[0]["stepId"], json!("first"));
-        assert_eq!(terminal[1]["stepId"], json!("second"));
+        assert_eq!(terminal[0]["stepId"], json!("ptc:1"));
+        assert_eq!(terminal[1]["stepId"], json!("ptc:2"));
         // 每个叶子另有一条 started：前端先落卡片再补终态。
-        assert_eq!(runs.len(), 4, "叶子生命周期 = started + 终态：{runs:?}");
         assert_eq!(
             runs.iter()
                 .filter(|run| run["status"] == json!("running"))

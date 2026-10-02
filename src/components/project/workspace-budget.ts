@@ -9,8 +9,8 @@
  *   - 窗口变小触发的是临时适配，不覆盖用户保存的偏好（偏好是冻结输入，
  *     自动适配只体现在输出与 degradations 里）。
  *
- * chrome 尺寸参数化：当前外壳为 rail 56 / 工具栏 48 / 会话栏 288，
- * UI-07 统一外壳后改为 rail 52 / 工具栏 0 / 导航 248，仅需换参数。
+ * chrome 与当前外壳一致：rail 52、右工具栏已移除（宽 0）、导航默认 248。
+ * 预算若仍按旧的 rail 56 + 工具栏 48 扣宽，中等窗口会被误判成单栏。
  */
 
 export interface WorkspaceChromeSizes {
@@ -43,8 +43,8 @@ export interface WorkspaceChromeSizes {
 export const TERMINAL_HEIGHT_LIMITS = { min: 100, max: 600 } as const;
 
 export const DEFAULT_CHROME: WorkspaceChromeSizes = {
-  railWidth: 56,
-  toolbarWidth: 48,
+  railWidth: 52,
+  toolbarWidth: 0,
   titlebarHeight: 38,
   navMin: 216,
   navMax: 320,
@@ -120,6 +120,16 @@ export function terminalDragBounds(
     min: merged.terminalMinHeight,
     max: Math.min(merged.terminalMaxHeight, maxByMain),
   };
+}
+
+/**
+ * 用户点开执行图等编辑区内容时，当前视口能否与会话并排。
+ * 不能并排时，打开动作必须让出会话栏，否则标签只写进状态，画面不变。
+ */
+export function editorFitsBesideSession(
+  input: Omit<WorkspaceBudgetInput, "dualPaneRequested">,
+): boolean {
+  return resolveWorkspaceBudget({ ...input, dualPaneRequested: true }).dualPane;
 }
 
 /**
@@ -210,17 +220,6 @@ export function resolveWorkspaceBudget(input: WorkspaceBudgetInput): WorkspaceBu
     splitterWidth,
     degradations,
   };
-}
-
-/** 拖拽编辑器分隔条时由像素反推占比偏好（供调用方写回偏好）。 */
-export function editorRatioFromWidths(
-  chatWidth: number,
-  editorWidth: number,
-  splitterWidth: number,
-): number {
-  const inner = chatWidth + editorWidth + splitterWidth;
-  if (inner <= 0) return 0.5;
-  return clamp(editorWidth / inner, 0, 1);
 }
 
 /**

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use russh::client::{self, Handle};
-use russh::keys::{PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use sha2::{Digest, Sha256};
 
 use super::audit::{sanitize_error_text, sanitize_ssh_error};
@@ -25,8 +25,14 @@ pub(super) struct SshClientHandler {
 impl client::Handler for SshClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, key: &PublicKey) -> Result<bool, Self::Error> {
-        let fingerprint = match host_key_fingerprint(key) {
+    async fn check_server_key(
+        &mut self,
+        key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        // 主机证书场景下按证书内的公钥做 TOFU；非证书场景 public_key()
+        // 返回的即服务器直接出示的公钥，指纹与迁移前完全一致。
+        let key = key.public_key();
+        let fingerprint = match host_key_fingerprint(&key) {
             Ok(fingerprint) => fingerprint,
             Err(error) => {
                 *self.reject_reason.lock() = Some(format!(

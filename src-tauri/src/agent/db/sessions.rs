@@ -454,23 +454,6 @@ impl DispatcherDb {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn update_chat_session_updated_at(&self, session_id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        let updated_at = now();
-        conn.execute(
-            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&updated_at, session_id],
-        )
-        .context("update chat session updated_at")?;
-        conn.execute(
-            "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&updated_at, session_id],
-        )
-        .context("reflect chat session updated_at in dispatcher_sessions")?;
-        Ok(())
-    }
-
     pub fn set_chat_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {
         let conn = self.conn()?;
         let updated_at = now();
@@ -586,23 +569,6 @@ impl DispatcherDb {
         .context("insert project session into dispatcher_sessions")?;
         tx.commit().context("commit create project session")?;
         Ok(record)
-    }
-
-    #[allow(dead_code)]
-    pub fn update_project_session_updated_at(&self, session_id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        let updated_at = now();
-        conn.execute(
-            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&updated_at, session_id],
-        )
-        .context("update project session updated_at")?;
-        conn.execute(
-            "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&updated_at, session_id],
-        )
-        .context("reflect project session updated_at in dispatcher_sessions")?;
-        Ok(())
     }
 
     pub fn get_session_title(&self, session_id: &str) -> Result<String> {

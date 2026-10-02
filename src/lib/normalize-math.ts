@@ -186,3 +186,70 @@ export function normalizeMathCodeFences(content: string): string {
   out.push(...fenceLines);
   return out.join("\n");
 }
+
+/**
+ * remark-math does not treat a single-line `$$…$$` as a math block; expand
+ * those to the multi-line form. Shared by both markdown pipelines (chat
+ * streamdown renderer and the legacy react-markdown renderer).
+ */
+export function normalizeSingleLineMathBlocks(content: string): string {
+  let fenceMarker: string | null = null;
+
+  return content
+    .split("\n")
+    .map((line) => {
+      const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (fenceMatch) {
+        const marker = fenceMatch[1];
+        if (!fenceMarker) {
+          fenceMarker = marker;
+        } else if (marker[0] === fenceMarker[0] && marker.length >= fenceMarker.length) {
+          fenceMarker = null;
+        }
+        return line;
+      }
+
+      if (fenceMarker) {
+        return line;
+      }
+
+      const leadingWhitespaceLength = line.length - line.trimStart().length;
+      const leadingWhitespace = line.slice(0, leadingWhitespaceLength);
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith("$$") && trimmed.endsWith("$$") && trimmed.length > 4) {
+        return `${leadingWhitespace}$$\n${leadingWhitespace}${trimmed.slice(2, -2).trim()}\n${leadingWhitespace}$$`;
+      }
+
+      return line;
+    })
+    .join("\n");
+}
+
+/**
+ * Cheap precheck: the math normalization chain (fence rewrite → delimiter
+ * rewrite → single-line `$$` expansion) can only change content that contains
+ * a `$`, a LaTeX `\(`/`\[` delimiter, or a code fence (math-language fences
+ * are rewritten by normalizeMathCodeFences). Plain prose skips the chain
+ * entirely — this runs once per throttled streaming frame.
+ */
+export function needsMathNormalize(content: string): boolean {
+  return (
+    content.includes("$") ||
+    content.includes("\\(") ||
+    content.includes("\\[") ||
+    content.includes("```") ||
+    content.includes("~~~")
+  );
+}
+
+/**
+ * 完整数学归一化管线（含前置短路），两条 markdown 渲染管线共用：
+ * 数学围栏改写 → LaTeX 定界符改写 → 单行 `$$` 展开。
+ */
+export function normalizeMarkdownMath(content: string): string {
+  if (!needsMathNormalize(content)) return content;
+  return normalizeSingleLineMathBlocks(
+    normalizeLatexMathDelimiters(normalizeMathCodeFences(content)),
+  );
+}

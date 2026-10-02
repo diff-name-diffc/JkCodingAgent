@@ -1,17 +1,103 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/*
+ * Tailwind v4 入口（CSS-first 配置，无 tailwind.config.js）。
+ *
+ * Preflight：v4 里改为只引 theme + utilities 两个层，跳过
+ * `tailwindcss/preflight.css`，基线重置由 App.css 的 `@layer base` 提供。
+ *
+ * 内容源用 `@source` 显式声明：v4 的自动探测会跟随 gitignore 扫描整个
+ * 项目，显式声明更稳定、范围更窄。
+ *
+ * 暗色：`dark:` 变体走 <html>.dark class 策略（src/lib/theme.ts 切换），
+ * streamdown 等第三方的双主题高亮依赖它。
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@custom-variant dark (&:where(.dark, .dark *));
+@source "../**/*.{ts,tsx}";
+@source "../../index.html";
+@source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/*/dist/*.js";
+
+/*
+ * 设计令牌不在此重复定义——`@theme inline` 把工具类值直接 alias 到 App.css
+ * 的 CSS 变量（:root / .dark 双套）。inline 模式不向外层 :root 发射
+ * 同名变量，因此 `--radius-sm: var(--radius-sm)` 这类同名引用不会自环；
+ * `/NN` 透明度修饰由 v4 的 color-mix 机制处理（效果等同 v3 的
+ * `rgb(var(--x-rgb) / <alpha-value>)`，--border-medium 自带的 0.17 alpha
+ * 也能与 border-border/60 正确相乘）。
+ */
+@theme inline {
+  --color-background: var(--bg-card);
+  --color-foreground: var(--text-primary);
+  --color-muted: var(--bg-subtle);
+  --color-muted-foreground: var(--text-muted);
+  --color-card: var(--bg-card);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--bg-card);
+  --color-popover-foreground: var(--text-primary);
+  --color-border: var(--border-medium);
+  --color-input: var(--bg-input);
+  --color-ring: var(--accent);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-foreground);
+  --color-primary-hover: var(--accent-hover);
+  --color-secondary: var(--bg-sidebar-elevated);
+  --color-secondary-foreground: var(--text-secondary);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+  --color-sidebar: var(--bg-sidebar);
+  --color-sidebar-foreground: var(--text-primary);
+  --color-sidebar-border: var(--border-dim);
+  --color-sidebar-accent: var(--bg-selected);
+  --color-sidebar-accent-foreground: var(--text-primary);
+  --color-sidebar-hover: var(--bg-hover);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-full: var(--radius-full);
+
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-mono);
+
+  --shadow-soft: var(--shadow-sm);
+  --shadow-medium: var(--shadow-md);
+  --shadow-large: var(--shadow-lg);
+  --shadow-chat: var(--chat-shadow);
+  --shadow-chat-soft: var(--chat-shadow-soft);
+  --shadow-focus: var(--shadow-focus);
+  --shadow-accent-glow: var(--shadow-accent-glow);
+
+  --ease-motion: var(--motion-ease);
+
+  --transition-duration-fast: var(--motion-fast);
+  --transition-duration-normal: var(--motion-normal);
+  --transition-duration-slow: var(--motion-slow);
+
+  --animate-fade-in: fade-in var(--motion-normal) var(--motion-ease);
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+}
 
 /*
  * Tailwind layer for the refactored Chat UI.
  *
  * Design tokens (colors, radii, fonts, motion) are NOT redefined here — they
- * are aliased in tailwind.config.js onto the CSS variables already declared in
- * App.css (:root). This keeps the new Tailwind components visually consistent
- * with the existing inline-styled UI.
- *
- * Preflight is disabled in tailwind.config.js to avoid clashing with the
- * existing baseline styles.
+ * are aliased via the @theme block above onto the CSS variables already
+ * declared in App.css (:root). This keeps the Tailwind components visually
+ * consistent with the existing inline-styled UI.
  */
 
 /* Chat-specific component utilities — kept minimal on purpose. */
@@ -1096,6 +1182,17 @@
     min-height: 0;
     display: flex;
     overflow: hidden;
+  }
+
+  .ai-project-editor-pane.ai-project-workbench-pane {
+    flex-direction: column;
+  }
+
+  .ai-project-editor-pane.ai-project-workbench-pane > * {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
   }
 
   .ai-file-explorer {
@@ -5011,8 +5108,7 @@
   }
 
   .ai-mcp-server-meta,
-  .ai-mcp-tool-origin,
-  .ai-mcp-tool-support {
+  .ai-mcp-tool-origin {
     color: var(--text-muted);
     font-size: 12px;
   }
@@ -5022,14 +5118,6 @@
     align-items: center;
     gap: 10px;
     flex-shrink: 0;
-  }
-
-  .ai-mcp-tool-pill {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid rgb(var(--accent-rgb) / 0.16);
-    border-radius: 999px;
-    white-space: nowrap;
   }
 
   /* UI-22b：服务器 summary 为后端补充说明，中性弱化（状态配色由 StatusPill 承担） */
@@ -5125,13 +5213,6 @@
     word-break: break-all;
   }
 
-  .ai-mcp-tool-pill {
-    padding: 4px 8px;
-    background: var(--bg-sidebar);
-    color: var(--text-muted);
-    font-size: 11px;
-  }
-
   .ai-mcp-tool-details {
     display: flex;
     flex-direction: column;
@@ -5204,6 +5285,10 @@
 
   .ai-toast-item.is-warning {
     background: linear-gradient(135deg, rgb(var(--warning-rgb) / 0.96), rgba(155, 91, 24, 0.96));
+  }
+
+  .ai-toast-item.is-success {
+    background: linear-gradient(135deg, rgb(var(--success-rgb) / 0.96), rgba(18, 98, 48, 0.96));
   }
 
   .ai-toast-message {
@@ -7137,6 +7222,9 @@
 
   .ai-streamdown [data-streamdown="table-wrapper"] > div:last-child {
     max-width: 100%;
+    /* streamdown 给内层滚动容器内联 max-height:300px，聊天里表格内嵌滚动很反直觉
+       （外层会话本身可滚动），覆盖为完整展开；横向超宽仍内部滚动。 */
+    max-height: none !important;
     overflow-x: auto;
     overflow-y: hidden;
     border: 0;
@@ -8723,58 +8811,6 @@
     resize: vertical;
   }
 
-  /* ── 设置中心：toast ─────────────────────────────────────────── */
-  .ai-set-toaster {
-    position: fixed;
-    top: 16px;
-    right: 16px;
-    z-index: 500;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    pointer-events: none;
-  }
-
-  .ai-set-toast {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    max-width: 360px;
-    padding: 8px 12px;
-    border: 1px solid var(--border-dim);
-    border-radius: var(--radius-md);
-    background: var(--bg-elevated);
-    box-shadow: var(--shadow-md);
-    font-size: 12.5px;
-    color: var(--text-primary);
-    pointer-events: auto;
-    animation: ai-fade-in var(--motion-fast) var(--motion-ease);
-  }
-
-  .ai-set-toast.is-success > svg {
-    color: rgb(var(--success-rgb));
-  }
-
-  .ai-set-toast.is-error > svg {
-    color: rgb(var(--danger-rgb));
-  }
-
-  .ai-set-toast-message {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ai-set-toast-close {
-    display: inline-flex;
-    color: var(--text-hint);
-  }
-
-  .ai-set-toast-close:hover {
-    color: var(--text-primary);
-  }
-
   /* ── 设置中心：页面骨架 ──────────────────────────────────────── */
   /* .ai-set-page 是设置页的滚动容器（panel-host 为 overflow:hidden 的 flex 宿主，
      旧面板如 RAG 自带内部滚动；新页面统一由本类承担滚动与内边距） */
@@ -9428,6 +9464,11 @@
     white-space: nowrap;
   }
 
+  /* 验收 pill 旁的「重新验收」入口：验收模型修复后补救/复检结论 */
+  .ai-graph-header-reverify {
+    flex-shrink: 0;
+  }
+
   /* 第二层：任务统计 + 整体进度 */
   .ai-graph-panel-header-stats {
     display: flex;
@@ -10079,6 +10120,8 @@
     border-radius: 10px;
     background: var(--bg-card);
     padding: 10px 12px;
+    cursor: pointer;
+    text-align: left;
   }
 
   .ai-graph-plan-card-icon {
@@ -10650,47 +10693,7 @@
     color: var(--accent-strong);
   }
 
-  /* ── ui/dialog 与 ui/sheet 基础样式（UI-09）────────────────────── */
-
-  .ai-ui-dialog-overlay {
-    background: var(--bg-overlay);
-    backdrop-filter: none;
-  }
-
-  .ai-ui-dialog-content {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 300;
-    width: min(560px, 92vw);
-    max-height: 86vh;
-    overflow: auto;
-    border: 1px solid var(--border-dim);
-    border-radius: var(--radius-xl);
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    box-shadow: var(--shadow-md);
-    padding: 16px;
-  }
-
-  .ai-ui-dialog-close {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    color: var(--text-hint);
-  }
-
-  .ai-ui-dialog-close:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
+  /* ── ui/sheet 基础样式（UI-09）────────────────────── */
 
   .ai-ui-sheet-overlay {
     background: var(--bg-overlay);

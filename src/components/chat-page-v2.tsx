@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { DispatcherMessage, ImageSegment, McpStatus, OpenSettingsOptions } from "../types";
-import { useToast } from "./Toast";
+import { toast } from "./Toast";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import {
   useDispatcherSessionRunning,
@@ -92,7 +92,6 @@ export function ChatPageV2({
   const [attachedImages, setAttachedImages] = useState<ImageSegment[]>([]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
-  const { showToast } = useToast();
   const { messages, setMessages } = useChatMessages(activeSessionId, setEditingMessageId);
   const [isStopping, setIsStopping] = useState(false);
 
@@ -226,7 +225,7 @@ export function ChatPageV2({
       // 项目模式总会话 id 非空（ProjectPage 仅在 activeSessionId 存在时渲染本组件）；
       // 聊天模式无会话时不再隐式创建（旧默认 "tech"），引导用户先选分类。
       if (!activeSessionId) {
-        showToast("请先选择分类开始新对话：点击上方分类卡片，或用左侧分类行的 ＋。", "warning");
+        toast.warning("请先选择分类开始新对话：点击上方分类卡片，或用左侧分类行的 ＋。");
         return;
       }
       const targetSessionId = activeSessionId;
@@ -253,7 +252,7 @@ export function ChatPageV2({
           await actions.sendUserMessage(text, attachedImages, targetSessionId);
         } catch (err) {
           console.error("编辑并重新发送失败:", err);
-          showToast(String(err), "error");
+          toast.error(String(err));
         } finally {
           setIsSubmittingEdit(false);
         }
@@ -273,7 +272,6 @@ export function ChatPageV2({
     messages,
     refreshLatestPlan,
     setMessages,
-    showToast,
   ]);
 
   // 暂存图片附件：FileReader 转 base64 → 后端统一落盘到
@@ -284,7 +282,7 @@ export function ChatPageV2({
     (files: File[]) => {
       void (async () => {
         if (!activeSessionId) {
-          showToast("请先选择分类开始新对话，再添加图片。", "warning");
+          toast.warning("请先选择分类开始新对话，再添加图片。");
           return;
         }
         const workspaceId = activeSessionId;
@@ -312,12 +310,12 @@ export function ChatPageV2({
             ]);
           } catch (err) {
             console.error("保存图片失败:", err);
-            showToast(`图片保存失败：${String(err)}`, "error");
+            toast.error(`图片保存失败：${String(err)}`);
           }
         }
       })();
     },
-    [activeSessionId, showToast],
+    [activeSessionId],
   );
 
   const handleRemoveAttachment = useCallback((id: string) => {
@@ -365,7 +363,7 @@ export function ChatPageV2({
           await actions.sendUserMessage(text, images, activeSessionId);
         } catch (err) {
           console.error("重新生成失败:", err);
-          showToast(String(err), "error");
+          toast.error(String(err));
         } finally {
           setIsSubmittingEdit(false);
         }
@@ -380,7 +378,6 @@ export function ChatPageV2({
       messages,
       refreshLatestPlan,
       setMessages,
-      showToast,
     ],
   );
 
@@ -415,14 +412,14 @@ export function ChatPageV2({
     // 与后端 fail-closed 守卫同口径：运行中的会话拒绝清空（后端也会拒绝，
     // 这里让用户免于先看到空结果、刷新后又冒出 run 中途写入的消息）。
     if (isRunning) {
-      showToast("会话正在运行中，请先停止生成后再清空对话。", "warning");
+      toast.warning("会话正在运行中，请先停止生成后再清空对话。");
       return;
     }
     try {
       await invoke("dispatcher_clear_messages", { workspaceId: activeSessionId });
     } catch (err) {
       console.error("清空对话失败:", err);
-      showToast(String(err), "error");
+      toast.error(String(err));
       return;
     }
     clearDraft();
@@ -430,7 +427,7 @@ export function ChatPageV2({
     // 清空会删掉 token 用量行。占用指示只在运行事件里刷新，这里不拉一次就会
     // 继续显示清空前的百分比。
     await refreshSessionTokenUsage(activeSessionId);
-  }, [activeSessionId, clearDraft, isRunning, refreshSessionTokenUsage, setMessages, showToast]);
+  }, [activeSessionId, clearDraft, isRunning, refreshSessionTokenUsage, setMessages]);
 
   // 聊天模式（主页）也提供顶部栏：会话标题 + 运行状态 + 更多菜单，
   // 让宽屏下的消息区有视觉锚点；embedded（项目内嵌面板）下保持紧凑不加栏。
@@ -513,6 +510,7 @@ export function ChatPageV2({
           onRunPython={pythonRuns.run}
           embedded={embedded}
           projectHeader={chatHeader}
+          conversationKind={conversationKind}
           emptyState={chatEmptyState}
           categoryPicker={
             isPlainChat && !embedded ? (

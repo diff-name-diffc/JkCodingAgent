@@ -92,12 +92,11 @@ impl DispatcherDb {
                      message_id = COALESCE(?3, message_id),
                      error_kind = COALESCE(?4, error_kind),
                      error_message = COALESCE(?5, error_message),
-                     action_kind = COALESCE(?6, action_kind),
-                     finished_at = ?7,
-                     duration_ms = ?8,
-                     metadata_json = COALESCE(?9, metadata_json),
-                     updated_at = ?7
-                 WHERE id = ?10
+                     finished_at = ?6,
+                     duration_ms = ?7,
+                     metadata_json = COALESCE(?8, metadata_json),
+                     updated_at = ?6
+                 WHERE id = ?9
                    AND status NOT IN (
                        'succeeded', 'recoverable_error', 'fatal_error', 'cancelled',
                        'failed', 'internal_error'
@@ -108,7 +107,6 @@ impl DispatcherDb {
                     &finish.message_id,
                     &finish.error_kind,
                     &finish.error_message,
-                    &finish.action_kind,
                     &finished_at,
                     duration_ms,
                     &finish.metadata_json,

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::types::{GraphDefinition, NODE_CANCELLED, NODE_FAILED, NODE_SKIPPED, NODE_SUCCEEDED};
 
 /// 同一 run 内的最大并发节点数。
-pub(crate) const MAX_PARALLEL_NODES: usize = 3;
+pub(crate) const MAX_PARALLEL_NODES: usize = 10;
 /// 每个节点最多重试次数（重试时输入注入上次失败原因）。
 pub(crate) const MAX_NODE_RETRIES: i32 = 1;
 
@@ -328,6 +328,7 @@ mod tests {
             output_key: format!("out_{id}"),
             expected_files: vec![],
             export_policy: Default::default(),
+            use_plan_mode: false,
         }
     }
     fn definition(nodes: Vec<GraphNode>) -> GraphDefinition {

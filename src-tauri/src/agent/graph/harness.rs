@@ -6,22 +6,26 @@
 
 use anyhow::{anyhow, Result};
 
-use super::types::{BaseToolGroup, GraphHarnessCatalog, GraphHarnessModel, GraphNode};
+use super::types::{GraphHarnessCatalog, GraphHarnessModel, GraphNode};
 
 /// ACP 会话权限模式（映射 Claude Code 权限模式的 mode id）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PermissionMode {
-    /// 只读规划（baseToolGroup=read_only）。
+    /// bypassPermissions：Agent 全权限运行，常规操作不再产生权限请求；
+    /// 仍浮出到客户端的请求（bypass 免疫的安全检查、显式 ask 规则）由全局
+    /// 权限审查 AI 裁决。所有节点的默认模式（执行器以非 root 运行时
+    /// adapter 默认放开 bypass，无需额外启动参数）。
+    BypassPermissions,
+    /// plan：先计划后执行。复杂改造类节点由编排器标记 usePlanMode 启用；
+    /// 计划完成后客户端批准退出并统一切回 bypassPermissions。
     Plan,
-    /// 自动接受编辑（baseToolGroup=coding）。
-    AcceptEdits,
 }
 
 impl PermissionMode {
     pub(crate) fn mode_id(self) -> &'static str {
         match self {
+            Self::BypassPermissions => "bypassPermissions",
             Self::Plan => "plan",
-            Self::AcceptEdits => "acceptEdits",
         }
     }
 }
@@ -71,7 +75,7 @@ fn acp_model_spec(model_id: &str) -> Option<&'static AcpModelSpec> {
     ACP_MODELS.iter().find(|spec| spec.id == model_id)
 }
 
-/// 构建 Harness 目录：静态 ACP 模型表（tools 恒空，前端类型契约不变）。
+/// 构建 Harness 目录：静态 ACP 模型表。
 pub(crate) fn build_harness_catalog() -> GraphHarnessCatalog {
     GraphHarnessCatalog {
         models: ACP_MODELS
@@ -84,12 +88,12 @@ pub(crate) fn build_harness_catalog() -> GraphHarnessCatalog {
                 capabilities: vec!["agent".to_string()],
             })
             .collect(),
-        tools: Vec::new(),
         diagnostics: Vec::new(),
     }
 }
 
-/// 解析节点 Harness：modelRef → ACP 目录条目 + baseToolGroup → 权限模式。
+/// 解析节点 Harness：modelRef → ACP 目录条目 + usePlanMode → 权限模式。
+/// baseToolGroup 不再决定权限模式（read_only 的写约束由输入软提示承载）。
 pub(crate) fn resolve_node_harness(node: &GraphNode) -> Result<ResolvedNodeHarness> {
     let spec = acp_model_spec(node.model_ref.trim()).ok_or_else(|| {
         anyhow!(
@@ -106,15 +110,17 @@ pub(crate) fn resolve_node_harness(node: &GraphNode) -> Result<ResolvedNodeHarne
     Ok(ResolvedNodeHarness {
         model_id: spec.id.to_string(),
         model_label: spec.label.to_string(),
-        permission_mode: match node.base_tool_group {
-            BaseToolGroup::ReadOnly => PermissionMode::Plan,
-            BaseToolGroup::Coding => PermissionMode::AcceptEdits,
+        permission_mode: if node.use_plan_mode {
+            PermissionMode::Plan
+        } else {
+            PermissionMode::BypassPermissions
         },
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::BaseToolGroup;
     use super::*;
 
     fn node(model_ref: &str, group: BaseToolGroup) -> GraphNode {
@@ -130,6 +136,7 @@ mod tests {
             output_key: "out".into(),
             expected_files: vec![],
             export_policy: Default::default(),
+            use_plan_mode: false,
         }
     }
 
@@ -138,16 +145,22 @@ mod tests {
         let catalog = build_harness_catalog();
         let ids: Vec<&str> = catalog.models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["default", "sonnet", "opus", "haiku"]);
-        assert!(catalog.tools.is_empty());
     }
 
     #[test]
-    fn resolves_permission_mode_from_tool_group() {
+    fn resolves_permission_mode_from_use_plan_mode() {
+        let mut planned = node("sonnet", BaseToolGroup::Coding);
+        planned.use_plan_mode = true;
+        assert_eq!(
+            resolve_node_harness(&planned).unwrap().permission_mode,
+            PermissionMode::Plan
+        );
+        // 默认 bypassPermissions 全权限；read_only 工具组只影响输入软提示。
         let read_only = resolve_node_harness(&node("sonnet", BaseToolGroup::ReadOnly)).unwrap();
-        assert_eq!(read_only.permission_mode, PermissionMode::Plan);
+        assert_eq!(read_only.permission_mode, PermissionMode::BypassPermissions);
         assert_eq!(read_only.model_id, "sonnet");
         let coding = resolve_node_harness(&node("opus", BaseToolGroup::Coding)).unwrap();
-        assert_eq!(coding.permission_mode, PermissionMode::AcceptEdits);
+        assert_eq!(coding.permission_mode, PermissionMode::BypassPermissions);
     }
 
     #[test]
@@ -158,7 +171,10 @@ mod tests {
 
     #[test]
     fn permission_mode_ids_match_claude_modes() {
+        assert_eq!(
+            PermissionMode::BypassPermissions.mode_id(),
+            "bypassPermissions"
+        );
         assert_eq!(PermissionMode::Plan.mode_id(), "plan");
-        assert_eq!(PermissionMode::AcceptEdits.mode_id(), "acceptEdits");
     }
 }

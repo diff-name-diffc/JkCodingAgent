@@ -70,14 +70,6 @@ pub(crate) const NODE_PHASE_RESPONDING: &str = "responding";
 pub(crate) const NODE_PHASE_THINKING: &str = "thinking";
 /// 工具执行中。
 pub(crate) const NODE_PHASE_TOOL_RUNNING: &str = "tool_running";
-// 重试/压缩阶段暂无构造方（重试由 runner 重新派发、phase 回到 starting；
-// ACP 的压缩事件是 unstable 特性），保留契约值待后续接入。
-/// 失败自动重试中。
-#[allow(dead_code)]
-pub(crate) const NODE_PHASE_RETRYING: &str = "retrying";
-/// 上下文压缩中。
-#[allow(dead_code)]
-pub(crate) const NODE_PHASE_COMPACTING: &str = "compacting";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,6 +140,11 @@ pub struct GraphNode {
     /// 输出对下游的导出策略，默认摘要。
     #[serde(default)]
     pub export_policy: ExportPolicy,
+    /// 以 plan 模式启动会话（先计划后执行；计划完成后客户端自动批准并切回
+    /// bypassPermissions）。默认 false = bypassPermissions 全权限模式。与
+    /// baseToolGroup 正交：read_only 的写约束由节点输入软提示承载。
+    #[serde(default)]
+    pub use_plan_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,9 +250,6 @@ pub struct GraphNodeRunRecord {
     pub model_label: String,
     pub model_category: String,
     pub base_tool_group: String,
-    /// 历史列（graph_node_runs.special_tools_json）：v4 起图定义不再有
-    /// specialTools，本字段固定写 "[]"；列保留仅因 DB schema 不变。
-    pub special_tools_json: String,
     pub input_text: String,
     pub output_text: String,
     pub error_text: Option<String>,
@@ -281,8 +275,6 @@ impl GraphNodeRunRecord {
             model_label: node.model_ref.clone(),
             model_category: String::new(),
             base_tool_group: node.base_tool_group.as_str().to_string(),
-            // v4 起节点不再有 specialTools；列保留（schema 不变），固定写 "[]"。
-            special_tools_json: "[]".into(),
             input_text: String::new(),
             output_text: String::new(),
             error_text: None,
@@ -334,21 +326,8 @@ pub struct GraphHarnessModel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GraphHarnessTool {
-    pub source: String,
-    pub name: String,
-    pub description: String,
-    pub provider: String,
-    pub category: String,
-    pub readonly: bool,
-    pub review_required: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GraphHarnessCatalog {
     pub models: Vec<GraphHarnessModel>,
-    pub tools: Vec<GraphHarnessTool>,
     #[serde(default)]
     pub diagnostics: Vec<String>,
 }

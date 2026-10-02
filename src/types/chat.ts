@@ -141,7 +141,6 @@ export interface DispatcherToolRunRecord {
   messageId?: string | null;
   errorKind?: string | null;
   errorMessage?: string | null;
-  actionKind?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
   durationMs: number;
@@ -155,7 +154,6 @@ export interface DispatcherModelConfig {
   apiKey: string;
   model: string;
   active: boolean;
-  systemPrompt?: string;
   /** 模型库条目引用：非空时后端保存剥离 url/apiKey/model、读取时从库回填。 */
   libraryId?: string;
   /** 输出预算与上下文窗口：与凭据同规则由引用库条目运行期回填（保存剥离）。
@@ -174,6 +172,8 @@ export interface AgentToolInfo {
 export interface AhaContextConfig {
   chatModelConfigs: DispatcherModelConfig[];
   summaryModelConfigs: DispatcherModelConfig[];
+  /** 验收模型（项目上下文专用）：执行图 run 收尾验收评审；留空回退摘要槽位。chat 侧恒空。 */
+  verifierModelConfigs?: DispatcherModelConfig[];
   allowedTools: string[];
 }
 

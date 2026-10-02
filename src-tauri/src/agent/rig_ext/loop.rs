@@ -52,11 +52,16 @@ pub use app_policy::{AppToolExecutionPolicy, AppToolPolicyConfig};
 pub use protocol::{ProtocolToolHandler, RigProtocolAction, RigProtocolResult};
 pub use surface::{RigToolSurface, ToolCallOutcome, ToolExecutionPolicy};
 
-use stream::{consume_stream, split_choice, StreamProgress};
+use stream::{consume_stream, StreamProgress};
 use support::{
-    build_assistant_message, current_model_name, emit_finished, finalize_cancelled,
-    format_finish_reason, maybe_emit_model_switched, outbound_tool_call, record_rig_usage,
+    current_model_name, emit_finished, finalize_cancelled, format_finish_reason,
+    maybe_emit_model_switched, outbound_tool_call, record_rig_usage,
 };
+
+// 思考链拆分与 assistant 消息组装：主对话循环与子智能体运行时共用的
+// 单一实现（子智能体经 crate 路径引入，禁止再复制副本）。
+pub(crate) use stream::split_choice;
+pub(crate) use support::build_assistant_message;
 
 // ─── 主循环 ───────────────────────────────────────────────────────────────────
 

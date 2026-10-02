@@ -21,8 +21,6 @@ export interface AutoScrollApi {
   pinned: boolean;
   /** Force-scroll to the bottom, ignoring current pin state. */
   scrollToBottom: (opts?: { behavior?: ScrollBehavior }) => void;
-  /** Re-check whether we're at the bottom (call after layout shifts). */
-  recompute: () => void;
 }
 
 const BOTTOM_THRESHOLD_PX = 56;
@@ -45,15 +43,6 @@ export function useAutoScroll(sessionId: string | null): AutoScrollApi {
     pinnedRef.current = following;
     setPinned((current) => (current === following ? current : following));
   }, []);
-
-  const recompute = useCallback(() => {
-    const el = elementRef.current;
-    if (!el) return;
-    const distanceFromBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight;
-    const isAtBottom = distanceFromBottom <= BOTTOM_THRESHOLD_PX;
-    setFollowing(isAtBottom);
-  }, [setFollowing]);
 
   const scrollToBottom = useCallback(
     (opts?: { behavior?: ScrollBehavior }) => {
@@ -148,5 +137,5 @@ export function useAutoScroll(sessionId: string | null): AutoScrollApi {
     });
   }, [sessionId, setFollowing]);
 
-  return { containerRef, pinned, scrollToBottom, recompute };
+  return { containerRef, pinned, scrollToBottom };
 }

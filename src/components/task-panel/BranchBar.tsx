@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { Search, Plus, ChevronDown, X, Tag, Check, GitFork, GitBranch } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import * as Popover from "@radix-ui/react-popover";
-import { isImeComposing } from "../../utils";
+import { isImeComposing } from "../../lib/keyboard-bindings";
 
 interface GitBranchInfo {
   name: string;

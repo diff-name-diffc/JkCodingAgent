@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
-use super::types::{ExportPolicy, GraphNode};
+use super::types::{BaseToolGroup, ExportPolicy, GraphNode};
 
 /// 摘要导出的统一上限：既是缺失「## 产出摘要」段时的兜底截取长度，也是提取
 /// 出的超长摘要段的封顶（输出契约只要求摘要 ≤500 字，但无法强制上游遵守，
@@ -22,6 +22,15 @@ const INJECT_STATE_VALUE_MAX_CHARS: usize = 4_000;
 /// 口径说明：预算只累计块本体，块间 "\n\n" 分隔符、截断后缀与省略标注行
 /// 不计入，实际注入量可略超预算（数十至上百字符），不影响体量控制。
 const INJECT_STATE_TOTAL_BUDGET_CHARS: usize = 16_000;
+
+/// read_only 节点的运行约束段。只读语义不借用 ACP plan 模式承载（plan 是
+/// 复杂任务的「先计划」手段），而是软提示注入：会话跑 bypassPermissions
+/// 全权限模式，写约束由本段承载（现代模型的命令遵循足以胜任），全局权限
+/// 审查 AI 兜底仍浮出的请求。
+const READ_ONLY_CONSTRAINT: &str = "# 运行约束（只读节点）\n\
+本节点为只读调研节点：不得创建、修改、删除任何文件，不得执行有副作用的命令\
+（安装依赖、git 写操作、网络变更等）；仅允许读取、搜索与分析。\
+完成后直接输出完整的分析报告作为最终答复，不要试图申请执行权限。";
 const FULL_TRUNCATE_SUFFIX: &str = "\n...[输出已截断]";
 const SUMMARY_TRUNCATE_SUFFIX: &str = "\n...[产出摘要过长，已截断]";
 const HEAD_TRUNCATE_SUFFIX: &str = "\n...[未提供产出摘要，已截取开头]";
@@ -43,6 +52,10 @@ pub(super) fn assemble_node_input(
         sections.push(format!("# 你的角色\n{}", node.role.trim()));
     }
     sections.push(format!("# 你的子任务\n{}", node.task.trim()));
+
+    if matches!(node.base_tool_group, BaseToolGroup::ReadOnly) {
+        sections.push(READ_ONLY_CONSTRAINT.to_string());
+    }
 
     if !node.depends_on.is_empty() {
         let mut upstream = String::from("# 上游节点输出");
@@ -411,6 +424,7 @@ mod tests {
             output_key: "backend_changes".to_string(),
             expected_files: Vec::new(),
             export_policy: ExportPolicy::Summary,
+            use_plan_mode: false,
         }
     }
     fn upstream_node(policy: ExportPolicy) -> GraphNode {
@@ -426,6 +440,7 @@ mod tests {
             output_key: "analysis".to_string(),
             expected_files: Vec::new(),
             export_policy: policy,
+            use_plan_mode: false,
         }
     }
 
@@ -455,6 +470,31 @@ mod tests {
         assert!(!input.contains("missing"));
         // 输出契约始终附加
         assert!(input.contains("# 输出要求"));
+    }
+
+    #[test]
+    fn read_only_node_gets_constraint_and_coding_does_not() {
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node()),
+        ]);
+        let outputs = HashMap::new();
+        let state = Map::new();
+
+        let read_only_input = assemble_node_input(
+            "原始需求",
+            &upstream_node(ExportPolicy::Summary),
+            &node_by_id,
+            &outputs,
+            &state,
+            None,
+        );
+        assert!(read_only_input.contains("# 运行约束（只读节点）"));
+        assert!(read_only_input.contains("不得创建、修改、删除任何文件"));
+
+        let coding_input =
+            assemble_node_input("原始需求", &node(), &node_by_id, &outputs, &state, None);
+        assert!(!coding_input.contains("# 运行约束（只读节点）"));
     }
 
     #[test]

@@ -1,5 +1,4 @@
 import { createContext, memo, useContext, useMemo } from "react";
-import type { MouseEvent } from "react";
 import { Play } from "lucide-react";
 import {
   CodeBlock,
@@ -8,22 +7,24 @@ import {
   type Components,
   type CustomRendererProps,
 } from "streamdown";
-import { createCodePlugin } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import "streamdown/styles.css";
 import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
 import { cn } from "../../lib/cn";
+import { stableHash } from "../../lib/stable-hash";
 import { TEAL_DARK_THEME, TEAL_LIGHT_THEME } from "../../utils/shiki";
-import { normalizeLatexMathDelimiters, normalizeMathCodeFences } from "../../lib/normalize-math";
+import { normalizeMarkdownMath } from "../../lib/normalize-math";
 import { MarkdownImage } from "../markdown/MarkdownImage";
+import { MarkdownLink } from "../markdown/MarkdownLink";
 import { chatSafeSchema } from "../markdown/sanitize-schema";
-import { useMarkdownLinkHandler } from "../markdown/MarkdownLinkContext";
+import { useDeferredContent } from "../markdown/use-deferred-content";
 import { StatusPill } from "../detail/StatusPill";
 import { useKatexCopy } from "./katex-copy";
+import { createChatCodePlugin } from "./shiki-code-plugin";
+import { createLazyMermaidPlugin } from "./lazy-mermaid-plugin";
 
 /**
  * Streamdown-based markdown renderer for the chat surface (AI text messages).
@@ -34,6 +35,14 @@ import { useKatexCopy } from "./katex-copy";
  *   - per-block memoization — during streaming only the tail block re-renders
  *   - built-in blinking caret on the last block (mode="streaming")
  *   - GFM tables, KaTeX math, Mermaid diagrams, Shiki highlighting via plugins
+ *
+ * Input shaping (markdown/use-deferred-content.ts, shared with the legacy
+ * pipeline): streaming segments are throttled to ~150ms before the
+ * normalize+parse pass, and contents over 10KB render a plain-text
+ * placeholder for the first frame only. Code highlighting uses our own shiki
+ * plugin (shiki-code-plugin.ts — core engine + on-demand languages, replaces
+ * @streamdown/code's full bundled registry); mermaid loads on first diagram
+ * via lazy-mermaid-plugin.ts.
  *
  * Styling hooks live in styles/tailwind.css under `.ai-streamdown` (code card,
  * table frame). User messages do NOT go through this — they stay plain text
@@ -59,62 +68,9 @@ export interface MarkdownRendererProps {
   className?: string;
 }
 
-/** Fast, non-crypto hash for stable code block identification. */
-function stableHash(text: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
-  }
-  return h.toString(36);
-}
-
-function isBrowserUrl(url: string | undefined): url is string {
-  if (!url) return false;
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * remark-math does not treat a single-line `$$…$$` as a math block; expand
- * those to the multi-line form (same normalization the legacy renderer used).
- */
-function normalizeSingleLineMathBlocks(content: string) {
-  let fenceMarker: string | null = null;
-
-  return content
-    .split("\n")
-    .map((line) => {
-      const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
-      if (fenceMatch) {
-        const marker = fenceMatch[1];
-        if (!fenceMarker) {
-          fenceMarker = marker;
-        } else if (marker[0] === fenceMarker[0] && marker.length >= fenceMarker.length) {
-          fenceMarker = null;
-        }
-        return line;
-      }
-
-      if (fenceMarker) {
-        return line;
-      }
-
-      const leadingWhitespaceLength = line.length - line.trimStart().length;
-      const leadingWhitespace = line.slice(0, leadingWhitespaceLength);
-      const trimmed = line.trim();
-
-      if (trimmed.startsWith("$$") && trimmed.endsWith("$$") && trimmed.length > 4) {
-        return `${leadingWhitespace}$$\n${leadingWhitespace}${trimmed.slice(2, -2).trim()}\n${leadingWhitespace}$$`;
-      }
-
-      return line;
-    })
-    .join("\n");
+/** 无围栏时跳过代码块索引（python 运行记录映射用不到）。 */
+function hasCodeFence(content: string): boolean {
+  return content.includes("```") || content.includes("~~~");
 }
 
 /**
@@ -153,6 +109,8 @@ function indexCodeBlocks(content: string): Map<string, number> {
   }
   return indexByHash;
 }
+
+const EMPTY_CODE_INDEX: Map<string, number> = new Map();
 
 interface PythonRunContextValue {
   messageId?: string;
@@ -245,39 +203,20 @@ function PythonCodeRenderer({ code, isIncomplete, language }: CustomRendererProp
   );
 }
 
-/** Open http(s) links in the in-app browser when a handler is provided. */
-function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
-  const openMarkdownLink = useMarkdownLinkHandler();
-  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-    const url = href ?? undefined;
-    if (!openMarkdownLink || !isBrowserUrl(url)) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    void openMarkdownLink(url);
-  };
-
-  return (
-    <a {...props} href={href} rel="noreferrer" onClick={handleClick}>
-      {children}
-    </a>
-  );
-}
-
 // 模块级常量 so the memoized <Streamdown> never receives fresh
 // prop identities on re-render.
-const codePlugin = createCodePlugin({
-  // 双主题一次输出：streamdown 经 `dark:` 变体随 <html>.dark 纯 CSS 切换。
-  themes: [TEAL_LIGHT_THEME, TEAL_DARK_THEME],
-});
+// 高亮走自研插件（shiki-code-plugin.ts）：shiki core 单实例 + 13 语言按需
+// 加载，双主题一次输出，streamdown 经 `dark:` 变体随 <html>.dark 纯 CSS 切换。
+const codePlugin = createChatCodePlugin();
+// mermaid 首个图出现时按需加载（lazy-mermaid-plugin.ts），核心包不进聊天 chunk。
+const lazyMermaid = createLazyMermaidPlugin();
 // 默认的 `math` 预设关闭了单 `$` 行内公式（防货币误解析），模型输出普遍
 // 使用 `$…$`，这里显式开启。
 const mathPlugin = createMathPlugin({ singleDollarTextMath: true });
 const streamdownPlugins = {
   code: codePlugin,
   math: mathPlugin,
-  mermaid,
+  mermaid: lazyMermaid,
   renderers: [{ language: ["python", "py"], component: PythonCodeRenderer }],
 };
 // streamdown 的 rehypePlugins prop 会整体替换默认插件链（raw → sanitize →
@@ -318,19 +257,32 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   pythonRunRecords,
   className,
 }: MarkdownRendererProps) {
+  const { effectiveContent, deferred } = useDeferredContent(content, streaming);
   const normalizedContent = useMemo(
-    () =>
-      normalizeSingleLineMathBlocks(
-        normalizeLatexMathDelimiters(normalizeMathCodeFences(content)),
-      ),
-    [content],
+    () => (deferred ? effectiveContent : normalizeMarkdownMath(effectiveContent)),
+    [effectiveContent, deferred],
   );
-  const codeIndexByHash = useMemo(() => indexCodeBlocks(normalizedContent), [normalizedContent]);
+  const codeIndexByHash = useMemo(
+    () =>
+      deferred || !hasCodeFence(normalizedContent)
+        ? EMPTY_CODE_INDEX
+        : indexCodeBlocks(normalizedContent),
+    [normalizedContent, deferred],
+  );
   const pythonRunContext = useMemo<PythonRunContextValue>(
     () => ({ messageId, streaming, onRunPython, pythonRunRecords, codeIndexByHash }),
     [messageId, streaming, onRunPython, pythonRunRecords, codeIndexByHash],
   );
   const { containerProps: katexCopyProps, menuElement: katexCopyMenu } = useKatexCopy();
+
+  if (deferred) {
+    // 大文本首帧降级：先出纯文本让列表可滚动，rAF 后切换完整渲染。
+    return (
+      <div className={cn("ai-streamdown text-[15px] leading-7 text-foreground", className)}>
+        <pre className="whitespace-pre-wrap break-words">{effectiveContent}</pre>
+      </div>
+    );
+  }
 
   return (
     <div

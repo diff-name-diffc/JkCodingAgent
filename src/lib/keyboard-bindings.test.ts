@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CODE_EDITOR_CONTAINER_SELECTOR,
   TERMINAL_CONTAINER_SELECTOR,
-  isImeKeyEvent,
+  isImeComposing,
   isInsideContainer,
   isMacPlatform,
   isTypingTarget,
@@ -65,24 +65,53 @@ describe("isMacPlatform", () => {
   });
 });
 
-// ── isImeKeyEvent ─────────────────────────────────────────────────────────
+// ── isImeComposing（B-25 收敛：React 合成事件与原生事件共用）──────────────
 
-describe("isImeKeyEvent", () => {
+describe("isImeComposing", () => {
   it("isComposing=true 判定组合期", () => {
-    expect(isImeKeyEvent(keyEvent({ isComposing: true }))).toBe(true);
+    expect(isImeComposing(keyEvent({ isComposing: true }))).toBe(true);
   });
 
   it("keyCode/which 229 判定组合期（macOS 中文输入法候选确认）", () => {
-    expect(isImeKeyEvent(keyEvent({ keyCode: 229 }))).toBe(true);
-    expect(isImeKeyEvent(keyEvent({ which: 229 }))).toBe(true);
+    expect(isImeComposing(keyEvent({ keyCode: 229 }))).toBe(true);
+    expect(isImeComposing(keyEvent({ which: 229 }))).toBe(true);
   });
 
   it('key === "Process" 判定组合期', () => {
-    expect(isImeKeyEvent(keyEvent({ key: "Process" }))).toBe(true);
+    expect(isImeComposing(keyEvent({ key: "Process" }))).toBe(true);
   });
 
-  it("普通按键不算组合期", () => {
-    expect(isImeKeyEvent(keyEvent())).toBe(false);
+  it("React 合成事件路径：nativeEvent.isComposing 判定组合期", () => {
+    expect(isImeComposing(keyEvent({ nativeEvent: { isComposing: true } }))).toBe(true);
+  });
+
+  it("React 合成事件路径：nativeEvent.keyCode/which 229 判定组合期", () => {
+    expect(isImeComposing(keyEvent({ nativeEvent: { keyCode: 229 } }))).toBe(true);
+    expect(isImeComposing(keyEvent({ nativeEvent: { which: 229 } }))).toBe(true);
+  });
+
+  it("中文输入法组合中的候选确认 Enter（macOS Chrome 形状）判为组合期，不发送", () => {
+    expect(
+      isImeComposing(keyEvent({ key: "Enter", keyCode: 13, nativeEvent: { isComposing: true } })),
+    ).toBe(true);
+  });
+
+  it("组合刚结束的 Enter（compositionend 已触发）正常放行发送", () => {
+    expect(
+      isImeComposing(
+        keyEvent({
+          key: "Enter",
+          keyCode: 13,
+          isComposing: false,
+          nativeEvent: { isComposing: false },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("普通按键不算组合期（顶层与 nativeEvent 均无信号）", () => {
+    expect(isImeComposing(keyEvent())).toBe(false);
+    expect(isImeComposing(keyEvent({ nativeEvent: {} }))).toBe(false);
   });
 });
 

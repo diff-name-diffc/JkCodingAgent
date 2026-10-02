@@ -96,7 +96,7 @@ function ToolCallCard({
         />
       </button>
 
-      {graphPlanId && <GraphPlanCard planId={graphPlanId} />}
+      {graphPlanId && <GraphPlanCard planId={graphPlanId} sessionId={item.workspaceId} />}
 
       {hasBrowserActivity && (
         <div className="px-3 pb-2">
@@ -352,8 +352,18 @@ export function ToolCallList({
 
   // UI-12：聚合收起时，失败/运行中/等待卡固定露出在摘要行下方——
   // 「折叠不隐藏错误」「失败与待处理状态无需展开即可看见」。
+  // 成功的 submit_graph 也要钉住：探索工具凑满 3 个后整组收起，
+  // 执行图卡片会一起被折进摘要，点消息区就像没有入口。
   const pinnedItems =
-    aggregated && !expanded ? items.filter((item) => item.status !== "success") : [];
+    aggregated && !expanded
+      ? items.filter(
+          (item) =>
+            item.status !== "success" ||
+            (item.name === "submit_graph" &&
+              typeof item.output === "string" &&
+              parseGraphPlanId(item.output) !== null),
+        )
+      : [];
   const allSettled = summary.failed === 0 && summary.running === 0 && summary.planned === 0;
 
   return (

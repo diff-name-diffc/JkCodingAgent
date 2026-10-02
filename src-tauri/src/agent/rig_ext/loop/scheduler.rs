@@ -40,13 +40,14 @@ use tokio::{
 
 static LEAF_LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
-/// 取消/超时信号发出后，在途 worker 收敛的兜底上限。
+/// 取消/超时信号发出后，在途 worker 收敛的兜底上限（app_policy 的统一超时
+/// 收口与此处共用同一上限，单一出处防止两层数值漂移）。
 ///
 /// 正常路径由工具自身的统一超时（`tools/spec.rs` 策略表最长 60 秒）与取消通道
 /// 即时收口，远早于此即已收敛。选 600 秒是「最大统一超时的 10 倍」，只为兜住真正
 /// 卡死的 worker，而不是把正常的慢工具误判为未收敛；到达上限不丢弃在途调用
 /// （见 `hand_off`），只把监督权转交后台。
-const SETTLE_CEILING: Duration = Duration::from_secs(600);
+pub(super) const SETTLE_CEILING: Duration = Duration::from_secs(600);
 
 #[derive(Debug, thiserror::Error)]
 #[error("Agent 运行已取消")]

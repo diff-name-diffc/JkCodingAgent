@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SshAuditLog, SshToolsConfig } from "../../../types";
 import { publishSaveSource, registerSaveSource } from "../save-sources";
-import { toast } from "../toast";
+import { toast } from "../../Toast";
 
 const AUTOSAVE_DELAY_MS = 400;
 const SAVE_SOURCE_ID = "ssh-servers";

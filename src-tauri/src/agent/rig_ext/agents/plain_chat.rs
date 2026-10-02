@@ -115,16 +115,6 @@ impl RigPlainChatAgent {
             AgentContext::Project => &settings.project,
             AgentContext::Chat => &settings.chat,
         };
-        let active_chat = ctx_config
-            .chat_model_configs
-            .iter()
-            .find(|c| c.active)
-            .or_else(|| ctx_config.chat_model_configs.first());
-        if let Some(chat) = active_chat {
-            if !chat.system_prompt.trim().is_empty() {
-                *self.system_prompt.lock() = chat.system_prompt.trim().to_string();
-            }
-        }
         *self.allowed_tools.lock() = ctx_config.allowed_tools.clone();
         *self.review_config.lock() = settings
             .review
@@ -322,9 +312,8 @@ impl RigPlainChatAgent {
             .map_err(|error| anyhow::anyhow!("刷新聊天 MCP 状态失败：{error}"))?;
 
         if !self.is_configured() {
-            anyhow::bail!(
-                "错误：聊天 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
-            );
+            // 模型配置的唯一权威源是设置中心（dispatcher_settings 表）；env 回退已删除。
+            anyhow::bail!("错误：聊天 LLM API Key 未配置。请在设置中心「模型服务」配置后重试。");
         }
         crate::agent::config::validate_provider_completeness(
             &self.specs.chat.api_key,

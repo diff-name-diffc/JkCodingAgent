@@ -5,7 +5,7 @@
 //! - `fs`：read_file / list_dir / glob / grep（只读数据面，编排器也用）；
 //! - `exec`：local_zsh / ssh_* / ssh_memo_* / sync_directory（命令执行面）；
 //! - `media`：generate_image / edit_image / analyze_image / fetch_image / browser_*；
-//! - `program`：run_tool_program（工具程序 DSL 执行器，数据面工具由调用方注入）；
+//! - `program`：run_tool_program（进程内 JavaScript 编排调用方注入的数据面工具）；
 //! - `mcp`：MCP 动态工具桥（`mcp__<server>__<tool>`）。
 //!
 //! 协议类工具（submit_graph / graph_plan_report / architecture_run /
@@ -33,6 +33,6 @@ pub(crate) use deps::RigToolDeps;
 /// 单轮工具调用数上限（对齐旧工具层的同名上限）。
 pub(crate) const MAX_TOOL_CALLS_PER_BATCH: usize = 32;
 
-/// 项目编排器授权给 ToolProgram 的数据面能力（只读探索四件套）。
+/// 项目编排器授权给 `run_tool_program` 的数据面能力（只读探索四件套）。
 pub(crate) const ORCHESTRATOR_RUNTIME_TOOL_NAMES: [&str; 4] =
     ["read_file", "list_dir", "glob", "grep"];

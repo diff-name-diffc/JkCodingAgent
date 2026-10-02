@@ -48,6 +48,7 @@ async fn unified_timeout_signals_callback_and_waits_for_actual_settlement() {
         tool_call_id: "call".into(),
         root_request_message_id: "request".into(),
         cancel_rx,
+        prepared_arguments: None,
     };
     let call = ToolCall::from_wire(
         "call",

@@ -52,6 +52,7 @@ export function categoryDef(category: ModelCategory): ModelCategoryDef {
 const PURPOSE_CATEGORY_MAP: Record<PurposeKind, ModelCategory> = {
   projectChat: "text",
   projectSummary: "text",
+  projectVerifier: "text",
   chatChat: "text",
   chatSummary: "text",
   review: "text",

@@ -103,8 +103,6 @@ fn test_config(api_base: String) -> DispatcherAgentConfig {
         api_base,
         model: "mock-chat".to_string(),
         summary_model: "mock-chat".to_string(),
-        vision_model: String::new(),
-        max_tokens: Some(128),
         temperature: 0.0,
         max_tool_iterations: 4,
         exec_timeout_secs: 30,

@@ -1,9 +1,13 @@
-import type { ThemeRegistration } from "shiki";
+import type { ThemeRegistration, TokensResult } from "shiki";
 import { isDarkActive } from "../lib/theme";
 import { shikiCacheKey, shikiHighlightCache } from "./shiki-cache";
 
 interface ShikiHighlighter {
   codeToHtml: (code: string, options: { lang: string; theme: string }) => string;
+  codeToTokens: (
+    code: string,
+    options: { lang: string; themes: { light: string; dark: string } },
+  ) => TokensResult;
   loadLanguage: (language: unknown) => Promise<void>;
   getLoadedLanguages: () => string[];
 }
@@ -145,13 +149,28 @@ async function getHighlighter() {
   return highlighterPromise;
 }
 
+/** 按需加载支持的语言集合（不含别名），供 streamdown 高亮插件声明能力面。 */
+export const SUPPORTED_HIGHLIGHT_LANGUAGES: readonly string[] = Object.keys(LANGUAGE_LOADERS);
+
 function normalizeLanguage(language?: string | null) {
   if (!language) {
     return "plaintext";
   }
 
   const normalized = language.trim().toLowerCase();
-  return LANGUAGE_ALIASES[normalized] ?? normalized;
+  // 自身属性判定：原型链成员（"constructor"/"__proto__" 等天然小写的继承名）
+  // 不是语言别名，直接索引会取到继承成员并当作返回值泄漏出去。
+  return Object.prototype.hasOwnProperty.call(LANGUAGE_ALIASES, normalized)
+    ? LANGUAGE_ALIASES[normalized]
+    : normalized;
+}
+
+/** 语言是否在本应用的按需加载集合内（供 streamdown 插件 supportsLanguage）。 */
+export function isSupportedHighlightLanguage(language?: string | null): boolean {
+  return Object.prototype.hasOwnProperty.call(
+    LANGUAGE_LOADERS,
+    normalizeLanguage(language),
+  );
 }
 
 async function ensureLanguage(language?: string | null) {
@@ -197,4 +216,22 @@ export async function highlightCodeToHtml(
   });
   shikiHighlightCache.set(cacheKey, html, code.length);
   return html;
+}
+
+/**
+ * 双主题 token 化（供 streamdown 高亮插件）：一次产出 light/dark 两套配色
+ * 的 TokensResult，由 streamdown 经 `--shiki-dark` CSS 变量随 `html.dark`
+ * 纯 CSS 切换。语言走与 `highlightCodeToHtml` 相同的按需加载与回退逻辑；
+ * 主题固定为预载的双 teal 主题，不参与缓存键。
+ */
+export async function tokenizeCodeDualTheme(
+  code: string,
+  language?: string | null,
+): Promise<TokensResult> {
+  const highlighter = await getHighlighter();
+  const resolvedLanguage = await ensureLanguage(language);
+  return highlighter.codeToTokens(code, {
+    lang: resolvedLanguage,
+    themes: { light: "teal-light", dark: "teal-dark" },
+  });
 }

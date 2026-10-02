@@ -15,7 +15,7 @@ import type {
 } from "../../types";
 import { useUIStore } from "../../stores/ui-store";
 import { useChatModelsQuery, useBindChatModel } from "../../hooks/use-chat-queries";
-import { getPurposeBinding } from "../settings/providers/provider-registry";
+import { getPurposeBinding, type PurposeKind } from "../settings/providers/provider-registry";
 import {
   entriesForCategory,
   entryLabel,
@@ -113,6 +113,13 @@ export interface ChatShellProps {
   }) => void;
   embedded?: boolean;
   projectHeader?: React.ReactNode;
+  /**
+   * 会话类型（普通聊天 / 项目）：决定输入框模型选择器绑定哪个用途槽位。
+   * 后端运行时按 AgentContext 分别读取 chat.chatModelConfigs 与
+   * project.chatModelConfigs——项目对话若仍写 chatChat，切换只影响普通
+   * 聊天、对本会话不生效。缺省 "chat"。
+   */
+  conversationKind?: "chat" | "project";
   /** 领域化空态文案（UI-25 A06）：普通聊天 / 项目各自传入，不传则用组件缺省。 */
   emptyState?: ChatEmptyStateContent;
   /**
@@ -172,6 +179,7 @@ export function ChatShell({
   onRunPython,
   embedded = false,
   projectHeader,
+  conversationKind = "chat",
   emptyState,
   categoryPicker,
   composerPlaceholder,
@@ -205,12 +213,16 @@ export function ChatShell({
   const modelsQuery = useChatModelsQuery();
   const bindChatModel = useBindChatModel();
   const settings = modelsQuery.data;
-  // 聊天输入框可选模型与设置页「聊天主模型」共用统一数据源：模型库 text 分类条目。
+  // 聊天输入框可选模型与设置页模型库共用统一数据源：模型库 text 分类条目。
   const chatModelEntries = React.useMemo(
     () => entriesForCategory(settings?.modelLibrary ?? [], "text", { enabledOnly: true }),
     [settings],
   );
-  const chatBinding = settings ? getPurposeBinding(settings, "chatChat") : null;
+  // 模型选择器绑定的用途槽位必须与本会话运行时读取的槽位一致（普通聊天
+  // → chatChat，项目 → projectChat），否则切换写错槽位、对当前会话不生效。
+  const isPlainChat = conversationKind === "chat";
+  const modelPurposeKind: PurposeKind = isPlainChat ? "chatChat" : "projectChat";
+  const chatBinding = settings ? getPurposeBinding(settings, modelPurposeKind) : null;
   const activeChatEntry = findEnabledEntryForConfig(settings?.modelLibrary ?? [], chatBinding);
   const activeChatLabel =
     (activeChatEntry ? entryLabel(activeChatEntry) : "") ||
@@ -389,9 +401,10 @@ export function ChatShell({
           models={chatModelEntries}
           activeEntryId={activeChatEntry?.id}
           activeLabel={activeChatLabel}
+          modelMenuLabel={isPlainChat ? "聊天模型" : "项目模型"}
           onSelectModel={(entryId) => {
             const entry = chatModelEntries.find((item) => item.id === entryId);
-            if (entry) bindChatModel.mutate(entry);
+            if (entry) bindChatModel.mutate({ kind: modelPurposeKind, entry });
           }}
           onConfigureModel={handleConfigureModel}
         />

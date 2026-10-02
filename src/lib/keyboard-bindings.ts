@@ -3,8 +3,9 @@
  *
  * 从 use-chat-shortcuts 抽出并扩展，node 环境可测：
  *   - isMacPlatform：Mod 键的平台映射（macOS=Cmd，其余=Ctrl）；
- *   - isImeKeyEvent：输入法组合期判定（isComposing / keyCode 229 / Process），
- *     组合期一律不触发全局快捷键，避免中文 IME 误触；
+ *   - isImeComposing：输入法组合期判定（isComposing / keyCode 229 / Process，
+ *     含 React 合成事件的 nativeEvent 回退），组合期一律不触发全局快捷键，
+ *     避免中文 IME 误触；
  *   - matchesBinding：事件与绑定（key/mod/shift/alt）的匹配；
  *   - shouldSkipBinding：统一裁决是否让路——
  *       ① IME 组合期全跳过；
@@ -31,6 +32,16 @@ export interface KeyEventLike {
   keyCode?: number;
   which?: number;
   target?: unknown;
+  /**
+   * React 合成事件透传的原生事件（组件 onKeyDown 路径）——React 的
+   * KeyboardEvent 类型不声明顶层 isComposing，只能经它读取；window 原生
+   * 监听路径的事件无此字段。
+   */
+  nativeEvent?: {
+    isComposing?: boolean;
+    keyCode?: number;
+    which?: number;
+  };
 }
 
 /** 事件目标的最小结构形状（Element 子集）。 */
@@ -90,10 +101,18 @@ export function isMacPlatform(
   return /\b(Mac OS X|Macintosh|iPhone|iPad)\b/.test(nav.userAgent || "");
 }
 
-/** 输入法组合期：此时任何全局快捷键都不应触发（含 Mod 组合）。 */
-export function isImeKeyEvent(event: KeyEventLike): boolean {
+/**
+ * 输入法组合期判定（唯一实现，B-25 收敛）：组件 onKeyDown 的 React 合成事件
+ * 与 window 原生监听事件都可传入。macOS 中文输入法在确认候选时，部分场景下
+ * 会把 Enter 暴露成 keyCode 229 / Process。组合期任何全局快捷键都不应触发
+ * （含 Mod 组合）。
+ */
+export function isImeComposing(event: KeyEventLike): boolean {
   return Boolean(
-    event.isComposing ||
+    event.nativeEvent?.isComposing ||
+      event.nativeEvent?.keyCode === 229 ||
+      event.nativeEvent?.which === 229 ||
+      event.isComposing ||
       event.keyCode === 229 ||
       event.which === 229 ||
       event.key === "Process",
@@ -150,7 +169,7 @@ export function shouldSkipBinding(
   mac: boolean,
   isRadixModalOpen: () => boolean = () => false,
 ): boolean {
-  if (isImeKeyEvent(event)) return true;
+  if (isImeComposing(event)) return true;
   const target = event.target as EventTargetLike | null | undefined;
   // 终端内（非 Mac）：Mod=Ctrl，Ctrl+K/L/N/J 等是 shell 控制码，全部放行；
   // Mac 的 Cmd 组合不会进入终端，应用级快捷键照常触发。

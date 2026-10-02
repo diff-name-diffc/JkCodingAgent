@@ -17,6 +17,14 @@ use crate::agent::rig_ext::tools::spec::ToolSpec;
 /// 校验错误摘要最多列出的条数（对齐旧实现的同名常量）。
 const MAX_SUMMARIZED_ERRORS: usize = 8;
 
+// 回归守护（仅测试）：统计 `prepare_arguments` 的执行次数。整套调度链
+// （enqueue 准入 → 台账 → before_call → execute）每调用只允许执行一次。
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PREPARE_ARGUMENTS_CALLS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// 参数准备失败：模型可见文本（已带「错误：」前缀）+ 稳定错误码。
 #[derive(Debug)]
 pub(crate) struct ArgumentError {
@@ -24,15 +32,19 @@ pub(crate) struct ArgumentError {
     pub code: &'static str,
 }
 
-/// 参数准备：schema 默认值注入 + Draft 2020-12 校验（对齐旧
-/// `ToolRegistry::prepare_input`，但不注入到执行体——工具自身按
-/// `unwrap_or(default)` 处理缺省；此处仅用于校验与台账的 effective 参数）。
+/// 参数准备：schema 默认值注入 + Draft 2020-12 校验。每调用只执行一次：
+/// 调度器路径在 enqueue 准入时产出 effective 值，随 `ToolInvocationContext`
+/// 流入 worker，台账、before_call 门禁与 execute 共用；裸路径（顺序批/无
+/// 上下文）由策略层回退计算。工具闭包收到的即 effective 参数，闭包内的
+/// `unwrap_or(default)` 只在 schema 未声明 default 时兜底。
 pub(crate) fn prepare_arguments(
     tool_name: &str,
     schema: &Value,
     args: &Value,
 ) -> Result<Value, ArgumentError> {
     let mut effective = args.clone();
+    #[cfg(test)]
+    PREPARE_ARGUMENTS_CALLS.with(|count| count.set(count.get() + 1));
     apply_schema_defaults(schema, &mut effective);
 
     let validator = match jsonschema::draft202012::new(schema) {
@@ -213,7 +225,6 @@ pub(crate) async fn start_tool_run(
                         message_id: None,
                         error_kind: Some("internal".to_string()),
                         error_message: Some(format!("标记工具运行启动失败：{error}")),
-                        action_kind: None,
                         metadata_json: None,
                     },
                 )
@@ -244,7 +255,6 @@ pub(crate) struct RigToolRunFinish<'a> {
     pub message_id: Option<&'a str>,
     pub error_kind: Option<&'a str>,
     pub error_message: Option<&'a str>,
-    pub action_kind: Option<&'a str>,
     pub metadata_json: Option<&'a str>,
 }
 
@@ -263,7 +273,6 @@ pub(crate) async fn finish_tool_run(
                 message_id: update.message_id.map(str::to_string),
                 error_kind: update.error_kind.map(str::to_string),
                 error_message: update.error_message.map(str::to_string),
-                action_kind: update.action_kind.map(str::to_string),
                 metadata_json: update.metadata_json.map(str::to_string),
             },
         )

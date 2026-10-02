@@ -16,7 +16,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { invoke } from "@tauri-apps/api/core";
 import type { GraphNodeStatus } from "../../types";
-import { useToast } from "../Toast";
+import { toast } from "../Toast";
 import { useWorkspaceStore } from "../../stores/workspace-store";
 import { useGraphPlan } from "./graph-store";
 import { computeGraphLayout, type GraphNodePosition } from "./graph-layout";
@@ -74,7 +74,6 @@ function GraphPanelInner({
   onExpandMainArea,
   mainAreaExpanded = false,
 }: GraphPanelProps) {
-  const { showToast } = useToast();
   const { fitView } = useReactFlow();
   const snapshot = useGraphPlan(planId);
   const plan = snapshot.plan;
@@ -262,14 +261,14 @@ function GraphPanelInner({
       setActionPending(true);
       try {
         await invoke("graph_run_start", { planId, mode });
-        showToast(mode === "resume" ? "已从断点继续执行" : "执行图已启动");
+        toast.success(mode === "resume" ? "已从断点继续执行" : "执行图已启动");
       } catch (err) {
-        showToast(`启动执行图失败：${err instanceof Error ? err.message : String(err)}`, "warning");
+        toast.warning(`启动执行图失败：${err instanceof Error ? err.message : String(err)}`);
       } finally {
         setActionPending(false);
       }
     },
-    [actionPending, planId, showToast],
+    [actionPending, planId],
   );
 
   const handleResumeCheckpoint = useCallback(async () => {
@@ -280,16 +279,16 @@ function GraphPanelInner({
       // 不能当成成功提示，否则会掩盖恢复未生效的事实。
       const resumed = await invoke<boolean>("graph_run_resume", { planId });
       if (resumed) {
-        showToast("已恢复执行");
+        toast.success("已恢复执行");
       } else {
-        showToast("当前没有可恢复的暂停运行", "warning");
+        toast.warning("当前没有可恢复的暂停运行");
       }
     } catch (err) {
-      showToast(`恢复执行失败：${err instanceof Error ? err.message : String(err)}`, "warning");
+      toast.warning(`恢复执行失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setActionPending(false);
     }
-  }, [actionPending, planId, showToast]);
+  }, [actionPending, planId]);
 
   const handleCancel = useCallback(async () => {
     if (actionPending) return;
@@ -297,11 +296,29 @@ function GraphPanelInner({
     try {
       await invoke<boolean>("graph_run_cancel", { planId });
     } catch (err) {
-      showToast(`停止执行图失败：${err instanceof Error ? err.message : String(err)}`, "warning");
+      toast.warning(`停止执行图失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setActionPending(false);
     }
-  }, [actionPending, planId, showToast]);
+  }, [actionPending, planId]);
+
+  // 重新验收最近一次已收尾的运行：最长一次模型调用（后端 90s 超时），用独立
+  // pending 态不占用 actionPending——验收期间不应禁掉「完整重跑」等计划操作。
+  const [reverifyPending, setReverifyPending] = useState(false);
+  const handleReverify = useCallback(async () => {
+    const runId = plan?.runs?.[0]?.id;
+    if (!runId || reverifyPending) return;
+    setReverifyPending(true);
+    try {
+      await invoke("graph_run_reverify", { runId });
+      // 结论随 graph-plan-updated 事件刷新（回执也会写回聊天流），这里只提示完成。
+      toast.success("重新验收完成");
+    } catch (err) {
+      toast.warning(`重新验收失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setReverifyPending(false);
+    }
+  }, [plan, reverifyPending]);
 
   const selectedNodeExists = Boolean(
     selectedNodeId && definition?.nodes.some((node) => node.id === selectedNodeId),
@@ -319,6 +336,8 @@ function GraphPanelInner({
         onStart={(mode) => void handleStart(mode)}
         onResumeCheckpoint={() => void handleResumeCheckpoint()}
         onCancel={() => void handleCancel()}
+        onReverify={() => void handleReverify()}
+        reverifyPending={reverifyPending}
         onClose={onClose}
         onExpandMainArea={onExpandMainArea}
         mainAreaExpanded={mainAreaExpanded}

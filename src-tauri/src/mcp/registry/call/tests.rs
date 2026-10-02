@@ -1,4 +1,5 @@
 use super::*;
+use rmcp::model::CallToolResponse;
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use std::sync::Arc;
@@ -14,10 +15,10 @@ impl ServerHandler for BlockingServer {
         &self,
         _: CallToolRequestParams,
         _: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         self.started.notify_one();
         self.release.notified().await;
-        Ok(CallToolResult::success(vec![]))
+        Ok(CallToolResult::success(vec![]).into())
     }
 }
 
@@ -28,10 +29,8 @@ impl ServerHandler for ImmediateServer {
         &self,
         _: CallToolRequestParams,
         _: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
-            "ok",
-        )]))
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text("ok")]).into())
     }
 }
 

@@ -62,8 +62,8 @@ pub struct PurposeModelSpecs {
 
 /// 从 `AhaSettingsV2` 解析三个用途槽位，规则对齐 `apply_settings_v2`：
 /// - active 条目 = 列表中 `active` 者，缺省取第一个；
-/// - 聊天槽位：url/apiKey/model 为空回退 `config`；容量
-///   `chat.max_tokens.or(config.max_tokens)`；temperature 取 `config`；
+/// - 聊天槽位：url/apiKey/model 为空回退 `config`；容量取槽位值
+///   `chat.max_tokens`（库条目为唯一权威）；temperature 取 `config`；
 /// - 视觉槽位：模型名为空视为未配置；url/apiKey 为空回退**聊天槽位解析结果**
 ///   （视觉模型可能部署在独立网关，只换模型名会打错网关）；
 /// - 摘要槽位：model 为空回退 `DEFAULT_SUMMARY_MODEL`，url/apiKey 为空回退
@@ -114,8 +114,8 @@ pub fn resolve_purpose_specs(
             } else {
                 entry.model.clone()
             },
-            // 容量以槽位（库条目回填）为权威；config 仅作 env 开发路径兜底。
-            max_tokens: entry.max_tokens.or(config.max_tokens).map(u64::from),
+            // 容量以槽位（库条目回填）为唯一权威。
+            max_tokens: entry.max_tokens.map(u64::from),
             context_window: entry.context_window.map(u64::from),
             temperature,
             enable_thinking: true,
@@ -125,15 +125,14 @@ pub fn resolve_purpose_specs(
             api_key: config.api_key.clone(),
             api_base: config.api_base.clone(),
             model: config.model.clone(),
-            max_tokens: config.max_tokens.map(u64::from),
+            max_tokens: None,
             context_window: None,
             temperature,
             enable_thinking: true,
         },
     };
 
-    // 视觉槽位：设置条目优先；无有效条目时回退 env 兜底（`VISION_MODEL_NAME`，
-    // 只有模型名、沿用聊天槽位凭据）。
+    // 视觉槽位：设置条目优先；无有效条目视为未配置（env 兜底已删除）。
     let vision = active_vision
         .filter(|v| !v.model.trim().is_empty())
         .map(|v| PurposeModelSpec {
@@ -148,22 +147,10 @@ pub fn resolve_purpose_specs(
                 v.url.trim().to_string()
             },
             model: v.model.trim().to_string(),
-            max_tokens: v.max_tokens.or(config.max_tokens).map(u64::from),
+            max_tokens: v.max_tokens.map(u64::from),
             context_window: v.context_window.map(u64::from),
             temperature,
             enable_thinking: true,
-        })
-        .or_else(|| {
-            let env_model = config.vision_model.trim();
-            (!env_model.is_empty()).then(|| PurposeModelSpec {
-                api_key: chat.api_key.clone(),
-                api_base: chat.api_base.clone(),
-                model: env_model.to_string(),
-                max_tokens: chat.max_tokens,
-                context_window: chat.context_window,
-                temperature,
-                enable_thinking: true,
-            })
         });
 
     let summary = PurposeModelSpec {
@@ -180,10 +167,7 @@ pub fn resolve_purpose_specs(
             .filter(|url| !url.is_empty())
             .unwrap_or_else(|| chat.api_base.clone()),
         // 容量无条件覆盖：None=未配置也是有效语义，库条目清空容量后不得残留旧值。
-        max_tokens: active_summary
-            .and_then(|s| s.max_tokens)
-            .or(config.max_tokens)
-            .map(u64::from),
+        max_tokens: active_summary.and_then(|s| s.max_tokens).map(u64::from),
         context_window: active_summary.and_then(|s| s.context_window).map(u64::from),
         temperature,
         enable_thinking: true,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { RefreshCw } from "lucide-react";
-import { isImeComposing } from "../../utils";
+import { isImeComposing } from "../../lib/keyboard-bindings";
 
 export interface BrowserAddressBarProps {
   /** 当前页面 URL（status.url，未连接时为空串）。 */

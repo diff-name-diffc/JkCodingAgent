@@ -20,49 +20,29 @@ static DEBUG_LOG_SENDER: OnceLock<Sender<DebugLogEntry>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(crate) struct ContextDebugLogger {
-    enabled: bool,
     project_root: PathBuf,
 }
-
-#[derive(Debug, Clone)]
-pub(crate) struct DebugSection {
-    title: String,
-    body: String,
-}
-
-impl DebugSection {}
 
 /// 单条待写入日志，经通道移交给后台写入线程。
 struct DebugLogEntry {
     project_root: PathBuf,
     event: String,
     metadata: Vec<(String, String)>,
-    sections: Vec<DebugSection>,
 }
 
 impl ContextDebugLogger {
-    pub(crate) fn new(enabled: bool, project_root: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(project_root: impl Into<PathBuf>) -> Self {
         Self {
-            enabled,
             project_root: project_root.into(),
         }
     }
 
-    pub(crate) fn log(
-        &self,
-        event: &str,
-        metadata: Vec<(String, String)>,
-        sections: Vec<DebugSection>,
-    ) {
-        if !self.enabled {
-            return;
-        }
-
+    /// 是否启用由调用方守卫（单一门控点），本函数假定已达写入条件。
+    pub(crate) fn log(&self, event: &str, metadata: Vec<(String, String)>) {
         let entry = DebugLogEntry {
             project_root: self.project_root.clone(),
             event: event.to_string(),
             metadata,
-            sections,
         };
 
         // 正常路径仅入队（不依赖 tokio runtime，任何线程均可调用）；
@@ -187,14 +167,6 @@ fn write_entry_body(file: &mut File, entry: &DebugLogEntry) -> Result<()> {
         writeln!(file, "元数据：")?;
         for (key, value) in &entry.metadata {
             writeln!(file, "- {key}：{value}")?;
-        }
-    }
-
-    for section in &entry.sections {
-        writeln!(file, "\n【{}】", section.title)?;
-        writeln!(file, "{}", section.body)?;
-        if !section.body.ends_with('\n') {
-            writeln!(file)?;
         }
     }
 

@@ -8,11 +8,10 @@ use agent_client_protocol::schema::v1::{
 use serde_json::json;
 
 use super::mapping::{
-    decide_permission, redact, Mapper, MapperAction, PermissionDecision, MAX_NODE_OUTPUT_BYTES,
+    decide_static, redact, Mapper, MapperAction, PermissionDecision, MAX_NODE_OUTPUT_BYTES,
 };
 use super::settle_stop_reason;
 use super::NodeExecOutcome;
-use super::PermissionMode;
 use super::StopReason;
 use crate::agent::graph::types::{AgentActivity, GraphRunEvent};
 
@@ -233,77 +232,158 @@ fn usage_maps_to_context_usage_with_frontend_keys() {
 }
 
 #[test]
-fn coding_permission_prefers_allow_once() {
+fn enter_plan_mode_is_always_allowed() {
+    // 子智能体自发进入计划模式是允许的工作方式：allow_once 优先。
     let options = vec![
-        PermissionOption::new("always", "总是允许", PermissionOptionKind::AllowAlways),
-        PermissionOption::new("once", "允许一次", PermissionOptionKind::AllowOnce),
+        PermissionOption::new(
+            "always",
+            "Yes, always plan",
+            PermissionOptionKind::AllowAlways,
+        ),
+        PermissionOption::new(
+            "once",
+            "Yes, enter plan mode",
+            PermissionOptionKind::AllowOnce,
+        ),
+        PermissionOption::new(
+            "reject",
+            "No, start implementing now",
+            PermissionOptionKind::RejectOnce,
+        ),
     ];
-    let decision = decide_permission(PermissionMode::AcceptEdits, &options, false);
+    let decision = decide_static("EnterPlanMode", &options, false).expect("快路径决策");
     assert!(
         matches!(decision, PermissionDecision::Select(id) if id.0.as_ref() == "once"),
-        "不放大为 allow_always，优先 allow_once"
+        "EnterPlanMode 放行且不放大为 allow_always"
     );
-}
-
-#[test]
-fn coding_permission_cancels_when_only_allow_always() {
-    // 无 allow_once 时绝不回退到选项列表第一项（可能是 allow_always）：
-    // 自动应答的作用域仅限单次调用，宁可取消也不放大为常驻授权。
-    let options = vec![PermissionOption::new(
+    // 无一次性允许选项时取消，不回退到 allow_always。
+    let allow_always_only = vec![PermissionOption::new(
         "always",
-        "总是允许",
+        "Yes, always plan",
         PermissionOptionKind::AllowAlways,
     )];
     assert_eq!(
-        decide_permission(PermissionMode::AcceptEdits, &options, false),
-        PermissionDecision::Cancel
+        decide_static("EnterPlanMode", &allow_always_only, false),
+        Some(PermissionDecision::Cancel)
     );
 }
 
 #[test]
-fn out_of_workspace_permission_is_rejected_in_both_modes() {
-    // 路径越界：两种模式一律 reject_once，无 reject_once 则取消。
+fn out_of_workspace_permission_is_rejected_before_review() {
+    // 路径越界是硬边界：先于审查 AI 静态拒绝；无 reject_once 则取消。
     let options = vec![
         PermissionOption::new("once", "允许一次", PermissionOptionKind::AllowOnce),
         PermissionOption::new("reject", "拒绝一次", PermissionOptionKind::RejectOnce),
     ];
-    for mode in [PermissionMode::AcceptEdits, PermissionMode::Plan] {
-        assert!(
-            matches!(decide_permission(mode, &options, true), PermissionDecision::Select(id) if id.0.as_ref() == "reject"),
-            "越界路径在 {mode:?} 下必须拒绝"
-        );
-    }
+    let decision = decide_static("Edit", &options, true).expect("越界走静态快路径，不进审查");
+    assert!(
+        matches!(decision, PermissionDecision::Select(id) if id.0.as_ref() == "reject"),
+        "越界路径必须拒绝"
+    );
     let allow_only = vec![PermissionOption::new(
         "once",
         "允许一次",
         PermissionOptionKind::AllowOnce,
     )];
     assert_eq!(
-        decide_permission(PermissionMode::AcceptEdits, &allow_only, true),
-        PermissionDecision::Cancel
+        decide_static("Edit", &allow_only, true),
+        Some(PermissionDecision::Cancel)
     );
 }
 
 #[test]
-fn read_only_permission_selects_reject_once_or_cancels() {
-    let options = vec![
-        PermissionOption::new("allow", "允许一次", PermissionOptionKind::AllowOnce),
-        PermissionOption::new("reject", "拒绝一次", PermissionOptionKind::RejectOnce),
-    ];
-    let decision = decide_permission(PermissionMode::Plan, &options, false);
-    assert!(matches!(decision, PermissionDecision::Select(id) if id.0.as_ref() == "reject"));
-    let allow_only = vec![PermissionOption::new(
-        "allow",
-        "允许一次",
-        PermissionOptionKind::AllowOnce,
-    )];
-    assert_eq!(
-        decide_permission(PermissionMode::Plan, &allow_only, false),
-        PermissionDecision::Cancel
+fn ordinary_requests_defer_to_review() {
+    // 常规工具请求（无论工具组）交给审查 AI 裁决：静态层返回 None。
+    for tool in ["Edit", "Write", "Bash", "WebFetch", "mcp__server__tool"] {
+        let options = vec![PermissionOption::new(
+            "once",
+            "允许一次",
+            PermissionOptionKind::AllowOnce,
+        )];
+        assert_eq!(
+            decide_static(tool, &options, false),
+            None,
+            "{tool} 应交给审查 AI"
+        );
+    }
+}
+
+/// claude-agent-acp 0.79.0 的 ExitPlanMode（"Ready to code?"）选项表。
+fn plan_approval_options() -> Vec<PermissionOption> {
+    vec![
+        PermissionOption::new(
+            "clear_auto",
+            "Yes, clear context (73% used) and use auto mode",
+            PermissionOptionKind::AllowAlways,
+        ),
+        PermissionOption::new(
+            "auto",
+            "Yes, and use auto mode",
+            PermissionOptionKind::AllowAlways,
+        ),
+        PermissionOption::new(
+            "accept_edits",
+            "Yes, and auto-accept edits",
+            PermissionOptionKind::AllowAlways,
+        ),
+        PermissionOption::new(
+            "manual",
+            "Yes, manually approve edits",
+            PermissionOptionKind::AllowOnce,
+        ),
+        PermissionOption::new(
+            "reject",
+            "No, keep planning",
+            PermissionOptionKind::RejectOnce,
+        ),
+    ]
+}
+
+#[test]
+fn plan_approval_prefers_elevated_option_and_skips_clear_context() {
+    let decision = decide_static("ExitPlanMode", &plan_approval_options(), false)
+        .expect("ExitPlanMode 走静态快路径");
+    // 0.79.0 的选项表没有 bypass 变体（elevated 档恒为 auto）：选任意
+    // allow_always 批准载体，目标级别由 client.rs 批准后 set_mode 保证。
+    assert!(
+        matches!(decision, PermissionDecision::Select(id) if id.0.as_ref() == "auto"),
+        "选中非 clear-context 的 elevated 批准选项"
     );
+
+    // 未来 adapter 提供 bypass 变体时优先选它（无需跟进 set_mode）。
+    let mut with_bypass = plan_approval_options();
+    with_bypass.insert(
+        0,
+        PermissionOption::new(
+            "bypass",
+            "Yes, and bypass permissions",
+            PermissionOptionKind::AllowAlways,
+        ),
+    );
+    let decision = decide_static("ExitPlanMode", &with_bypass, false).unwrap();
+    assert!(
+        matches!(decision, PermissionDecision::Select(id) if id.0.as_ref() == "bypass"),
+        "bypass 命名选项优先"
+    );
+
+    // 连 allow_always 升级项都没有时，退到「manually approve edits」（allow_once）。
+    let options: Vec<_> = plan_approval_options()
+        .into_iter()
+        .filter(|option| {
+            option.kind == PermissionOptionKind::AllowOnce
+                || option.kind == PermissionOptionKind::RejectOnce
+        })
+        .collect();
+    let decision = decide_static("ExitPlanMode", &options, false).unwrap();
+    assert!(
+        matches!(decision, PermissionDecision::Select(id) if id.0.as_ref() == "manual"),
+        "无升级选项时批准为逐次审批模式"
+    );
+
+    // 完全无可选项时取消。
     assert_eq!(
-        decide_permission(PermissionMode::Plan, &[], false),
-        PermissionDecision::Cancel
+        decide_static("ExitPlanMode", &[], false),
+        Some(PermissionDecision::Cancel)
     );
 }
 

@@ -14,8 +14,6 @@ pub struct DispatcherModelConfig {
     pub model: String,
     #[serde(default = "default_model_config_active")]
     pub active: bool,
-    #[serde(default)]
-    pub system_prompt: String,
     /// 模型库引用：非空时 url/api_key/model 运行期由库条目解析（读取时回填、
     /// 保存时剥离），消除「库条目更新、用途槽位保留旧凭据」的漂移。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -40,7 +38,6 @@ impl DispatcherModelConfig {
             api_key: self.api_key.trim().to_string(),
             model: self.model.trim().to_string(),
             active: self.active,
-            system_prompt: self.system_prompt.trim().to_string(),
             library_id: self.library_id.trim().to_string(),
             max_tokens: self.max_tokens,
             context_window: self.context_window,
@@ -95,8 +92,8 @@ fn resolve_model_configs_from_library(
         .collect()
 }
 
-/// 引用条目剥离解析出的凭据与容量：落库只保留 library_id + active +
-/// system_prompt（容量与凭据同规则，读取时由库条目回填，防止槽位漂移）。
+/// 引用条目剥离解析出的凭据与容量：落库只保留 library_id + active
+/// （容量与凭据同规则，读取时由库条目回填，防止槽位漂移）。
 fn strip_library_config_credentials(mut config: DispatcherModelConfig) -> DispatcherModelConfig {
     if !config.library_id.trim().is_empty() {
         config.url.clear();
@@ -139,6 +136,11 @@ pub struct AhaContextConfig {
     pub chat_model_configs: Vec<DispatcherModelConfig>,
     #[serde(default)]
     pub summary_model_configs: Vec<DispatcherModelConfig>,
+    /// 验收模型（项目上下文专用）：执行图 run 收尾验收评审的独立槽位；
+    /// 未配置时 verifier 回退摘要槽位。仅 project 落库存列，chat 侧恒空
+    /// （serde default 兜底历史数据）。
+    #[serde(default)]
+    pub verifier_model_configs: Vec<DispatcherModelConfig>,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
 }
@@ -329,10 +331,22 @@ impl Default for GraphExecutionConfig {
 }
 
 /// 命令安全审查 AI 的默认系统提示词（前后端共用同一文案）。
-pub const DEFAULT_REVIEW_SYSTEM_PROMPT: &str = "你是命令安全审查员。依据用户任务、执行者任务、当前意图、对话上下文、目标环境、本会话已执行命令和待执行命令，判断该命令是否可安全执行。\n\n判定原则：\n- 拒绝：不可逆或高危操作，如删除/覆盖系统文件或关键数据（rm -rf 指向根目录或家目录、mkfs、dd 覆写块设备、清空数据库/表）、关机重启、提权后执行破坏性操作、fork 炸弹/资源耗尽、关闭防火墙或清空路由、向外部批量外传敏感数据。\n- 允许：常规只读巡检、查询状态、在用户明确指定目录内的受控写操作，以及与当前任务直接相关、影响可控的操作。\n- 进程管理：清理本会话「已执行命令」中本任务自己派生的进程（终止自己启动的开发/测试/后台进程）属于正常收尾，允许；终止与本轮任务无关的进程（尤其是系统进程、归属不明的进程）一律拒绝——若任务确实需要，输出 DENY 并在原因中标注「需用户确认」，交由用户决定。\n- 必须结合「任务」「意图」「对话上下文」和「已执行命令」综合判断：同一命令在不同上下文风险不同（如 rm 清理本任务产生的临时目录可允许，针对根目录或用户家目录则拒绝；kill 本会话刚启动的进程可允许，kill 无关进程则拒绝）。\n- 避免过度拒绝：当任务、意图或对话上下文能解释命令目的且影响范围可控时应放行；不要仅因对话简短、表述口语化或命令不常见而拒绝。只有确实无法确认影响范围时才倾向拒绝。\n\n输出格式：仅一行。`ALLOW` 表示允许；`DENY: <简短中文原因>` 表示拒绝；任务确实需要该危险操作时输出 `DENY: 「需用户确认」<原因>`。不要输出任何多余内容。";
+///
+/// 「需用户确认」标记必须与 `ssh_review::USER_CONFIRM_MARKER` 逐字一致：
+/// 审查模型按本提示词输出 `DENY: 「需用户确认」…`，`with_confirm_guidance`
+/// 按 `reason.contains(USER_CONFIRM_MARKER)` 命中才附加确认指引——故此处
+/// 由常量拼接构造，任一侧改词都不会静默破坏确认链路。
+pub static DEFAULT_REVIEW_SYSTEM_PROMPT: std::sync::LazyLock<String> = std::sync::LazyLock::new(
+    || {
+        format!(
+        "你是命令安全审查员。依据用户任务、执行者任务、当前意图、对话上下文、目标环境、本会话已执行命令和待执行命令，判断该命令是否可安全执行。\n\n判定原则：\n- 拒绝：不可逆或高危操作，如删除/覆盖系统文件或关键数据（rm -rf 指向根目录或家目录、mkfs、dd 覆写块设备、清空数据库/表）、关机重启、提权后执行破坏性操作、fork 炸弹/资源耗尽、关闭防火墙或清空路由、向外部批量外传敏感数据。\n- 允许：常规只读巡检、查询状态、在用户明确指定目录内的受控写操作，以及与当前任务直接相关、影响可控的操作。\n- 进程管理：清理本会话「已执行命令」中本任务自己派生的进程（终止自己启动的开发/测试/后台进程）属于正常收尾，允许；终止与本轮任务无关的进程（尤其是系统进程、归属不明的进程）一律拒绝——若任务确实需要，输出 DENY 并在原因中标注「{USER_CONFIRM_MARKER}」，交由用户决定。\n- 必须结合「任务」「意图」「对话上下文」和「已执行命令」综合判断：同一命令在不同上下文风险不同（如 rm 清理本任务产生的临时目录可允许，针对根目录或用户家目录则拒绝；kill 本会话刚启动的进程可允许，kill 无关进程则拒绝）。\n- 避免过度拒绝：当任务、意图或对话上下文能解释命令目的且影响范围可控时应放行；不要仅因对话简短、表述口语化或命令不常见而拒绝。只有确实无法确认影响范围时才倾向拒绝。\n\n输出格式：仅一行。`ALLOW` 表示允许；`DENY: <简短中文原因>` 表示拒绝；任务确实需要该危险操作时输出 `DENY: 「{USER_CONFIRM_MARKER}」<原因>`。不要输出任何多余内容。",
+        USER_CONFIRM_MARKER = crate::agent::ssh_review::USER_CONFIRM_MARKER,
+    )
+    },
+);
 
 fn default_review_system_prompt() -> String {
-    DEFAULT_REVIEW_SYSTEM_PROMPT.to_string()
+    DEFAULT_REVIEW_SYSTEM_PROMPT.clone()
 }
 
 /// 命令安全审查 AI 配置：单个 OpenAI 兼容模型 + 可编辑系统提示词。
@@ -366,19 +380,6 @@ impl DispatcherDb {
         normalize_model_configs(
             serde_json::from_str::<Vec<DispatcherModelConfig>>(raw).unwrap_or_default(),
         )
-    }
-
-    fn without_model_system_prompts(
-        configs: &[DispatcherModelConfig],
-    ) -> Vec<DispatcherModelConfig> {
-        configs
-            .iter()
-            .cloned()
-            .map(|mut config| {
-                config.system_prompt.clear();
-                config
-            })
-            .collect()
     }
 
     fn serialize_json(configs: &[DispatcherModelConfig]) -> String {
@@ -416,7 +417,8 @@ impl DispatcherDb {
             review_system_prompt,
             model_library_json,
             graph_execution_config_json,
-            theme
+            theme,
+            project_verifier_model_configs_json
         FROM dispatcher_settings WHERE id = 'default'";
 
         match conn.query_row(sql, [], |row| {
@@ -438,6 +440,9 @@ impl DispatcherDb {
                     summary_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(7)?,
                     ),
+                    verifier_model_configs: Self::parse_model_configs_json(
+                        &row.get::<_, String>(18)?,
+                    ),
                     allowed_tools: {
                         let raw: String = row.get(8)?;
                         serde_json::from_str(&raw).unwrap_or_default()
@@ -448,6 +453,8 @@ impl DispatcherDb {
                     summary_model_configs: Self::parse_model_configs_json(
                         &row.get::<_, String>(10)?,
                     ),
+                    // chat 上下文无验收槽位存列：serde default 兜底为空。
+                    verifier_model_configs: Vec::new(),
                     allowed_tools: {
                         let raw: String = row.get(11)?;
                         serde_json::from_str(&raw).unwrap_or_default()
@@ -516,6 +523,10 @@ impl DispatcherDb {
                     settings.project.summary_model_configs,
                     &library,
                 );
+                settings.project.verifier_model_configs = resolve_model_configs_from_library(
+                    settings.project.verifier_model_configs,
+                    &library,
+                );
                 settings.chat.chat_model_configs =
                     resolve_model_configs_from_library(settings.chat.chat_model_configs, &library);
                 settings.chat.summary_model_configs = resolve_model_configs_from_library(
@@ -535,7 +546,6 @@ impl DispatcherDb {
 
         // 保存前统一规范化，确保与读取端（get_settings_v2）语义对称：
         // - 全部模型配置列表经 normalize_model_configs（trim、过滤空条目、active 唯一化）；
-        // - 聊天对话模型配置按既有约定清除 system_prompt 后再规范化；
         // - 审查模型 trim，空提示词回落默认文案（与读取端一致）；
         // - 主题偏好收敛为 system/light/dark，非法值回落 system。
         // 落盘的就是规范化结果，函数直接返回它，写后读回不再漂移。
@@ -562,15 +572,18 @@ impl DispatcherDb {
             summary_model_configs: normalize_model_configs(
                 settings.project.summary_model_configs.clone(),
             ),
+            verifier_model_configs: normalize_model_configs(
+                settings.project.verifier_model_configs.clone(),
+            ),
             allowed_tools: settings.project.allowed_tools.clone(),
         };
         let chat = AhaContextConfig {
-            chat_model_configs: normalize_model_configs(Self::without_model_system_prompts(
-                &settings.chat.chat_model_configs,
-            )),
+            chat_model_configs: normalize_model_configs(settings.chat.chat_model_configs.clone()),
             summary_model_configs: normalize_model_configs(
                 settings.chat.summary_model_configs.clone(),
             ),
+            // chat 上下文无验收槽位：显式清空，保证写后读回不漂移。
+            verifier_model_configs: Vec::new(),
             allowed_tools: settings.chat.allowed_tools.clone(),
         };
         let review = SshReviewConfig {
@@ -596,6 +609,7 @@ impl DispatcherDb {
 
         let project_chat = Self::stored_json(&project.chat_model_configs);
         let project_summary = Self::stored_json(&project.summary_model_configs);
+        let project_verifier = Self::stored_json(&project.verifier_model_configs);
         let project_tools =
             serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
 
@@ -635,9 +649,10 @@ impl DispatcherDb {
             review_system_prompt,
             model_library_json,
             graph_execution_config_json,
-            theme
+            theme,
+            project_verifier_model_configs_json
         ) VALUES (
-            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
         )
         ON CONFLICT(id) DO UPDATE SET
             shared_vision_model_configs_json = ?1,
@@ -657,7 +672,8 @@ impl DispatcherDb {
             review_system_prompt = ?15,
             model_library_json = ?16,
             graph_execution_config_json = ?17,
-            theme = ?18";
+            theme = ?18,
+            project_verifier_model_configs_json = ?19";
 
         conn.execute(
             sql,
@@ -680,6 +696,7 @@ impl DispatcherDb {
                 &model_library,
                 &graph_config,
                 &theme,
+                &project_verifier,
             ],
         )
         .context("save dispatcher settings")?;
@@ -846,5 +863,58 @@ mod tests {
         let loaded = db.get_settings_v2().unwrap();
         assert_eq!(loaded.model_library[0].max_tokens, None);
         assert_eq!(loaded.model_library[0].context_window, None);
+    }
+
+    #[test]
+    fn verifier_slot_strips_on_store_and_resolves_on_load() {
+        let db = test_db();
+        let mut settings = AhaSettingsV2 {
+            model_library: vec![library_entry("e1", true)],
+            ..Default::default()
+        };
+        settings.project.verifier_model_configs = vec![DispatcherModelConfig {
+            library_id: "e1".to_string(),
+            active: true,
+            ..Default::default()
+        }];
+        db.save_settings_v2(&settings).unwrap();
+
+        let conn = db.conn().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT project_verifier_model_configs_json FROM dispatcher_settings WHERE id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(raw.contains("\"libraryId\":\"e1\""));
+        assert!(!raw.contains("sk-lib"), "落库必须剥离库引用凭据：{raw}");
+        drop(conn);
+
+        let loaded = db.get_settings_v2().unwrap();
+        let verifier = &loaded.project.verifier_model_configs[0];
+        assert_eq!(verifier.api_key, "sk-lib");
+        assert_eq!(verifier.model, "lib-model");
+    }
+
+    #[test]
+    fn chat_context_verifier_slot_stays_empty_after_roundtrip() {
+        // chat 上下文无验收槽位存列：保存时显式清空，防止写后读回漂移。
+        let db = test_db();
+        let mut settings = AhaSettingsV2::default();
+        settings.chat.verifier_model_configs = vec![DispatcherModelConfig {
+            url: "http://u".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            ..Default::default()
+        }];
+        let saved = db.save_settings_v2(&settings).unwrap();
+        assert!(saved.chat.verifier_model_configs.is_empty());
+        assert!(db
+            .get_settings_v2()
+            .unwrap()
+            .chat
+            .verifier_model_configs
+            .is_empty());
     }
 }

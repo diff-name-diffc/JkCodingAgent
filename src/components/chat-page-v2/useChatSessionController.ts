@@ -16,7 +16,7 @@ import {
   cleanupDispatcherSession,
   getDispatcherSessionRunning,
 } from "../dispatcherSessionStore";
-import { useToast } from "../Toast";
+import { toast } from "../Toast";
 import { resolveActiveChatCategory } from "./active-chat-category";
 
 interface UseChatSessionControllerOptions {
@@ -37,7 +37,6 @@ export function useChatSessionController({
   onSessionChange,
 }: UseChatSessionControllerOptions) {
   const enabled = isPlainChat && !embedded;
-  const { showToast } = useToast();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useChatSessionUpdates(enabled);
@@ -92,7 +91,7 @@ export function useChatSessionController({
       // 运行中的会话前置拦截（后端 session_delete 同口径 fail-closed）：
       // 先给可读提示，避免用户走完确认对话框才收到命令层报错。
       if (getDispatcherSessionRunning(sessionId)) {
-        showToast("该会话正在运行中，请先停止生成后再删除。", "warning");
+        toast.warning("该会话正在运行中，请先停止生成后再删除。");
         return;
       }
       const confirmed = await confirm("确定永久删除这个会话吗？相关消息和文件也会一并删除。", {
@@ -110,7 +109,7 @@ export function useChatSessionController({
         }
       } catch (error) {
         console.error("删除聊天会话失败:", error);
-        showToast(`删除会话失败：${String(error)}`, "error");
+        toast.error(`删除会话失败：${String(error)}`);
       }
     },
     [
@@ -120,7 +119,6 @@ export function useChatSessionController({
       resetConversation,
       sessionsQuery.data,
       setActiveSessionId,
-      showToast,
     ],
   );
 

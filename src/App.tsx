@@ -3,7 +3,7 @@ import { open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import type { AhaSettingsV2, Project, ProjectDeleteResult } from "./types";
 import { WelcomePage } from "./components/WelcomePage";
-import { useToast } from "./components/Toast";
+import { toast } from "./components/Toast";
 import { cleanupDispatcherSession } from "./components/dispatcherSessionStore";
 import { ensureRunStateReconciliation } from "./components/dispatcher-chat/run-state-reconciliation";
 import { cleanupSubAgentEvents } from "./components/subAgentEventStore";
@@ -41,8 +41,6 @@ function persistProjects(projects: Project[], onError: (msg: string) => void) {
 }
 
 function App() {
-  const { showToast } = useToast();
-
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProject, setActiveProject] = useState<Project | null>(null);
   const [mountedProjectIds, setMountedProjectIds] = useState<string[]>([]);
@@ -97,13 +95,13 @@ function App() {
       : { id: crypto.randomUUID(), name, path, lastOpenedAt: Date.now() };
     setProjects((prev) => {
       const next = [project, ...prev.filter((p) => p.id !== project.id && p.path !== path)];
-      persistProjects(next, showToast);
+      persistProjects(next, toast.error);
       return next;
     });
     setActiveProject(project);
     mountProject(project.id);
     invoke("init_project_config", { projectPath: path }).catch((e: unknown) => {
-      showToast(`初始化项目配置失败：${String(e)}`, "warning");
+      toast.warning(`初始化项目配置失败：${String(e)}`);
     });
   }
 
@@ -111,13 +109,13 @@ function App() {
     const updated = { ...project, lastOpenedAt: Date.now() };
     setProjects((prev) => {
       const next = prev.map((p) => (p.id === project.id ? updated : p));
-      persistProjects(next, showToast);
+      persistProjects(next, toast.error);
       return next;
     });
     setActiveProject(updated);
     mountProject(updated.id);
     invoke("init_project_config", { projectPath: project.path }).catch((e: unknown) => {
-      showToast(`初始化项目配置失败：${String(e)}`, "warning");
+      toast.warning(`初始化项目配置失败：${String(e)}`);
     });
   }
 
@@ -164,7 +162,7 @@ function App() {
         cleanupGraphPlansForSession(sessionId);
       }
     } catch (e) {
-      showToast(`删除项目失败：${String(e)}`, "error");
+      toast.error(`删除项目失败：${String(e)}`);
       return;
     }
     setProjects((prev) => prev.filter((p) => p.id !== projectId));

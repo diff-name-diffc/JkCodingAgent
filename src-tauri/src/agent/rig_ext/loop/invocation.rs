@@ -1,5 +1,6 @@
 //! 单次调用的不可变身份；task-local 只用于 rig 回调边界。
 
+use serde_json::Value;
 use std::future::Future;
 use tokio::sync::watch;
 
@@ -11,6 +12,10 @@ pub(crate) struct ToolInvocationContext {
     pub tool_call_id: String,
     pub root_request_message_id: String,
     pub cancel_rx: watch::Receiver<bool>,
+    /// enqueue 准入产出的 effective 参数（schema 默认注入 + Draft 2020-12 已校验）。
+    /// 调度器路径在 enqueue 计算一次后随本结构流入 worker，`before_call`/`execute`
+    /// 直接消费、不再重算；裸路径（顺序批/无上下文）为 None，由策略层自行计算。
+    pub prepared_arguments: Option<Value>,
 }
 
 tokio::task_local! {
@@ -46,6 +51,7 @@ mod tests {
                 tool_call_id: id.into(),
                 root_request_message_id: "request".into(),
                 cancel_rx: cancel_rx.clone(),
+                prepared_arguments: None,
             };
             let barrier = barrier.clone();
             jobs.spawn(context.scope(async move {

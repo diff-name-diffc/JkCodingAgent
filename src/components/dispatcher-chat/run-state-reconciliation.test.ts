@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { planDetachedRuns } from "./run-state-reconciliation";
+import {
+  nextDetachedRunState,
+  planDetachedRuns,
+} from "./run-state-reconciliation";
+import {
+  createIdleLiveSessionState,
+  type DispatcherLiveSessionState,
+} from "../dispatcherSessionStore";
 
 describe("planDetachedRuns", () => {
   it("收养后端仍在跑且无事件通道的会话", () => {
@@ -48,5 +55,35 @@ describe("planDetachedRuns", () => {
     );
     expect(plan.adopt).toEqual([]);
     expect(plan.release).toEqual(["ws-finished"]);
+  });
+});
+
+describe("nextDetachedRunState", () => {
+  const adoptedState: DispatcherLiveSessionState = {
+    ...createIdleLiveSessionState(),
+    hasPendingRun: true,
+    isLoading: true,
+    assistantPlaceholder: "后台运行中…",
+    liveToolCalls: [
+      {
+        id: "call-1",
+        name: "local_zsh",
+        status: "success",
+        output: "ok",
+      },
+    ],
+  };
+
+  it("收养只叠加运行标记与占位文案，保留既有内容", () => {
+    const next = nextDetachedRunState(createIdleLiveSessionState(), true);
+    expect(next.hasPendingRun).toBe(true);
+    expect(next.isLoading).toBe(true);
+    expect(next.assistantPlaceholder).toBeTruthy();
+  });
+
+  it("释放整体复位——快照填入的 liveToolCalls 不得残留（否则渲染重复工具列表）", () => {
+    const next = nextDetachedRunState(adoptedState, false);
+    expect(next).toEqual(createIdleLiveSessionState());
+    expect(next.liveToolCalls).toEqual([]);
   });
 });

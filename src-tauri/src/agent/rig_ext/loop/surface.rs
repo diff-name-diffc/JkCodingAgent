@@ -76,7 +76,6 @@ pub struct ToolCallOutcome<'a> {
     pub message_id: Option<&'a str>,
     pub error_kind: Option<&'a str>,
     pub error_message: Option<&'a str>,
-    pub action_kind: Option<&'a str>,
 }
 
 /// 工具执行策略注入点（各 agent 的差异：审查门禁、台账、超时）。

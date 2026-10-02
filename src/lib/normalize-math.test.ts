@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { normalizeLatexMathDelimiters, normalizeMathCodeFences } from "./normalize-math";
+import {
+  needsMathNormalize,
+  normalizeLatexMathDelimiters,
+  normalizeMarkdownMath,
+  normalizeMathCodeFences,
+  normalizeSingleLineMathBlocks,
+} from "./normalize-math";
 
 describe("normalizeMathCodeFences", () => {
   it("rewrites explicit math-language fences to display math", () => {
@@ -79,5 +85,58 @@ describe("pipeline order: fence rewrite then delimiter rewrite", () => {
   it("does not double-process $$ delimiters emitted by the fence rewrite", () => {
     const input = normalizeMathCodeFences("```math\na + b\n```");
     expect(normalizeLatexMathDelimiters(input)).toBe("$$\na + b\n$$");
+  });
+});
+
+describe("normalizeSingleLineMathBlocks", () => {
+  it("expands single-line $$…$$ to multi-line display math", () => {
+    expect(normalizeSingleLineMathBlocks("before\n$$x^2$$\nafter")).toBe("before\n$$\nx^2\n$$\nafter");
+  });
+
+  it("keeps fence indentation on expansion", () => {
+    expect(normalizeSingleLineMathBlocks("  $$a+b$$")).toBe("  $$\n  a+b\n  $$");
+  });
+
+  it("does not touch $$ inside code fences", () => {
+    const input = "```\n$$not math$$\n```";
+    expect(normalizeSingleLineMathBlocks(input)).toBe(input);
+  });
+
+  it("leaves already multi-line $$ blocks untouched", () => {
+    const input = "$$\nx^2\n$$";
+    expect(normalizeSingleLineMathBlocks(input)).toBe(input);
+  });
+});
+
+describe("needsMathNormalize", () => {
+  it("returns false for plain prose (streaming hot path)", () => {
+    expect(needsMathNormalize("一段普通的中文回复，没有数学也没有代码。")).toBe(false);
+  });
+
+  it("returns true when a dollar sign is present", () => {
+    expect(needsMathNormalize("inline $x^2$ math")).toBe(true);
+  });
+
+  it("returns true for LaTeX \\( \\[ delimiters", () => {
+    expect(needsMathNormalize("公式 \\(x^2\\) 结束")).toBe(true);
+    expect(needsMathNormalize("公式 \\[x^2\\] 结束")).toBe(true);
+  });
+
+  it("returns true when a code fence is present (math-language fences may be rewritten)", () => {
+    expect(needsMathNormalize("```math\nx^2\n```")).toBe(true);
+    expect(needsMathNormalize("~~~js\nconst a = 1;\n~~~")).toBe(true);
+  });
+});
+
+describe("normalizeMarkdownMath（完整管线 + 前置短路）", () => {
+  it("无数学信号时原样返回（同一字符串引用，零分配）", () => {
+    const input = "普通回复文本。\n\n第二段。";
+    expect(normalizeMarkdownMath(input)).toBe(input);
+  });
+
+  it("有信号时跑完整链：围栏改写 → 定界符改写 → 单行 $$ 展开", () => {
+    expect(normalizeMarkdownMath("$$x^2$$")).toBe("$$\nx^2\n$$");
+    expect(normalizeMarkdownMath("公式 \\(x^2\\)")).toBe("公式 $x^2$");
+    expect(normalizeMarkdownMath("```math\nx^2\n```")).toBe("$$\nx^2\n$$");
   });
 });

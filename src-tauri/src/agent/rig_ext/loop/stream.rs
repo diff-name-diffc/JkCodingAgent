@@ -150,8 +150,9 @@ pub(super) async fn consume_stream(
 }
 
 /// 聚合 choice → (正文, 思考, 工具调用)。`<think>` 标签正文拆入思考
-/// （对齐旧 `split_tagged_thinking`：DeepSeek 等把思考混在 content 里的方言）。
-pub(super) fn split_choice(choice: &[AssistantContent]) -> (String, String, Vec<ToolCall>) {
+/// （DeepSeek 等把思考混在 content 里的方言）。主对话循环与子智能体
+/// 运行时共用本实现（经 `loop` 模块转出），禁止再复制副本。
+pub(crate) fn split_choice(choice: &[AssistantContent]) -> (String, String, Vec<ToolCall>) {
     let mut text = String::new();
     let mut thinking = String::new();
     let mut tool_calls = Vec::new();
@@ -182,9 +183,8 @@ pub(super) fn split_choice(choice: &[AssistantContent]) -> (String, String, Vec<
     (visible.trim().to_string(), thinking, tool_calls)
 }
 
-/// 与旧客户端层的 `split_tagged_thinking` 同一实现（私有不可复用，
-/// Phase 5 归一）：把 `<think>…</think>` 块从正文拆到思考链。
-fn split_tagged_thinking(content: &str) -> (String, String) {
+/// 把 `<think>…</think>` 块从正文拆到思考链（与 `split_choice` 配套共享）。
+pub(crate) fn split_tagged_thinking(content: &str) -> (String, String) {
     let lower = content.to_ascii_lowercase();
     let mut visible = String::new();
     let mut thinking_blocks = Vec::new();

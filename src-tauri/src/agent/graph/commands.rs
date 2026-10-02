@@ -7,8 +7,9 @@ use super::harness::build_harness_catalog;
 use super::runner::{emit_plan_updated, execute_graph_run, GraphRunServices};
 use super::store::GraphStore;
 use super::types::{
-    GraphDefinition, GraphHarnessCatalog, GraphPlanRecord, GraphRunDetail, PLAN_CANCELLED,
-    PLAN_COMPLETED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING, RUN_MODE_FULL, RUN_MODE_RESUME,
+    GraphDefinition, GraphHarnessCatalog, GraphPlanRecord, GraphRunDetail, GraphRunSummary,
+    PLAN_CANCELLED, PLAN_COMPLETED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING, RUN_MODE_FULL,
+    RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use crate::agent::state::DispatcherState;
@@ -313,4 +314,97 @@ pub async fn graph_run_get(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("图运行不存在：{run_id}"))
+}
+
+/// 对已收尾的 run 重新执行验收：验收模型配置修复后补救 unknown 结论
+/// （如「验收模型调用失败」），或对既有结论复检。重跑 fail-safe 的
+/// verify_run → 更新 run 验收结论 → 投递简短回执 → 广播计划更新。
+/// 仅允许对终态 run 重验收；运行中的 run 由收尾路径自然验收。
+#[tauri::command]
+pub async fn graph_run_reverify(
+    app: AppHandle,
+    state: State<'_, DispatcherState>,
+    run_id: String,
+) -> Result<GraphRunSummary, String> {
+    let db = state.db().clone();
+    let store = GraphStore::new(&db);
+    let detail = store
+        .get_run_detail_async(&run_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("图运行不存在：{run_id}"))?;
+    let run = &detail.run;
+    if !matches!(
+        run.status.as_str(),
+        PLAN_COMPLETED | PLAN_FAILED | PLAN_CANCELLED
+    ) {
+        return Err(format!(
+            "运行尚未结束（当前状态 {}），仅已收尾的运行支持重新验收",
+            run.status
+        ));
+    }
+    let plan = store
+        .get_plan_async(&run.plan_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("图计划不存在：{}", run.plan_id))?;
+    let mut definition: GraphDefinition = serde_json::from_str(&plan.definition_json)
+        .map_err(|error| format!("错误：图定义已损坏（JSON 解析失败：{error}），无法重新验收"))?;
+    definition.normalize_ids();
+    let state_map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&plan.state_json).map_err(|error| {
+            format!("错误：图计划共享 state 已损坏（JSON 解析失败：{error}），无法重新验收")
+        })?;
+
+    let settings = tokio::task::spawn_blocking({
+        let db = db.clone();
+        move || db.get_settings_v2()
+    })
+    .await
+    .map_err(|error| format!("读取设置任务失败：{error}"))?
+    .map_err(|error| format!("读取设置失败：{error}"))?;
+    let agent_config = state.agent_config();
+
+    // 需求与运行收尾同源：以提交时快照为准，快照为空的旧数据兜底取最新消息。
+    let mut requirement = plan.requirement.trim().to_string();
+    if requirement.is_empty() {
+        requirement = db
+            .get_latest_user_message_content_async(&plan.workspace_id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+    }
+
+    let started = std::time::Instant::now();
+    let verdict = super::verifier::verify_run(
+        &agent_config,
+        &settings,
+        &requirement,
+        &definition,
+        &state_map,
+        &detail.node_runs,
+    )
+    .await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    store
+        .update_run_verdict_async(&run_id, &verdict.status, &verdict.reason)
+        .await
+        .map_err(|error| format!("写入验收结论失败：{error}"))?;
+    super::receipt::deliver_reverify_note(
+        &app,
+        &db,
+        &plan.workspace_id,
+        &plan,
+        run,
+        &verdict,
+        elapsed_ms,
+    )
+    .await;
+    emit_plan_updated(&app, &plan.id, &plan.workspace_id);
+    Ok(GraphRunSummary {
+        verdict_status: verdict.status.clone(),
+        verdict_reason: verdict.reason.clone(),
+        ..run.clone()
+    })
 }

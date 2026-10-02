@@ -468,7 +468,6 @@ mod tests {
                 category: "text".into(),
                 capabilities: vec![],
             }],
-            tools: vec![],
             diagnostics: vec![],
         }
     }
@@ -485,6 +484,7 @@ mod tests {
             output_key: format!("out_{}", id.trim()),
             expected_files: vec![],
             export_policy: Default::default(),
+            use_plan_mode: false,
         }
     }
     fn coding(id: &str, deps: &[&str]) -> GraphNode {

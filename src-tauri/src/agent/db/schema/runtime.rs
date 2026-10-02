@@ -88,7 +88,8 @@ mod tests {
         let path = directory.join("db.sqlite3");
         {
             let conn = Connection::open(&path).unwrap();
-            // 原基线 DDL 不包含 v8 扩展，因此是真正的 v7 形态。
+            // 原基线 DDL 不包含 v8 扩展，因此是真正的 v7 形态；
+            // v10 新增的验收槽位列同样需要移除（v7 库不应有它）。
             conn.execute_batch(super::super::BASELINE_DDL).unwrap();
             conn.execute_batch(
                 "INSERT INTO dispatcher_messages(id, workspace_id, role, created_at)
@@ -97,6 +98,8 @@ mod tests {
                     tool_name, provider, category, status, created_at, updated_at)
                  VALUES ('task', 'workspace', 'call', 'echo', 'builtin', 'general',
                     'succeeded', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z');
+                 ALTER TABLE dispatcher_settings
+                   DROP COLUMN project_verifier_model_configs_json;
                  PRAGMA user_version = 7;",
             )
             .unwrap();
@@ -108,7 +111,7 @@ mod tests {
             assert!(run.agent_run_id.is_none());
             assert!(run.phase.is_none());
             let conn = db.conn().unwrap();
-            // v7 库沿迁移链一路升到当前基线（v7→v8→v9）。
+            // v7 库沿迁移链一路升到当前基线（v7→v8→v9→v10）。
             assert_eq!(
                 conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
                     .unwrap(),

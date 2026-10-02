@@ -7,14 +7,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rmcp::model::{TaskSupport, Tool};
+use rmcp::model::Tool;
 use serde_json::Value;
 
 use crate::mcp::transport::build_header_map;
-use crate::mcp::{
-    McpServerConfig, McpToolTaskSupport, ResolvedMcpServerConfig, ResolvedMcpTool,
-    ResolvedMcpTransport,
-};
+use crate::mcp::{McpServerConfig, ResolvedMcpServerConfig, ResolvedMcpTool, ResolvedMcpTransport};
 
 const DEFAULT_MCP_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -144,6 +141,10 @@ pub(super) fn normalize_transport_name(value: &str) -> String {
     }
 }
 
+/// MCP 动态工具 canonical 名前缀：canonical 名形如 `mcp__{server}__{tool}`，
+/// agent 侧（工具面装配、审查豁免）据此前缀识别 MCP 工具，必须与此处同源。
+pub(crate) const MCP_TOOL_NAME_PREFIX: &str = "mcp__";
+
 pub(super) fn resolve_mcp_tool(
     server_name: &str,
     tool: Tool,
@@ -151,7 +152,7 @@ pub(super) fn resolve_mcp_tool(
 ) -> ResolvedMcpTool {
     let original_name = tool.name.to_string();
     let canonical_base = format!(
-        "mcp__{}__{}",
+        "{MCP_TOOL_NAME_PREFIX}{}__{}",
         sanitize_tool_name(server_name),
         sanitize_tool_name(&original_name)
     );
@@ -173,15 +174,6 @@ pub(super) fn resolve_mcp_tool(
             .map(|desc| desc.to_string())
             .unwrap_or_else(|| format!("MCP 工具（server={server_name}）")),
         parameters: Value::Object((*tool.input_schema).clone()),
-        task_support: match tool
-            .execution
-            .as_ref()
-            .and_then(|execution| execution.task_support)
-        {
-            Some(TaskSupport::Optional) => McpToolTaskSupport::Optional,
-            Some(TaskSupport::Required) => McpToolTaskSupport::Required,
-            _ => McpToolTaskSupport::Forbidden,
-        },
     }
 }
 

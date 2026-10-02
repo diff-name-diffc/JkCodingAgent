@@ -7,7 +7,7 @@ import { cn } from "../../../lib/cn";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import { Section } from "../Section";
-import { toast } from "../toast";
+import { toast } from "../../Toast";
 import { publishSaveSource, registerSaveSource } from "../save-sources";
 import { McpServerCard } from "./McpServerCard";
 import {

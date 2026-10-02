@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from "react";
-import { isImeComposing } from "../../utils";
+import { isImeComposing } from "../../lib/keyboard-bindings";
 import {
   hasOpenOverlay,
   isTopOverlay,
@@ -183,6 +183,9 @@ export function useLargeFileKeyboard({
     const onKeyDown = (event: KeyboardEvent) => {
       // 已被更内层处理，或更高层自研覆盖层（命令面板等）打开时让路。
       if (event.defaultPrevented) return;
+      // IME 组合期让路（与 useGlobalShortcuts 原生监听约定一致：组合期
+      // Escape 不清选区、Mod 组合不触发，把按键留给输入法候选窗）。
+      if (isImeComposing(event)) return;
       if (hasOpenOverlay() && !isTopOverlay(LARGE_FILE_OVERLAY_ID)) return;
       const modifier = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();

@@ -360,25 +360,25 @@ impl GraphStore {
         // 变更（pending→running→succeeded/失败重试）的节点打到行尾，破坏
         // 报告与 UI 的节点顺序。
         self.conn()?.execute(
-            "INSERT INTO graph_node_runs (run_id,plan_id,node_id,status,phase,model_ref,model_label,model_category,base_tool_group,special_tools_json,input_text,output_text,error_text,started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+            "INSERT INTO graph_node_runs (run_id,plan_id,node_id,status,phase,model_ref,model_label,model_category,base_tool_group,input_text,output_text,error_text,started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
              ON CONFLICT(run_id,node_id) DO UPDATE SET
                  plan_id=excluded.plan_id,status=excluded.status,phase=excluded.phase,
                  model_ref=excluded.model_ref,model_label=excluded.model_label,
                  model_category=excluded.model_category,base_tool_group=excluded.base_tool_group,
-                 special_tools_json=excluded.special_tools_json,input_text=excluded.input_text,
+                 input_text=excluded.input_text,
                  output_text=excluded.output_text,error_text=excluded.error_text,
                  started_at=excluded.started_at,finished_at=excluded.finished_at,
                  duration_ms=excluded.duration_ms,usage_json=excluded.usage_json,
                  affected_files_json=excluded.affected_files_json,
                  tool_call_count=excluded.tool_call_count,retry_count=excluded.retry_count",
-            params![run.run_id,run.plan_id,run.node_id,run.status,run.phase,run.model_ref,run.model_label,run.model_category,run.base_tool_group,run.special_tools_json,run.input_text,run.output_text,run.error_text,run.started_at,run.finished_at,run.duration_ms,run.usage_json,affected,run.tool_call_count,run.retry_count],
+            params![run.run_id,run.plan_id,run.node_id,run.status,run.phase,run.model_ref,run.model_label,run.model_category,run.base_tool_group,run.input_text,run.output_text,run.error_text,run.started_at,run.finished_at,run.duration_ms,run.usage_json,affected,run.tool_call_count,run.retry_count],
         ).context("保存节点运行记录失败")?;
         Ok(())
     }
 
     pub(crate) fn list_node_runs(&self, run_id: &str) -> Result<Vec<GraphNodeRunRecord>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT run_id,plan_id,node_id,status,phase,model_ref,model_label,model_category,base_tool_group,special_tools_json,input_text,output_text,error_text,started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count FROM graph_node_runs WHERE run_id=?1 ORDER BY rowid")?;
+        let mut stmt = conn.prepare("SELECT run_id,plan_id,node_id,status,phase,model_ref,model_label,model_category,base_tool_group,input_text,output_text,error_text,started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count FROM graph_node_runs WHERE run_id=?1 ORDER BY rowid")?;
         let rows = stmt
             .query_map(params![run_id], map_node_run)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -641,7 +641,7 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphRunSummary> {
     })
 }
 fn map_node_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphNodeRunRecord> {
-    let affected: String = row.get(17)?;
+    let affected: String = row.get(16)?;
     Ok(GraphNodeRunRecord {
         run_id: row.get(0)?,
         plan_id: row.get(1)?,
@@ -652,17 +652,16 @@ fn map_node_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphNodeRunRecord>
         model_label: row.get(6)?,
         model_category: row.get(7)?,
         base_tool_group: row.get(8)?,
-        special_tools_json: row.get(9)?,
-        input_text: row.get(10)?,
-        output_text: row.get(11)?,
-        error_text: row.get(12)?,
-        started_at: row.get(13)?,
-        finished_at: row.get(14)?,
-        duration_ms: row.get(15)?,
-        usage_json: row.get(16)?,
+        input_text: row.get(9)?,
+        output_text: row.get(10)?,
+        error_text: row.get(11)?,
+        started_at: row.get(12)?,
+        finished_at: row.get(13)?,
+        duration_ms: row.get(14)?,
+        usage_json: row.get(15)?,
         affected_files: serde_json::from_str(&affected).unwrap_or_default(),
-        tool_call_count: row.get(18)?,
-        retry_count: row.get(19)?,
+        tool_call_count: row.get(17)?,
+        retry_count: row.get(18)?,
     })
 }
 
@@ -689,6 +688,7 @@ mod tests {
             output_key: format!("out_{id}"),
             expected_files: vec![],
             export_policy: Default::default(),
+            use_plan_mode: false,
         }
     }
     fn definition() -> GraphDefinition {

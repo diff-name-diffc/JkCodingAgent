@@ -14,6 +14,8 @@ import {
 
 export interface GraphPlanCardProps {
   planId: string;
+  /** 会话作用域缺失时的回退（工具消息自带的 workspaceId）。 */
+  sessionId?: string | null;
   className?: string;
 }
 
@@ -23,10 +25,12 @@ export interface GraphPlanCardProps {
  */
 export const GraphPlanCard = memo(function GraphPlanCard({
   planId,
+  sessionId: sessionIdProp,
   className,
 }: GraphPlanCardProps) {
   const snapshot = useGraphPlan(planId);
-  const sessionId = useSessionScope();
+  const scopedSessionId = useSessionScope();
+  const sessionId = scopedSessionId ?? sessionIdProp ?? null;
   const openGraphPanel = useWorkspaceStore((state) => state.openGraphPanel);
 
   const plan = snapshot.plan;
@@ -36,8 +40,26 @@ export const GraphPlanCard = memo(function GraphPlanCard({
   const nodeCount = definition?.nodes.length ?? plan?.nodeRuns.length ?? 0;
   const statusMeta = plan ? PLAN_STATUS_META[normalizePlanStatus(plan.status)] : null;
 
+  const open = () => {
+    if (!sessionId) return;
+    // 与 useGraphPanelController.open 同入口语义：先 hydrate 再打开。
+    void hydrateGraphPlan(planId);
+    openGraphPanel(sessionId, planId);
+  };
+
   return (
-    <div className={cn("ai-graph-plan-card", className)}>
+    <div
+      className={cn("ai-graph-plan-card", className)}
+      role="button"
+      tabIndex={0}
+      aria-label={`查看执行图 ${title}`}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        open();
+      }}
+    >
       <div className="ai-graph-plan-card-icon" aria-hidden>
         <Workflow className="h-4 w-4" />
       </div>
@@ -59,13 +81,9 @@ export const GraphPlanCard = memo(function GraphPlanCard({
             type="button"
             variant="outline"
             size="sm"
-            className="h-7"
-            onClick={() => {
-              if (!sessionId) return;
-              // 与 useGraphPanelController.open 同入口语义：先 hydrate 再打开。
-              void hydrateGraphPlan(planId);
-              openGraphPanel(sessionId, planId);
-            }}
+            tabIndex={-1}
+            aria-hidden
+            className="pointer-events-none h-7"
           >
             查看执行图
           </Button>

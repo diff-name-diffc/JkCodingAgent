@@ -14,7 +14,7 @@ interface WorkspaceState {
    * 绑定 sessionId 后，多项目保活挂载不再共享同一个 planId（UI-08 串台修复）。
    * UI-13 起作为「打开执行图标签」的意图通道：tab 是渲染真值，store 只是意图。
    */
-  graphPanel: { sessionId: string; planId: string } | null;
+  graphPanel: { sessionId: string; planId: string; openSeq: number } | null;
   /**
    * 每会话执行图视图记忆（不持久化，UI-13/UI-14）：图标签关闭再打开、
    * 详情返回时保留选中节点、视口、共享状态展开态与手动布局覆盖。
@@ -52,7 +52,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             },
           };
         }),
-      openGraphPanel: (sessionId, planId) => set({ graphPanel: { sessionId, planId } }),
+      openGraphPanel: (sessionId, planId) =>
+        set((state) => ({
+          graphPanel: {
+            sessionId,
+            planId,
+            // 同一次点击的序号。重复点同一张图也要递增，窄窗才能再次把编辑区让出来。
+            openSeq: (state.graphPanel?.openSeq ?? 0) + 1,
+          },
+        })),
       closeGraphPanel: (sessionId) =>
         set((state) =>
           !sessionId || state.graphPanel?.sessionId === sessionId

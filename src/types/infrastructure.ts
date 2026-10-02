@@ -18,13 +18,10 @@ export type McpAggregateStatus = "not_configured" | "healthy" | "degraded" | "in
 export type McpServerState =
   "disabled" | "healthy" | "invalid_config" | "spawn_failed" | "connection_failed";
 
-export type McpToolTaskSupport = "forbidden" | "optional" | "required";
-
 export interface McpToolStatus {
   name: string;
   exposedName: string;
   description: string;
-  taskSupport: McpToolTaskSupport;
 }
 
 export interface McpServerStatus {

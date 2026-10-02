@@ -31,7 +31,6 @@ export function useProjectPanels(workspaceId: string) {
   const [editorTabs, setEditorTabs] = useState<EditorTabsState>(EMPTY_EDITOR_TABS);
   const openFiles = fileTabs(editorTabs);
   const activeEditorTab = activeTab(editorTabs);
-  const openDiff = activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
   const activeFileTabId = activeEditorTab?.kind === "file" ? activeEditorTab.id : null;
   /**
    * 编辑区是否有内容（UI-13 收敛为单一派生值）：任何标签（文件/diff/执行图/
@@ -139,7 +138,6 @@ export function useProjectPanels(workspaceId: string) {
     openFiles,
     activeFileTabId,
     activeEditorTab,
-    openDiff,
     editorTabs,
     hasEditorContent,
     terminalHeight,

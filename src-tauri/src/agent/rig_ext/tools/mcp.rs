@@ -308,7 +308,7 @@ mod tests {
         definition_drifted, looks_like_path_traversal, mcp_tool_error_message,
         normalize_tool_error, traversal_risk_arg,
     };
-    use crate::mcp::{McpToolTaskSupport, ResolvedMcpTool};
+    use crate::mcp::ResolvedMcpTool;
 
     fn resolved_tool(description: &str, parameters: serde_json::Value) -> ResolvedMcpTool {
         ResolvedMcpTool {
@@ -317,7 +317,6 @@ mod tests {
             server_name: "server".to_string(),
             description: description.to_string(),
             parameters,
-            task_support: McpToolTaskSupport::Forbidden,
         }
     }
 

@@ -1,9 +1,9 @@
 //! 数据库 schema 初始化与版本管理（PRAGMA user_version 方案）。
 //!
-//! 当前基线为 **v9**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
+//! 当前基线为 **v10**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
 //! 路径：同版本库直接复用；低于基线但存在迁移块的版本逐级前向迁移
-//! （当前为 v1→v2、v2→v3、v3→v4、v4→v5、v5→v6、v6→v7、v7→v8、v8→v9）；
-//! 再早的旧开发库一律拒绝打开
+//! （当前为 v1→v2、v2→v3、v3→v4、v4→v5、v5→v6、v6→v7、v7→v8、v8→v9、
+//! v9→v10）；再早的旧开发库一律拒绝打开
 //! （提示运行 `scripts/reset-dev-data.sh`）；user_version=0 且无表则按
 //! 基线全新建库。
 //!
@@ -40,7 +40,9 @@ use super::DispatcherDb;
 /// v8：异步工具调用身份、消息 task_id 和事务型完成事件 outbox。
 /// v9：为 `dispatcher_tool_completions.delivery_message_id` 补索引（消息删除
 /// 触发器按该列反查投递消息，无索引时对事件表全表扫描）。
-pub(crate) const SCHEMA_VERSION: i32 = 9;
+/// v10：dispatcher_settings 新增 `project_verifier_model_configs_json` 列
+/// （执行图验收模型的独立用途槽位；未配置时回退项目摘要槽位）。
+pub(crate) const SCHEMA_VERSION: i32 = 10;
 
 mod runtime;
 
@@ -124,6 +126,9 @@ impl DispatcherDb {
         }
         if current_version < 9 {
             self.migrate_v8_to_v9(&mut conn)?;
+        }
+        if current_version < 10 {
+            self.migrate_v9_to_v10(&mut conn)?;
             return Ok(());
         }
 
@@ -516,6 +521,43 @@ impl DispatcherDb {
             .context("advance user_version to 9")?;
         tx.commit().context("commit v8→v9 migration")
     }
+
+    /// v9 → v10：dispatcher_settings 新增 `project_verifier_model_configs_json`
+    /// 列——执行图验收模型的独立用途槽位（此前验收复用摘要槽位，模型网关
+    /// 故障时无法单独替换）。纯增量加列（带默认 '[]'）、零数据迁移；
+    /// `ALTER TABLE ... ADD COLUMN` 在事务内失败整体回滚（user_version 不
+    /// 推进），重试安全幂等。按规范仍先做整库快照备份（VACUUM INTO 不能在
+    /// 事务内执行），备份失败只留痕不阻断。
+    fn migrate_v9_to_v10(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v10-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v9→v10 迁移前整库快照失败（纯增量加列，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v9→v10 migration transaction")?;
+        tx.execute(
+            "ALTER TABLE dispatcher_settings
+             ADD COLUMN project_verifier_model_configs_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )
+        .context("add dispatcher_settings.project_verifier_model_configs_json column")?;
+        tx.pragma_update(None, "user_version", 10)
+            .context("advance user_version to 10")?;
+        tx.commit().context("commit v9→v10 migration")
+    }
 }
 
 /// 全新建库：单事务内执行基线 DDL + 领域建表助手 + 内置种子数据，
@@ -641,6 +683,7 @@ CREATE TABLE IF NOT EXISTS dispatcher_tool_runs (
     message_id TEXT,
     error_kind TEXT,
     error_message TEXT,
+    -- 历史列（v8 引入后从未有写入方，Rust 读写照已移除；列保留仅为免迁移）。
     action_kind TEXT,
     started_at TEXT,
     finished_at TEXT,
@@ -691,6 +734,7 @@ CREATE TABLE IF NOT EXISTS dispatcher_settings (
     shared_embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
     project_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
     project_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+    project_verifier_model_configs_json TEXT NOT NULL DEFAULT '[]',
     project_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
     chat_agent_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
     chat_agent_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
@@ -824,6 +868,7 @@ CREATE TABLE IF NOT EXISTS graph_node_runs (
     model_label TEXT NOT NULL,
     model_category TEXT NOT NULL,
     base_tool_group TEXT NOT NULL,
+    -- 历史列（v4 起图定义无 specialTools，Rust 读写照已移除；列保留仅为免迁移）。
     special_tools_json TEXT NOT NULL DEFAULT '[]',
     input_text TEXT NOT NULL DEFAULT '',
     output_text TEXT NOT NULL DEFAULT '',
@@ -1112,12 +1157,35 @@ mod tests {
     // 旧迁移夹具仅建被测表；补齐 v8 依赖的既有表，不覆盖旧表形态。
     fn complete_runtime_fixture(path: &std::path::Path) {
         let conn = rusqlite::Connection::open(path).unwrap();
-        for table in ["dispatcher_messages", "dispatcher_tool_runs"] {
+        for table in [
+            "dispatcher_messages",
+            "dispatcher_tool_runs",
+            "dispatcher_settings",
+        ] {
             let prefix = format!("CREATE TABLE IF NOT EXISTS {table} (");
             let start = super::BASELINE_DDL.find(&prefix).unwrap();
             let tail = &super::BASELINE_DDL[start..];
             let end = tail.find("\n);").unwrap() + 3;
             conn.execute_batch(&tail[..end]).unwrap();
+        }
+        // dispatcher_settings 建成 v9 形态（删掉 v10 新增的验收槽位列）：
+        // 这些 fixture 的版本号 ≤ v9，打开时需能走到 v9→v10 的加列迁移。
+        // 旧版本 fixture 手写的 dispatcher_settings（v1/v2 形态）本就无该列，
+        // 按列存在性幂等跳过。
+        let verifier_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings')
+                 WHERE name = 'project_verifier_model_configs_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if verifier_column > 0 {
+            conn.execute_batch(
+                "ALTER TABLE dispatcher_settings
+                   DROP COLUMN project_verifier_model_configs_json;",
+            )
+            .unwrap();
         }
     }
 
@@ -1351,7 +1419,8 @@ mod tests {
                     || name.contains("pre-v6-backup")
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
-                    || name.contains("pre-v9-backup"))
+                    || name.contains("pre-v9-backup")
+                    || name.contains("pre-v10-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1417,7 +1486,8 @@ mod tests {
                     || name.contains("pre-v6-backup")
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
-                    || name.contains("pre-v9-backup"))
+                    || name.contains("pre-v9-backup")
+                    || name.contains("pre-v10-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1500,7 +1570,8 @@ mod tests {
                     || name.contains("pre-v6-backup")
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
-                    || name.contains("pre-v9-backup"))
+                    || name.contains("pre-v9-backup")
+                    || name.contains("pre-v10-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1568,7 +1639,8 @@ mod tests {
                 && (name.contains("pre-v6-backup")
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
-                    || name.contains("pre-v9-backup"))
+                    || name.contains("pre-v9-backup")
+                    || name.contains("pre-v10-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1679,7 +1751,8 @@ mod tests {
             if name.contains("v6-to-v7-")
                 && (name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
-                    || name.contains("pre-v9-backup"))
+                    || name.contains("pre-v9-backup")
+                    || name.contains("pre-v10-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1775,7 +1848,8 @@ mod tests {
                     || name.contains("pre-v6-backup")
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
-                    || name.contains("pre-v9-backup"))
+                    || name.contains("pre-v9-backup")
+                    || name.contains("pre-v10-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1835,7 +1909,8 @@ mod tests {
                     || name.contains("pre-v6-backup")
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
-                    || name.contains("pre-v9-backup"))
+                    || name.contains("pre-v9-backup")
+                    || name.contains("pre-v10-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1949,8 +2024,8 @@ mod tests {
     }
 
     /// 造一个 v8 形态的库：基线表 + 工具完成事件表（`runtime::extend_schema`
-    /// 的 DDL），随后删掉 v9 新增的索引、版本号置 8。事件表结构在 v8/v9 之间
-    /// 无差异，索引是两者唯一区别。
+    /// 的 DDL），随后删掉 v9 新增的索引与 v10 新增的验收槽位列、版本号置 8。
+    /// 事件表结构在 v8/v9 之间无差异，索引是两者唯一区别。
     fn write_v8_runtime_fixture(path: &std::path::Path) {
         let mut conn = rusqlite::Connection::open(path).unwrap();
         conn.execute_batch(super::BASELINE_DDL).unwrap();
@@ -1959,6 +2034,8 @@ mod tests {
         tx.commit().unwrap();
         conn.execute_batch(
             "DROP INDEX idx_tool_completions_delivery;
+             ALTER TABLE dispatcher_settings
+               DROP COLUMN project_verifier_model_configs_json;
              PRAGMA user_version = 8;",
         )
         .unwrap();
@@ -2066,6 +2143,10 @@ mod tests {
         for backup in backups {
             let _ = std::fs::remove_file(backup);
         }
+        // v8 fixture 打开会继续走 v9→v10 迁移，其快照一并清理。
+        for backup in backup_files(&path, "pre-v10-backup") {
+            let _ = std::fs::remove_file(backup);
+        }
         cleanup_db_files(&path);
     }
 
@@ -2095,6 +2176,107 @@ mod tests {
         drop(db);
 
         let backups = backup_files(&path, "pre-v9-backup");
+        assert_eq!(backups.len(), 1, "同版本直开不得重跑迁移或再生成快照");
+        for backup in backups {
+            let _ = std::fs::remove_file(backup);
+        }
+        // v8 fixture 首次打开会继续走 v9→v10 迁移，其快照一并清理。
+        for backup in backup_files(&path, "pre-v10-backup") {
+            let _ = std::fs::remove_file(backup);
+        }
+        cleanup_db_files(&path);
+    }
+
+    /// 造一个 v9 形态的库：基线表删掉 v10 新增的验收槽位列、版本号置 9，
+    /// 并预置一行带既有设置的 dispatcher_settings（验证迁移零数据丢失）。
+    fn write_v9_settings_fixture(path: &std::path::Path) {
+        let mut conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(super::BASELINE_DDL).unwrap();
+        let tx = conn.transaction().unwrap();
+        super::runtime::extend_schema(&tx).unwrap();
+        tx.commit().unwrap();
+        conn.execute_batch(
+            "ALTER TABLE dispatcher_settings
+               DROP COLUMN project_verifier_model_configs_json;
+             INSERT INTO dispatcher_settings (id, project_summary_model_configs_json)
+               VALUES ('default', '[{\"url\":\"http://u\",\"apiKey\":\"k\",\"model\":\"m\",\"active\":true}]');
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+    }
+
+    /// v9 库（dispatcher_settings 尚无验收槽位列）打开时前向迁移到 v10：
+    /// 列补齐且默认 '[]'、既有设置行全量保留、版本推进、生成迁移前快照。
+    #[test]
+    fn v9_database_gains_verifier_slot_column() {
+        let path = temp_db_path("v9-to-v10");
+        write_v9_settings_fixture(&path);
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+            let (verifier, summary): (String, String) = conn
+                .query_row(
+                    "SELECT project_verifier_model_configs_json,
+                            project_summary_model_configs_json
+                     FROM dispatcher_settings WHERE id = 'default'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(verifier, "[]", "新列默认空槽位");
+            assert!(
+                summary.contains("http://u"),
+                "既有摘要槽位设置应全量保留：{summary}"
+            );
+        }
+        drop(db);
+
+        let backups = backup_files(&path, "pre-v10-backup");
+        assert_eq!(backups.len(), 1, "迁移前应生成整库快照");
+        let snapshot = rusqlite::Connection::open(&backups[0]).unwrap();
+        assert_eq!(
+            snapshot
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            9
+        );
+        drop(snapshot);
+        for backup in backups {
+            let _ = std::fs::remove_file(backup);
+        }
+        cleanup_db_files(&path);
+    }
+
+    /// 已迁到 v10 的库再次打开走同版本 fast path：不重跑迁移、不再生成快照。
+    #[test]
+    fn reopened_v10_database_skips_migration() {
+        let path = temp_db_path("v10-reopen");
+        write_v9_settings_fixture(&path);
+        {
+            let db = DispatcherDb::new(path.clone()).unwrap();
+            drop(db);
+        }
+        assert_eq!(
+            backup_files(&path, "pre-v10-backup").len(),
+            1,
+            "首次打开应完成 v9→v10 迁移"
+        );
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        let conn = db.conn().expect("db conn");
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        drop(conn);
+        drop(db);
+
+        let backups = backup_files(&path, "pre-v10-backup");
         assert_eq!(backups.len(), 1, "同版本直开不得重跑迁移或再生成快照");
         for backup in backups {
             let _ = std::fs::remove_file(backup);

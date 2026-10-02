@@ -658,9 +658,9 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::SERIAL,
     ),
     // ── 图编排协议壳 ──
-    // 外层运行时只看到这一次程序调用。子步骤由 ToolProgram 直接执行数据面
-    // 工具：授权以注入的数据面为准，参数 schema 在执行前校验，文本结果按
-    // 内联上限截断。该入口仅在项目编排器注册。
+    // 外层运行时只看到这一次程序调用。子步骤是程序里的绑定调用：
+    // 授权以注入的数据面为准，参数在每次调用时按该工具的 JSON Schema 校验。
+    // 该入口仅在项目编排器注册。
     policy_row(
         "run_tool_program",
         ToolCategory::Other,
@@ -705,7 +705,7 @@ fn lookup_policy(name: &str) -> Option<&'static ToolPolicyRow> {
 }
 
 /// 该工具在策略表中是否声明为只读可并行。未登记的名字按不可并行（fail-closed）。
-/// ToolProgram 用它判断 `parallel` 分支，避免再维护一份手抄名单。
+/// `run_tool_program` 的调度器用它分类绑定调用，不在程序源码里拒绝。
 pub(crate) fn supports_parallel_readonly(name: &str) -> bool {
     lookup_policy(name).is_some_and(|row| row.parallel_readonly)
 }

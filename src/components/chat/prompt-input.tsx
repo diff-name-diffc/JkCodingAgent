@@ -2,7 +2,7 @@ import * as React from "react";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import type { ImageSegment, ModelLibraryEntry } from "../../types";
 import { cn } from "../../lib/cn";
-import { isImeComposing } from "../../utils";
+import { isImeComposing } from "../../lib/keyboard-bindings";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -31,6 +31,8 @@ export interface PromptInputProps {
   activeEntryId?: string;
   activeLabel?: string;
   onSelectModel?: (entryId: string) => void;
+  /** 模型下拉菜单标题（普通聊天「聊天模型」/ 项目「项目模型」）。 */
+  modelMenuLabel?: string;
   /** 无可用模型时的深链（UI-25）：打开设置「模型服务」页，取代装饰性禁用按钮。 */
   onConfigureModel: () => void;
   placeholder?: string;
@@ -84,6 +86,7 @@ export function PromptInput({
   activeEntryId,
   activeLabel,
   onSelectModel,
+  modelMenuLabel,
   onConfigureModel,
   placeholder = "输入消息…",
   disabled,
@@ -214,6 +217,7 @@ export function PromptInput({
               activeEntryId={activeEntryId}
               activeLabel={activeLabel}
               onSelect={onSelectModel}
+              menuLabel={modelMenuLabel}
               onConfigureModel={onConfigureModel}
             />
           )}

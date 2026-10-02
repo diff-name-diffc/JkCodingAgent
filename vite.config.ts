@@ -8,17 +8,32 @@ function isNodeModule(id: string, packageName: string) {
   return id.replace(/\\/g, "/").includes(`/node_modules/${packageName}/`);
 }
 
-function isMarkdownVendor(id: string) {
+// 聊天 markdown 渲染栈（streamdown 生态 + shiki 内核 + katex）。mermaid、
+// @streamdown/mermaid 与 shiki 语言包刻意排除：它们按需动态加载，并入本组
+// 会被提升为入口级 chunk。遗留 react-markdown 管线（MarkdownRendererImpl）
+// 整体走 React.lazy，不再单列 vendor 组——其模块自动归入懒加载 chunk，
+// 避免分组误匹配聊天管线共享的 unified/rehype 依赖导致入口预加载回归。
+const STREAMDOWN_VENDOR_PACKAGES = [
+  "streamdown",
+  "@streamdown",
+  "marked",
+  "remend",
+  "shiki",
+  "@shikijs",
+  "katex",
+];
+
+function isStreamdownVendor(id: string) {
   const normalizedId = id.replace(/\\/g, "/");
-  return [
-    "react-markdown",
-    "rehype-katex",
-    "rehype-raw",
-    "rehype-sanitize",
-    "remark-gfm",
-    "remark-math",
-    "katex",
-  ].some((packageName) => normalizedId.includes(`/node_modules/${packageName}/`));
+  if (
+    normalizedId.includes("/node_modules/mermaid/") ||
+    normalizedId.includes("/node_modules/@streamdown/mermaid/") ||
+    normalizedId.includes("/node_modules/@shikijs/langs/") ||
+    /\/node_modules\/shiki\/dist\/langs\//.test(normalizedId)
+  ) {
+    return false;
+  }
+  return STREAMDOWN_VENDOR_PACKAGES.some((packageName) => isNodeModule(normalizedId, packageName));
 }
 
 // Excalidraw 画布独占依赖（经 lockfile 比对，均不在其余依赖树中）。
@@ -44,8 +59,8 @@ export default defineConfig(async () => ({
               minSize: 20 * 1024,
             },
             {
-              name: "markdown-vendor",
-              test: isMarkdownVendor,
+              name: "streamdown-vendor",
+              test: isStreamdownVendor,
               minSize: 20 * 1024,
             },
             {

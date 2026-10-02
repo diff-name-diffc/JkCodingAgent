@@ -16,15 +16,21 @@ impl TaskScheduler {
             .iter()
             .map(|tool| self.budgets.reserve(is_composite(tool.name())))
             .collect::<Result<Vec<_>>>()?;
-        // 参数错误在登记前暴露，不能留下半批已登记任务。
-        for (call, tool) in calls.iter().zip(tools) {
-            prepare_arguments(
-                tool.name(),
-                &tool.definition().parameters,
-                &call.function.arguments,
-            )
-            .map_err(|error| super::super::budgets::AdmissionError(error.message))?;
-        }
+        // 参数错误在登记前暴露，不能留下半批已登记任务。准入即产出 effective
+        // 参数（默认注入 + 校验），台账与后续 before_call/execute 沿
+        // `ToolInvocationContext` 复用同一份，不再重算（裸路径才由策略层回退计算）。
+        let prepared = calls
+            .iter()
+            .zip(tools)
+            .map(|(call, tool)| {
+                prepare_arguments(
+                    tool.name(),
+                    &tool.definition().parameters,
+                    &call.function.arguments,
+                )
+                .map_err(|error| super::super::budgets::AdmissionError(error.message))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let root = policy.resource_workspace();
         let claim_inputs = tools
             .iter()
@@ -56,12 +62,7 @@ impl TaskScheduler {
                     &definition.description,
                     definition.parameters.clone(),
                 );
-                let effective = prepare_arguments(
-                    tool.name(),
-                    &definition.parameters,
-                    &call.function.arguments,
-                )
-                .map_err(|e| anyhow::anyhow!(e.message))?;
+                let effective = &prepared[index];
                 Ok((
                     NewToolRun {
                         workspace_id: self.workspace.clone(),
@@ -97,13 +98,15 @@ impl TaskScheduler {
         let registered = rows
             .into_iter()
             .zip(calls)
-            .map(|(row, call)| ToolInvocationContext {
+            .zip(prepared)
+            .map(|((row, call), prepared_arguments)| ToolInvocationContext {
                 workspace_id: self.workspace.clone(),
                 agent_run_id: self.run_id.clone(),
                 task_id: row.id,
                 tool_call_id: call.wire_call_id().into(),
                 root_request_message_id: anchor.clone(),
                 cancel_rx: self.cancel.clone(),
+                prepared_arguments: Some(prepared_arguments),
             })
             .collect::<Vec<_>>();
         capacity.reverse();

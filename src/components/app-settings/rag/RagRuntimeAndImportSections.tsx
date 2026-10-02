@@ -1,7 +1,8 @@
 import { FileText, RotateCw, Upload, X } from "lucide-react";
 import type { RagKbConfigController } from "./useRagKbConfig";
-import { deriveRagRuntimeState, LOG_LEVELS, normalizeLogLevel, ragFileName, type RagRuntimeState } from "./rag-config";
+import { deriveRagRuntimeState, LOG_LEVELS, normalizeLogLevel, type RagRuntimeState } from "./rag-config";
 import { RagSidecarLogPanel } from "./RagSidecarLogPanel";
+import { fileName } from "../../../utils";
 
 /** 运行态语义 → 状态点配色类（字面量，供 styles:report 双向核对）。 */
 const RAG_DOT_CLASS: Record<RagRuntimeState, string> = {
@@ -133,7 +134,7 @@ export function RagRuntimeAndImportSections({ controller }: { controller: RagKbC
             {controller.selectedFiles.map((file) => (
               <div key={file} className="ai-rag-selected-file">
                 <FileText size={13} />
-                <span className="ai-rag-selected-file-name">{ragFileName(file)}</span>
+                <span className="ai-rag-selected-file-name">{fileName(file)}</span>
                 <button
                   type="button"
                   className="ai-rag-icon-button"
@@ -166,7 +167,7 @@ export function RagRuntimeAndImportSections({ controller }: { controller: RagKbC
                   file.status === "failed" ? "ai-rag-ingest-file is-failed" : "ai-rag-ingest-file"
                 }
               >
-                {ragFileName(file.path)} · {file.status}
+                {fileName(file.path)} · {file.status}
                 {file.status === "done"
                   ? ` · ${file.parentChunks} parent / ${file.indexedPoints} vectors`
                   : ""}

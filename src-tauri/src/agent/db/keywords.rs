@@ -282,17 +282,6 @@ impl DispatcherDb {
 
         Ok(results)
     }
-
-    #[allow(dead_code)]
-    pub fn clear_keywords(&self, session_id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM session_keywords WHERE session_id = ?1",
-            params![session_id],
-        )
-        .context("clear session keywords")?;
-        Ok(())
-    }
 }
 
 pub(super) fn load_keywords_by_session_ids(

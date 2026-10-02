@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
-import type { McpScopeKind, McpStatus, McpToolTaskSupport } from "../types";
+import type { McpScopeKind, McpStatus } from "../types";
 import { useOverlayEscape } from "../hooks/use-overlay-escape";
 import { useFocusTrap } from "../hooks/use-focus-trap";
 import { StatusPill } from "./detail/StatusPill";
@@ -8,18 +8,6 @@ import { StatusPill } from "./detail/StatusPill";
 function formatTimestamp(timestamp: number): string {
   if (!timestamp) return "未检查";
   return new Date(timestamp).toLocaleString();
-}
-
-function taskSupportLabel(taskSupport: McpToolTaskSupport): string {
-  switch (taskSupport) {
-    case "required":
-      return "task 必需";
-    case "optional":
-      return "task 可选";
-    case "forbidden":
-    default:
-      return "普通调用";
-  }
 }
 
 function toolKey(serverName: string, toolName: string): string {
@@ -292,17 +280,11 @@ export function McpStatusDialog({
                                           原始工具名：{tool.name}
                                         </span>
                                       </span>
-                                      <span className="ai-mcp-tool-pill">
-                                        {taskSupportLabel(tool.taskSupport)}
-                                      </span>
                                     </button>
 
                                     {toolExpanded && (
                                       <div className="ai-mcp-tool-details">
                                         <div className="ai-mcp-tool-desc">{tool.description}</div>
-                                        <div className="ai-mcp-tool-support">
-                                          调用方式：{taskSupportLabel(tool.taskSupport)}
-                                        </div>
                                       </div>
                                     )}
                                   </div>

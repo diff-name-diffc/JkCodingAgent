@@ -5,7 +5,6 @@ import {
   normalizeLogLevel,
   normalizeSparseConfig,
   parseBoundedNumberInput,
-  ragFileName,
 } from "./rag-config";
 
 describe("rag config normalization", () => {
@@ -40,11 +39,6 @@ describe("rag config normalization", () => {
       provider: "fastembed",
       model: "Qdrant/bm25",
     });
-  });
-
-  it("从不同平台路径提取文件名", () => {
-    expect(ragFileName("/tmp/docs/a.pdf")).toBe("a.pdf");
-    expect(ragFileName("C:\\docs\\b.docx")).toBe("b.docx");
   });
 });
 

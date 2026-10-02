@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { modelCapabilityTags } from "./provider-registry";
+import { bindPurpose, getPurposeBinding, modelCapabilityTags } from "./provider-registry";
 import {
   CATEGORY_DEFS,
   ENTRY_CONTEXT_WINDOW_RANGE,
   ENTRY_MAX_TOKENS_RANGE,
   createEntry,
 } from "./model-library";
+import type { AhaSettingsV2 } from "../../../types";
 
 describe("modelCapabilityTags：真实容量配置优先于模型名启发式", () => {
   it("未配置 contextWindow 时回退正则启发式", () => {
@@ -46,5 +47,100 @@ describe("模型库容量字段的类目与缺省语义", () => {
   it("容量区间与后端 normalize_capacity 常量一致", () => {
     expect(ENTRY_MAX_TOKENS_RANGE).toEqual({ min: 1024, max: 1_048_576 });
     expect(ENTRY_CONTEXT_WINDOW_RANGE).toEqual({ min: 1024, max: 100_000_000 });
+  });
+});
+
+describe("bindPurpose：聊天与项目是独立槽位", () => {
+  // 回归背景：项目对话输入框的模型选择器曾固定写 chatChat——而后端项目
+  // 运行按 AgentContext::Project 读 project 槽位，导致项目界面切换模型
+  // 只改了普通聊天的绑定、对本会话不生效。此用例固化两个槽位互不串写。
+  const emptySettings = (): AhaSettingsV2 => ({
+    shared: {
+      visionModelConfigs: [],
+      imageModelConfigs: [],
+      imageEditModelConfigs: [],
+      asrModelConfigs: [],
+      ttsModelConfigs: [],
+      embeddingModelConfigs: [],
+    },
+    project: { chatModelConfigs: [], summaryModelConfigs: [], allowedTools: [] },
+    chat: { chatModelConfigs: [], summaryModelConfigs: [], allowedTools: [] },
+    contextDebug: false,
+    review: {
+      modelConfig: { url: "", apiKey: "", model: "", active: true },
+      systemPrompt: "",
+    },
+    modelLibrary: [],
+  });
+
+  const entry = (id: string, model: string) => ({
+    id,
+    url: "https://api.example.com/v1",
+    apiKey: "sk-test",
+    model,
+  });
+
+  it("绑定 projectChat 不影响 chatChat 的读取，反之亦然", () => {
+    const bound = bindPurpose(emptySettings(), "projectChat", entry("e1", "proj-model"));
+    expect(getPurposeBinding(bound, "projectChat")?.model).toBe("proj-model");
+    expect(getPurposeBinding(bound, "chatChat")).toBeNull();
+
+    const swapped = bindPurpose(bound, "chatChat", entry("e2", "chat-model"));
+    expect(getPurposeBinding(swapped, "chatChat")?.model).toBe("chat-model");
+    // 聊天槽位变更不得覆盖项目槽位既有绑定。
+    expect(getPurposeBinding(swapped, "projectChat")?.model).toBe("proj-model");
+  });
+
+  it("绑定携带 libraryId 引用（凭据与容量由库条目解析）", () => {
+    const bound = bindPurpose(emptySettings(), "chatChat", entry("e1", "m"));
+    expect(bound.chat.chatModelConfigs[0]?.libraryId).toBe("e1");
+    expect(bound.chat.chatModelConfigs[0]?.active).toBe(true);
+  });
+});
+
+describe("projectVerifier：验收是项目侧独立槽位", () => {
+  // 验收模型此前复用项目摘要槽位，摘要网关故障时验收退化为「未能验收」且
+  // 无法单独替换。此用例固化验收槽位与摘要槽位互不串写。
+  const emptySettings = (): AhaSettingsV2 => ({
+    shared: {
+      visionModelConfigs: [],
+      imageModelConfigs: [],
+      imageEditModelConfigs: [],
+      asrModelConfigs: [],
+      ttsModelConfigs: [],
+      embeddingModelConfigs: [],
+    },
+    project: { chatModelConfigs: [], summaryModelConfigs: [], allowedTools: [] },
+    chat: { chatModelConfigs: [], summaryModelConfigs: [], allowedTools: [] },
+    contextDebug: false,
+    review: {
+      modelConfig: { url: "", apiKey: "", model: "", active: true },
+      systemPrompt: "",
+    },
+    modelLibrary: [],
+  });
+
+  const entry = (id: string, model: string) => ({
+    id,
+    url: "https://api.example.com/v1",
+    apiKey: "sk-test",
+    model,
+  });
+
+  it("绑定 projectVerifier 不影响 projectSummary，反之亦然", () => {
+    const bound = bindPurpose(emptySettings(), "projectVerifier", entry("e1", "verifier-model"));
+    expect(getPurposeBinding(bound, "projectVerifier")?.model).toBe("verifier-model");
+    expect(getPurposeBinding(bound, "projectSummary")).toBeNull();
+    expect(getPurposeBinding(bound, "chatChat")).toBeNull();
+
+    const swapped = bindPurpose(bound, "projectSummary", entry("e2", "summary-model"));
+    expect(getPurposeBinding(swapped, "projectSummary")?.model).toBe("summary-model");
+    // 摘要槽位变更不得覆盖验收槽位既有绑定。
+    expect(getPurposeBinding(swapped, "projectVerifier")?.model).toBe("verifier-model");
+  });
+
+  it("未配置验收槽位时读取为空数组（后端回退摘要槽位）", () => {
+    const settings = emptySettings();
+    expect(getPurposeBinding(settings, "projectVerifier")).toBeNull();
   });
 });

@@ -85,7 +85,6 @@ pub(super) async fn check_server(
                     name: tool.original_name.clone(),
                     exposed_name: tool.canonical_name.clone(),
                     description: tool.description.clone(),
-                    task_support: tool.task_support.clone(),
                 })
                 .collect::<Vec<_>>();
             CheckedServer {
@@ -242,20 +241,19 @@ pub(super) fn build_status(
     }
 }
 
-pub(super) fn aggregate_server_statuses(
-    statuses: &[McpServerStatus],
-) -> (McpAggregateStatus, usize, usize) {
+/// 聚合态判定；启用/健康计数由 `build_status` 统一统计（本函数不再返回，
+/// 避免同一列表计数两遍、返回值被丢弃）。
+pub(super) fn aggregate_server_statuses(statuses: &[McpServerStatus]) -> McpAggregateStatus {
     let enabled_server_count = statuses.iter().filter(|status| status.enabled).count();
     let healthy_server_count = statuses
         .iter()
         .filter(|status| status.enabled && matches!(status.state, McpServerState::Healthy))
         .count();
-    let aggregate = if statuses.is_empty() || enabled_server_count == 0 {
+    if statuses.is_empty() || enabled_server_count == 0 {
         McpAggregateStatus::NotConfigured
     } else if healthy_server_count == enabled_server_count {
         McpAggregateStatus::Healthy
     } else {
         McpAggregateStatus::Degraded
-    };
-    (aggregate, enabled_server_count, healthy_server_count)
+    }
 }

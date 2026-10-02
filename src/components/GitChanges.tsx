@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, GitCommit, Sparkles, RotateCcw } from "lucide-react";
 import { useCancellableInvoke } from "../hooks/useCancellableInvoke";
-import { fileName, isImeComposing } from "../utils";
+import { fileName } from "../utils";
+import { isImeComposing } from "../lib/keyboard-bindings";
 import {
   ErrorRow,
   FileRow,

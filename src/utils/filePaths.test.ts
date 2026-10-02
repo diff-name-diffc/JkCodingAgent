@@ -2,21 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildSiblingPath,
   collapseMiddlePath,
-  getPathBasename,
   getPathDirectory,
   getRelativePathDisplay,
   isSameOrChildPath,
 } from "./filePaths";
-
-describe("getPathBasename", () => {
-  it("returns the segment after the last separator", () => {
-    expect(getPathBasename("/a/b/c.ts")).toBe("c.ts");
-  });
-
-  it("returns the whole string when no separator exists", () => {
-    expect(getPathBasename("README.md")).toBe("README.md");
-  });
-});
 
 describe("getPathDirectory", () => {
   it("returns the leading directories with trailing separator", () => {

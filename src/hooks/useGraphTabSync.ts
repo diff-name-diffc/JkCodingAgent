@@ -9,6 +9,8 @@ interface UseGraphTabSyncOptions {
   editorTabs: EditorTabsState;
   onOpenGraphTab: (planId: string, sessionId: string) => void;
   onCloseGraphTab: (tabId: string) => void;
+  /** 每次用户点开执行图的序号。用来在放不下双栏时让出会话栏，且不重复抢回。 */
+  onGraphOpenRequest?: (openSeq: number) => void;
 }
 
 /**
@@ -28,6 +30,7 @@ export function useGraphTabSync({
   editorTabs,
   onOpenGraphTab,
   onCloseGraphTab,
+  onGraphOpenRequest,
 }: UseGraphTabSyncOptions) {
   const graphPanel = useWorkspaceStore((state) => state.graphPanel);
   const closeGraphPanel = useWorkspaceStore((state) => state.closeGraphPanel);
@@ -36,7 +39,8 @@ export function useGraphTabSync({
     if (!graphPanel || !activeSessionId) return;
     if (graphPanel.sessionId !== activeSessionId) return;
     onOpenGraphTab(graphPanel.planId, graphPanel.sessionId);
-  }, [graphPanel, activeSessionId, onOpenGraphTab]);
+    onGraphOpenRequest?.(graphPanel.openSeq);
+  }, [graphPanel, activeSessionId, onOpenGraphTab, onGraphOpenRequest]);
 
   useEffect(() => {
     if (graphPanel || !activeSessionId) return;

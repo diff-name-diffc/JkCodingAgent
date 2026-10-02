@@ -9,6 +9,7 @@ import type {
   RagRuntimeStatus,
 } from "../../../types";
 import { RAG_FILE_EXTENSIONS, normalizeSparseConfig } from "./rag-config";
+import { toast } from "../../Toast";
 import { useMountedDelay } from "./useMountedDelay";
 
 type RagConfigSectionKey = "qdrant" | "embedding" | "sparseEmbedding" | "chunking" | "ocr";
@@ -28,10 +29,9 @@ interface RagVectorTestResult {
 interface UseRagKbConfigOptions {
   projectId?: string;
   projectPath?: string;
-  showToast: (message: string, type?: "error" | "warning") => void;
 }
 
-export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbConfigOptions) {
+export function useRagKbConfig({ projectId, projectPath }: UseRagKbConfigOptions) {
   const { isMounted, waitWhileMounted } = useMountedDelay();
   const [config, setConfig] = useState<RagKbConfig | null>(null);
   const [original, setOriginal] = useState<RagKbConfig | null>(null);
@@ -61,7 +61,7 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
       .catch((error) => {
         if (!isMounted()) return;
         setSaveError(String(error));
-        showToast(`加载 RAG 配置失败：${String(error)}`);
+        toast.error(`加载 RAG 配置失败：${String(error)}`);
       })
       .finally(() => {
         if (isMounted()) setLoading(false);
@@ -88,7 +88,7 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
         });
     };
     pollStatus(5);
-  }, [isMounted, showToast, waitWhileMounted]);
+  }, [isMounted, waitWhileMounted]);
 
   const patchConfig = useCallback(
     <K extends RagConfigSectionKey>(key: K, patch: Partial<RagKbConfig[K]>) => {
@@ -113,13 +113,13 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
       // manual 源保存完成后 dirty 归零即「已保存」，不再维护 2 秒即逝的本地
       // saved 标记（footer 「已保存」chip 随之移除，避免双通道）。
       if (result.reloadError) {
-        showToast("配置已保存，但知识库服务热更新失败，重启应用后生效", "warning");
+        toast.warning("配置已保存，但知识库服务热更新失败，重启应用后生效");
       } else if (result.reloaded) {
-        showToast("配置已保存并热更新到运行中的服务", "warning");
+        toast.success("配置已保存并热更新到运行中的服务");
       }
       return result;
     },
-    [isMounted, showToast],
+    [isMounted],
   );
 
   const save = useCallback(async () => {
@@ -143,14 +143,14 @@ export function useRagKbConfig({ projectId, projectPath, showToast }: UseRagKbCo
       setRuntimeStatus({ running: true, port: result.port });
     } catch (error) {
       if (!isMounted()) return;
-      showToast(`重启 RAG 服务失败：${String(error)}`);
+      toast.error(`重启 RAG 服务失败：${String(error)}`);
       void invoke<RagRuntimeStatus>("rag_status")
         .then(setRuntimeStatus)
         .catch(() => {});
     } finally {
       if (isMounted()) setActionInProgress(null);
     }
-  }, [isMounted, showToast]);
+  }, [isMounted]);
 
   const runTest = useCallback(
     async (target: "qdrant" | "embedding") => {

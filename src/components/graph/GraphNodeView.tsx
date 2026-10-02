@@ -27,8 +27,6 @@ const PHASE_LABEL: Record<GraphKnownNodePhase, string> = {
   thinking: "分析中",
   responding: "生成响应",
   tool_running: "调用工具",
-  retrying: "重试中",
-  compacting: "压缩上下文",
   cached: "复用结果",
   finalizing: "收尾",
 };

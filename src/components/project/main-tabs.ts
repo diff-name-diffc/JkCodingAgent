@@ -40,10 +40,6 @@ export function diffTabId(diff: OpenDiff): string {
   return `diff:commit:${diff.hash}`;
 }
 
-export function sameDiff(a: OpenDiff, b: OpenDiff): boolean {
-  return diffTabId(a) === diffTabId(b);
-}
-
 export function graphTabId(planId: string): string {
   return `graph:${planId}`;
 }

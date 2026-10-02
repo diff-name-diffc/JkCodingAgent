@@ -18,7 +18,8 @@ use crate::agent::rig_ext::events::AgentEvent;
 /// 思考链不回灌上下文（瞬态产物：rig 的 openai 线格式会把 Reasoning 序列化进
 /// 请求体，DeepSeek 等服务商明确要求历史不携带 reasoning_content；思考已随
 /// `persist_tool_calls_message` 落库供 UI 展示，模型侧重放只会浪费预算）。
-pub(super) fn build_assistant_message(
+/// 主对话循环与子智能体运行时共用（经 `loop` 模块转出）。
+pub(crate) fn build_assistant_message(
     visible_text: &str,
     tool_calls: &[ToolCall],
     message_id: Option<String>,

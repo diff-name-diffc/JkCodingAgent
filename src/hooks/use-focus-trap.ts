@@ -1,5 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
-import { isImeKeyEvent } from "../lib/keyboard-bindings";
+import { isImeComposing } from "../lib/keyboard-bindings";
 
 /** 可聚焦元素选择器（保守集合，覆盖本仓库自研覆盖层的全部交互元素）。 */
 export const FOCUSABLE_SELECTOR = [
@@ -41,7 +41,7 @@ export function useFocusTrap(
     (initial ?? focusables()[0] ?? container).focus();
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Tab" || isImeKeyEvent(event)) return;
+      if (event.key !== "Tab" || isImeComposing(event)) return;
       const items = focusables();
       if (items.length === 0) {
         event.preventDefault();

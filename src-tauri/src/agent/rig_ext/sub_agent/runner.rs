@@ -322,20 +322,9 @@ impl RigSubAgentRuntime {
     }
 }
 
-/// 组装追加进历史的 assistant 消息（正文 + 工具调用）。
-/// 思考链不回灌上下文（与主对话同一口径：瞬态产物，rig 的 openai 线格式
-/// 会把 Reasoning 序列化进请求体，回灌只浪费预算）。
-fn build_assistant_turn(visible_text: &str, tool_calls: &[ToolCall]) -> Message {
-    use rig::message::{AssistantContent, Text};
-    let mut content: Vec<AssistantContent> = Vec::new();
-    if !visible_text.is_empty() {
-        content.push(AssistantContent::Text(Text::new(visible_text)));
-    }
-    for call in tool_calls {
-        content.push(AssistantContent::ToolCall(call.clone()));
-    }
-    Message::Assistant { id: None, content }
-}
+/// 组装 assistant 消息 / 思考链拆分：与主对话循环共用 `r#loop` 的单一实现
+/// （历史上此处存在逐行等价的本地副本，已归一删除，勿再复制）。
+use crate::agent::rig_ext::r#loop::{build_assistant_message, split_choice};
 
 /// 构造工具结果消息（结果 / 重试提示 / 未执行说明共用）。
 fn tool_result_message(call: &ToolCall, content: String) -> Message {
@@ -360,67 +349,6 @@ fn truncate_tool_result(result: &str) -> String {
     let tail: String = result.chars().skip(char_count - keep).collect();
     let dropped = char_count - SUB_AGENT_RESULT_MAX_CHARS;
     format!("{head}\n\n[...已截断 {dropped} 字符...]\n\n{tail}")
-}
-
-/// 流终态 choice → (正文, 思考, 工具调用)：`<think>` 标签正文拆入思考链。
-fn split_choice(choice: &[rig::message::AssistantContent]) -> (String, String, Vec<ToolCall>) {
-    use rig::message::AssistantContent;
-    let mut text = String::new();
-    let mut thinking = String::new();
-    let mut tool_calls = Vec::new();
-    for content in choice {
-        match content {
-            AssistantContent::Text(item) => text.push_str(&item.text),
-            AssistantContent::Reasoning(reasoning) => {
-                let display = reasoning.display_text();
-                if !display.is_empty() {
-                    if !thinking.is_empty() {
-                        thinking.push('\n');
-                    }
-                    thinking.push_str(&display);
-                }
-            }
-            AssistantContent::ToolCall(call) => tool_calls.push(call.clone()),
-            AssistantContent::Image(_) => {}
-        }
-    }
-    let (visible, tagged_thinking) = split_tagged_thinking(&text);
-    if !tagged_thinking.trim().is_empty() {
-        if !thinking.trim().is_empty() {
-            thinking.push_str("\n\n");
-        }
-        thinking.push_str(tagged_thinking.trim());
-    }
-    (visible.trim().to_string(), thinking, tool_calls)
-}
-
-/// 把 `<think>…</think>` 块从正文拆到思考链（DeepSeek 等把思考混在 content
-/// 里的方言；与 `rig_ext::r#loop::stream` 同一实现，Phase 5 归一）。
-fn split_tagged_thinking(content: &str) -> (String, String) {
-    let lower = content.to_ascii_lowercase();
-    let mut visible = String::new();
-    let mut thinking_blocks = Vec::new();
-    let mut cursor = 0usize;
-
-    while let Some(start_rel) = lower[cursor..].find("<think>") {
-        let start = cursor + start_rel;
-        let body_start = start + "<think>".len();
-        let Some(end_rel) = lower[body_start..].find("</think>") else {
-            break;
-        };
-        let end = body_start + end_rel;
-        let tag_end = end + "</think>".len();
-
-        visible.push_str(&content[cursor..start]);
-        let thinking = content[body_start..end].trim();
-        if !thinking.is_empty() {
-            thinking_blocks.push(thinking.to_string());
-        }
-        cursor = tag_end;
-    }
-
-    visible.push_str(&content[cursor..]);
-    (visible.trim().to_string(), thinking_blocks.join("\n\n"))
 }
 
 #[cfg(test)]

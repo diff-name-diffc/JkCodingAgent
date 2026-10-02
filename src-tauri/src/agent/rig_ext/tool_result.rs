@@ -99,8 +99,8 @@ pub(crate) fn clip_program_step_text(
     )
 }
 
-/// 默认压缩触发阈值（对齐 `tools/spec.rs` 的 DEFAULT_FORCE_COMPRESS_AFTER_CHARS）。
-pub const DEFAULT_FORCE_COMPRESS_AFTER_CHARS: usize = 5_000;
+/// 默认压缩触发阈值——单一出处 `tools/spec.rs`（策略表与 schema 文案共用）。
+pub(crate) use crate::agent::rig_ext::tools::spec::DEFAULT_FORCE_COMPRESS_AFTER_CHARS;
 
 /// 单个工具的结果策略（rig 工具面的挂载形态，对应旧工具结果策略；
 /// Phase 2 工具迁移时随工具面声明）。
@@ -117,6 +117,18 @@ impl RigToolResultPolicy {
             default_compress,
             force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
             persist_raw_artifact: true,
+        }
+    }
+}
+
+/// 从策略表（`ToolSpec` 的结果策略，落库契约形态）转换，字段搬运集中在
+/// 此处：策略表新增字段时编译器强制这里跟进，不会静默落回默认值。
+impl From<&crate::agent::rig_ext::tools::spec::ToolResultPolicy> for RigToolResultPolicy {
+    fn from(policy: &crate::agent::rig_ext::tools::spec::ToolResultPolicy) -> Self {
+        Self {
+            default_compress: policy.default_compress,
+            force_compress_after_chars: policy.force_compress_after_chars,
+            persist_raw_artifact: policy.persist_raw_artifact,
         }
     }
 }

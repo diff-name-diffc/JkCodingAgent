@@ -32,8 +32,6 @@ pub enum FsError {
         source: std::io::Error,
     },
     #[error("后台文件任务失败：{0}")]
-    Join(#[from] tokio::task::JoinError),
-    #[error("后台文件任务失败：{0}")]
     TauriJoin(#[from] tauri::Error),
 }
 

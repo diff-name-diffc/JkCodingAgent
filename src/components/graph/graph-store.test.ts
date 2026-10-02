@@ -19,7 +19,6 @@ function nodeRun(): GraphNodeRunRecord {
     modelLabel: "Model 1",
     modelCategory: "text",
     baseToolGroup: "coding",
-    specialToolsJson: "[]",
     inputText: "input",
     outputText: "",
     errorText: null,

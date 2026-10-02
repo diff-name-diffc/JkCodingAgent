@@ -16,7 +16,6 @@ import {
 import { AhaSettingsProvider, useAhaSettingsStore } from "./settings/use-aha-settings";
 import { flushAllSaveSources, hasDirtySaveSources } from "./settings/save-sources";
 import { SaveStatusIndicator } from "./settings/SaveStatusIndicator";
-import { Toaster } from "./settings/Toaster";
 import { ConfirmDialog } from "./settings/ConfirmDialog";
 import { GeneralPage } from "./settings/GeneralPage";
 import { GraphPage } from "./settings/GraphPage";
@@ -138,9 +137,11 @@ export function AppSettingsDialog({
   // UI-21c：外壳迁移到 Radix Dialog 原语——自带 portal（脱离 `.ai-*-shell > *`
   // 层叠上下文）、role="dialog"/aria-modal、焦点陷阱与关闭后焦点还原（审计 A10）。
   // 关闭意图（Esc / 点遮罩 / 关闭按钮）统一经 onOpenChange→requestClose 走脏检查；
-  // `open` 恒为 true，真正卸载由父级 onClose 控制。ConfirmDialog/Toaster 作为
+  // `open` 恒为 true，真正卸载由父级 onClose 控制。ConfirmDialog 作为
   // Content 的 React 子节点渲染：Radix 焦点栈据 React 树识别嵌套，内层确认框
   // 打开时外层陷阱自动让位，Esc 只关最顶层（替代旧 defaultPrevented 协调）。
+  // 提示通知统一走全局 toast（components/Toast.tsx，B-26 收敛），视口渲染在
+  // 应用根部、层叠高于本弹窗；onInteractOutside 豁免保证点击 toast 不误关弹窗。
   return (
     <AhaSettingsProvider value={store}>
       <DialogPrimitive.Root
@@ -157,6 +158,10 @@ export function AppSettingsDialog({
             onInteractOutside={(event) => {
               // 确认框打开时不与外层弹窗交互（点击/焦点）联动，避免误触发关闭。
               if (confirmingClose) event.preventDefault();
+              // 全局 toast 视口渲染在弹窗 portal 之外（层叠更高），点击它属于
+              // 用户与提示交互，不应被当成「点外部」触发弹窗关闭。
+              const target = event.detail.originalEvent.target as HTMLElement | null;
+              if (target?.closest(".ai-toast-stack")) event.preventDefault();
             }}
             onEscapeKeyDown={(event) => {
               if (confirmingClose) event.preventDefault();
@@ -244,7 +249,6 @@ export function AppSettingsDialog({
               </div>
             </section>
 
-            <Toaster />
             <ConfirmDialog
               open={confirmingClose}
               title="有未保存的修改"

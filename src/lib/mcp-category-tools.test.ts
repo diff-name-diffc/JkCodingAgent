@@ -7,7 +7,6 @@ function tool(exposedName: string): McpToolStatus {
     name: exposedName.split("__").pop() ?? exposedName,
     exposedName,
     description: `${exposedName} desc`,
-    taskSupport: "optional",
   };
 }
 

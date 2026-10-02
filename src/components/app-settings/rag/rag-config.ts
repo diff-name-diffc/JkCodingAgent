@@ -76,10 +76,6 @@ export function normalizeSparseConfig(config: RagKbConfig): RagKbConfig {
   };
 }
 
-export function ragFileName(path: string): string {
-  return path.split(/[\\/]/).pop() || path;
-}
-
 export type RagRuntimeState = "running" | "starting" | "stopped";
 
 /**

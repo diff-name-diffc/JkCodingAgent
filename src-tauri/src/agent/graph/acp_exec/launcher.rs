@@ -54,6 +54,21 @@ pub(crate) async fn prepare(settings: &AcpSettings) -> Result<LaunchPlan, String
     })
 }
 
+/// 托管安装的进程级互斥。图节点并发派发（MAX_PARALLEL_NODES）时多个
+/// launcher 可能同时发现版本标记缺失，各自对同一前缀并发 `npm install`
+/// 会互相删除/重放包目录（曾致 node 启动时 MODULE_NOT_FOUND——npm 重整
+/// 期间 `dist/index.js` 短暂不存在）。双检锁：已装好的快路径零开销；
+/// 需要安装时全局串行，拿到锁后重查（等待期间其他任务可能已完成安装），
+/// 仍需要才真正触网安装。锁覆盖「检查→安装→写标记」全程，保证没有
+/// launcher 在他人重整 node_modules 期间通过入口校验去拉起 node。
+static MANAGED_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 是否需要（重新）安装：版本标记与锁定版本不一致，或入口文件缺失。
+/// 标记仅在安装成功后写入，中断的安装会留下不一致状态、自然触发重装。
+fn managed_install_needed(current: Option<&str>, entry: &Path) -> bool {
+    current.map(str::trim) != Some(ACP_AGENT_VERSION) || !entry.is_file()
+}
+
 /// 托管模式：确保锁定版本的官方包已安装，返回 `node <entry 绝对路径>`。
 async fn resolve_managed(diagnostics: &mut Vec<String>) -> Result<(PathBuf, Vec<String>), String> {
     let root = crate::agent::config::resolve_home_dir()
@@ -61,23 +76,26 @@ async fn resolve_managed(diagnostics: &mut Vec<String>) -> Result<(PathBuf, Vec<
         .join(MANAGED_DIR_NAME);
     let entry = managed_entry(&root);
     let marker = root.join(VERSION_MARKER);
-    let current = std::fs::read_to_string(&marker).ok();
-    if current.as_deref().map(str::trim) != Some(ACP_AGENT_VERSION) || !entry.is_file() {
-        install_managed(&root).await?;
-        if !entry.is_file() {
-            return Err(format!(
-                "ACP 执行器安装后入口缺失：{}（安装可能不完整，请删除 {} 后重试）",
-                entry.display(),
+    if managed_install_needed(std::fs::read_to_string(&marker).ok().as_deref(), &entry) {
+        let _guard = MANAGED_INSTALL_LOCK.lock().await;
+        // 拿锁后重查：等待期间其他任务可能已完成安装。
+        if managed_install_needed(std::fs::read_to_string(&marker).ok().as_deref(), &entry) {
+            install_managed(&root).await?;
+            if !entry.is_file() {
+                return Err(format!(
+                    "ACP 执行器安装后入口缺失：{}（安装可能不完整，请删除 {} 后重试）",
+                    entry.display(),
+                    root.display()
+                ));
+            }
+            if let Err(error) = std::fs::write(&marker, ACP_AGENT_VERSION) {
+                return Err(format!("写入 ACP 执行器版本标记失败：{error}"));
+            }
+            diagnostics.push(format!(
+                "已安装 ACP 执行器 {ACP_AGENT_PACKAGE}@{ACP_AGENT_VERSION} 至 {}",
                 root.display()
             ));
         }
-        if let Err(error) = std::fs::write(&marker, ACP_AGENT_VERSION) {
-            return Err(format!("写入 ACP 执行器版本标记失败：{error}"));
-        }
-        diagnostics.push(format!(
-            "已安装 ACP 执行器 {ACP_AGENT_PACKAGE}@{ACP_AGENT_VERSION} 至 {}",
-            root.display()
-        ));
     }
     let node = resolve_program("node", diagnostics)?;
     Ok((node, vec![entry.to_string_lossy().to_string()]))
@@ -338,5 +356,21 @@ mod tests {
     fn managed_entry_points_at_package_bin() {
         let entry = managed_entry(Path::new("/root"));
         assert!(entry.ends_with("node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"));
+    }
+
+    #[test]
+    fn managed_install_needed_combines_marker_and_entry() {
+        // current_exe 是必然存在的真实文件，充当「入口已就位」。
+        let existing = std::env::current_exe().expect("测试进程可执行文件");
+        let missing = Path::new("/nonexistent/acp-agent/dist/index.js");
+        // 标记缺失 / 版本不符 / 入口缺失 → 需要安装。
+        assert!(managed_install_needed(None, &existing));
+        assert!(managed_install_needed(Some("0.78.0"), &existing));
+        assert!(managed_install_needed(Some(ACP_AGENT_VERSION), missing));
+        // 标记与版本一致（容忍首尾空白）且入口存在 → 跳过安装。
+        assert!(!managed_install_needed(
+            Some(&format!(" {ACP_AGENT_VERSION}\n")),
+            &existing
+        ));
     }
 }

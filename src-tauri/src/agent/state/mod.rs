@@ -303,8 +303,8 @@ impl DispatcherState {
             api_key: chosen.0,
             api_base: chosen.1,
             model: chosen.2,
-            // 容量以槽位（库条目回填）为权威；config 仅作 env 开发路径兜底。
-            max_tokens: chosen.3.or(config.max_tokens).map(u64::from),
+            // 容量以槽位（库条目回填）为唯一权威。
+            max_tokens: chosen.3.map(u64::from),
             context_window: chosen.4.map(u64::from),
             temperature: f64::from(config.temperature),
             enable_thinking: true,
@@ -353,7 +353,7 @@ impl DispatcherState {
             return Ok(tools);
         }
 
-        // 项目模式：列举 ToolProgram 可代理的数据面能力（settings.project.allowed_tools
+        // 项目模式：列举程序可调用的数据面能力（settings.project.allowed_tools
         // 的配置对象），与运行期 grant 同源。
         let mut agent =
             RigOrchestratorAgent::new(self.services.config.clone(), self.services.db.clone());

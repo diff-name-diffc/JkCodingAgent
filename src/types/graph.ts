@@ -12,8 +12,6 @@ export type GraphKnownNodePhase =
   | "thinking"
   | "responding"
   | "tool_running"
-  | "retrying"
-  | "compacting"
   | "cached"
   | "finalizing";
 /**
@@ -51,6 +49,8 @@ export interface GraphNodeDef {
   expectedFiles?: string[];
   /** 输出对下游的导出策略（默认 summary）。 */
   exportPolicy?: GraphExportPolicy;
+  /** 以 plan 模式启动（先计划后执行，计划完成后自动批准并切回 bypassPermissions）；默认 false = bypassPermissions 全权限。 */
+  usePlanMode?: boolean;
 }
 
 /** 项目 Agent 的核心产物：执行图 DAG 定义（definitionJson 解析后的结构）。 */
@@ -74,8 +74,6 @@ export interface GraphNodeRunRecord {
   modelLabel: string;
   modelCategory: string;
   baseToolGroup: GraphBaseToolGroup;
-  /** 历史列（v4 起图定义不再有 specialTools，后端固定写 "[]"）。 */
-  specialToolsJson: string;
   inputText: string;
   outputText: string;
   errorText: string | null;
@@ -129,18 +127,8 @@ export interface GraphHarnessModel {
   category: "text" | "vision" | "acp";
   capabilities: string[];
 }
-export interface GraphHarnessTool {
-  source: "aha";
-  name: string;
-  description: string;
-  provider: string;
-  category: string;
-  readonly: boolean;
-  reviewRequired: boolean;
-}
 export interface GraphHarnessCatalog {
   models: GraphHarnessModel[];
-  tools: GraphHarnessTool[];
   diagnostics: string[];
 }
 
@@ -253,23 +241,6 @@ export interface GraphRunPausedData {
 
 /** runResumed/runCancelled 等无数据事件的空载荷（Rust 侧序列化为 `{}`）。 */
 export type GraphRunEmptyData = Record<string, never>;
-
-export type GraphRunEventKind =
-  | "runStarted"
-  | "nodeStarted"
-  | "nodePhaseChanged"
-  | "nodeOutputDelta"
-  | "nodeActivity"
-  | "nodeFinished"
-  | "nodeFailed"
-  | "nodeSkipped"
-  | "nodeCancelled"
-  | "stateUpdated"
-  | "runPaused"
-  | "runResumed"
-  | "runFinished"
-  | "runFailed"
-  | "runCancelled";
 
 /** `graph-run-event` 全局事件载荷（判别联合，按 event 收窄 data）。 */
 export type GraphRunEventPayload = {

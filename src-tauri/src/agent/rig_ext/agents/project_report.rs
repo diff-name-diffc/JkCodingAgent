@@ -220,7 +220,6 @@ mod tests {
             model_label: String::new(),
             model_category: String::new(),
             base_tool_group: String::new(),
-            special_tools_json: String::new(),
             input_text: String::new(),
             output_text: String::new(),
             error_text: None,

@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { RotateCcw } from "lucide-react";
-import { useToast } from "./Toast";
+import { toast } from "./Toast";
 import { isSystemGroupNode, type TreeNode } from "./file-explorer/tree";
 import {
   FileExplorerRenameDialog,
@@ -39,7 +39,6 @@ export function FileExplorer({
   openFilePaths?: string[];
   active?: boolean;
 }) {
-  const { showToast } = useToast();
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [renameSaving, setRenameSaving] = useState(false);
   const {
@@ -96,10 +95,10 @@ export function FileExplorer({
         await navigator.clipboard.writeText(withMentionPrefix ? `@${path}` : path);
       } catch (error) {
         console.error("复制路径失败:", error);
-        showToast(`复制路径失败：${resolveErrorMessage(error)}`);
+        toast.error(`复制路径失败：${resolveErrorMessage(error)}`);
       }
     },
-    [showToast],
+    [],
   );
 
   const handleDelete = useCallback(
@@ -129,10 +128,10 @@ export function FileExplorer({
         await refresh();
       } catch (error) {
         console.error("删除文件项失败:", error);
-        showToast(`删除失败：${resolveErrorMessage(error)}`);
+        toast.error(`删除失败：${resolveErrorMessage(error)}`);
       }
     },
-    [confirmOpenFileMutation, onFileDelete, projectPath, refresh, showToast, updateSelectedPath],
+    [confirmOpenFileMutation, onFileDelete, projectPath, refresh, updateSelectedPath],
   );
 
   const handleRename = useCallback(
@@ -165,7 +164,7 @@ export function FileExplorer({
         await refresh();
       } catch (error) {
         console.error("重命名文件项失败:", error);
-        showToast(`重命名失败：${resolveErrorMessage(error)}`);
+        toast.error(`重命名失败：${resolveErrorMessage(error)}`);
       } finally {
         setRenameSaving(false);
       }
@@ -176,7 +175,6 @@ export function FileExplorer({
       projectPath,
       refresh,
       renameTarget,
-      showToast,
       updateSelectedPath,
     ],
   );

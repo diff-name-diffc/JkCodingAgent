@@ -18,11 +18,11 @@ use agent_client_protocol::schema::v1::{
 };
 use serde_json::{json, Value};
 
+use super::super::input::truncate_chars;
 use super::super::types::{
     AgentActivity, GraphRunEvent, NODE_PHASE_RESPONDING, NODE_PHASE_THINKING,
     NODE_PHASE_TOOL_RUNNING,
 };
-use crate::agent::graph::harness::PermissionMode;
 
 /// activity.content（工具输出摘要等）的字符上限。
 const MAX_ACTIVITY_CONTENT_CHARS: usize = 8_000;
@@ -162,7 +162,11 @@ impl Mapper {
             kind: "lifecycle".into(),
             status: "finished".into(),
             title: title.to_string(),
-            content: truncate_str(content, MAX_ACTIVITY_CONTENT_CHARS),
+            content: truncate_chars(
+                content,
+                MAX_ACTIVITY_CONTENT_CHARS,
+                ACTIVITY_TRUNCATE_SUFFIX,
+            ),
             payload_json: "{}".into(),
             started_at: now,
             finished_at: Some(now),
@@ -200,7 +204,11 @@ impl Mapper {
             kind: "thinking".into(),
             status: "finished".into(),
             title: "思考过程".into(),
-            content: truncate_str(&self.thinking, MAX_ACTIVITY_CONTENT_CHARS),
+            content: truncate_chars(
+                &self.thinking,
+                MAX_ACTIVITY_CONTENT_CHARS,
+                ACTIVITY_TRUNCATE_SUFFIX,
+            ),
             payload_json: "{}".into(),
             started_at,
             finished_at: Some(now_ms()),
@@ -464,32 +472,92 @@ pub(super) enum PermissionDecision {
     Cancel,
 }
 
-/// 权限自动应答决策。
+/// 按选项 kind 选中第一个匹配项（审查/快路径共用的选项选择器）。
+pub(super) fn select_kind(
+    options: &[PermissionOption],
+    wanted: PermissionOptionKind,
+) -> Option<PermissionDecision> {
+    options
+        .iter()
+        .find(|option| option.kind == wanted)
+        .map(|option| PermissionDecision::Select(option.option_id.clone()))
+}
+
+/// 静态快路径决策：可本地判定的请求不消耗审查模型。
 ///
-/// - 路径越界（任一 location 越出工作区）或 read_only 节点：优先 reject_once，
-///   无则取消；
-/// - coding 节点：优先 allow_once，无则取消。
+/// - `EnterPlanMode`：放行（子智能体自发进入计划模式是允许的工作方式）；
+/// - `ExitPlanMode`（"Ready to code?"）：批准并按 `select_plan_approval`
+///   切换权限级别；
+/// - 路径越界：拒绝（硬边界，先于审查 AI）；
+/// - 其余：返回 `None`，交给全局权限审查 AI 裁决。
 ///
-/// 无论哪种模式都不选 allow_always / reject_always——自动应答的作用域仅限
-/// 单次调用，绝不放大为常驻授权；没有一次性允许选项时宁可取消也不回退到
-/// 选项列表第一项（它可能是 allow_always）。
-pub(super) fn decide_permission(
-    mode: PermissionMode,
+/// 无论哪种路径都不选 allow_always / reject_always 的常驻规则类选项——
+/// 自动应答的作用域仅限单次调用（ExitPlanMode 的模式切换选项是例外，
+/// 见 `select_plan_approval`）。
+pub(super) fn decide_static(
+    tool_name: &str,
     options: &[PermissionOption],
     out_of_workspace: bool,
-) -> PermissionDecision {
-    let select = |wanted: PermissionOptionKind| {
-        options
-            .iter()
-            .find(|option| option.kind == wanted)
-            .map(|option| PermissionDecision::Select(option.option_id.clone()))
-    };
-    match mode {
-        PermissionMode::AcceptEdits if !out_of_workspace => {
-            select(PermissionOptionKind::AllowOnce).unwrap_or(PermissionDecision::Cancel)
-        }
-        _ => select(PermissionOptionKind::RejectOnce).unwrap_or(PermissionDecision::Cancel),
+) -> Option<PermissionDecision> {
+    if tool_name == "EnterPlanMode" {
+        return Some(
+            select_kind(options, PermissionOptionKind::AllowOnce)
+                .unwrap_or(PermissionDecision::Cancel),
+        );
     }
+    if tool_name == "ExitPlanMode" {
+        return Some(select_plan_approval(options));
+    }
+    if out_of_workspace {
+        return Some(
+            select_kind(options, PermissionOptionKind::RejectOnce)
+                .unwrap_or(PermissionDecision::Cancel),
+        );
+    }
+    None
+}
+
+/// ExitPlanMode 的批准选项选择：批准计划后由客户端统一切回
+/// **bypassPermissions**（client.rs 在批准应答后主动 `set_mode`）。
+///
+/// claude-agent-acp 0.79.0（launcher 锁定版本）的选项表：elevated 档恒为
+/// auto 变体（auto 永远在模式目录里，"bypass permissions" 变体不可达），
+/// 因此这里的选项只充当「批准载体」——不承载目标权限级别，级别由客户端
+/// 后续 set_mode 保证：
+/// - allow_always「Yes, and use auto mode」（setMode auto，仅作批准载体）
+/// - allow_once「Yes, manually approve edits」（降为逐次审批）
+/// - reject_once「No, keep planning」
+/// 以及各自带 "clear context" 前缀的变体（批准并清空上下文重启——会丢弃
+/// 本轮节点已积累的上下文，跳过）。
+///
+/// 优先级：bypass 命名选项（未来 adapter 若提供，则无需跟进 set_mode）>
+/// 任意 allow_always（非 clear context）> 任意 allow_once > reject_once >
+/// Cancel。前两档虽是 allow_always kind，但其 updatedPermissions 是
+/// `setMode destination:"session"` 的会话级切换、不落持久规则，与「不放大
+/// 授权」原则不冲突。选项名匹配绑定 adapter 版本，升级 adapter 时需回归
+/// `plan_approval_prefers_elevated_option` 测试。
+pub(super) fn select_plan_approval(options: &[PermissionOption]) -> PermissionDecision {
+    fn name_contains(option: &PermissionOption, needle: &str) -> bool {
+        option.name.to_ascii_lowercase().contains(needle)
+    }
+    let is_clear_context = |option: &PermissionOption| name_contains(option, "clear context");
+    let bypass = options.iter().find(|option| {
+        option.kind == PermissionOptionKind::AllowAlways
+            && name_contains(option, "bypass permissions")
+            && !is_clear_context(option)
+    });
+    if let Some(option) = bypass {
+        return PermissionDecision::Select(option.option_id.clone());
+    }
+    let elevated = options.iter().find(|option| {
+        option.kind == PermissionOptionKind::AllowAlways && !is_clear_context(option)
+    });
+    if let Some(option) = elevated {
+        return PermissionDecision::Select(option.option_id.clone());
+    }
+    select_kind(options, PermissionOptionKind::AllowOnce)
+        .or_else(|| select_kind(options, PermissionOptionKind::RejectOnce))
+        .unwrap_or(PermissionDecision::Cancel)
 }
 
 fn now_ms() -> i64 {
@@ -551,7 +619,7 @@ fn tool_output_text(raw_output: Option<&Value>, content: &[ToolCallContent]) -> 
             Value::String(text) => text.clone(),
             other => other.to_string(),
         };
-        return truncate_str(&text, MAX_ACTIVITY_CONTENT_CHARS);
+        return truncate_chars(&text, MAX_ACTIVITY_CONTENT_CHARS, ACTIVITY_TRUNCATE_SUFFIX);
     }
     let mut parts = Vec::new();
     for item in content {
@@ -568,17 +636,16 @@ fn tool_output_text(raw_output: Option<&Value>, content: &[ToolCallContent]) -> 
             _ => {}
         }
     }
-    truncate_str(&parts.join("\n"), MAX_ACTIVITY_CONTENT_CHARS)
+    truncate_chars(
+        &parts.join("\n"),
+        MAX_ACTIVITY_CONTENT_CHARS,
+        ACTIVITY_TRUNCATE_SUFFIX,
+    )
 }
 
-/// 字符数感知的截断（追加截断标记，避免前端把残缺 JSON 当完整数据解析）。
-fn truncate_str(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let truncated = text.chars().take(max_chars).collect::<String>();
-    format!("{truncated}…（截断）")
-}
+/// 活动内容/输出截断后缀（追加截断标记，避免前端把残缺 JSON 当完整数据解析；
+/// 截断口径复用 `input::truncate_chars`：字符而非字节）。
+const ACTIVITY_TRUNCATE_SUFFIX: &str = "…（截断）";
 
 /// payload 单字段限长：序列化超长时降级为截断字符串（保留可读性，
 /// 不把残缺 JSON 写入 payload）。
@@ -587,7 +654,7 @@ fn truncate_value(value: &Value, max_chars: usize) -> Value {
     if text.chars().count() <= max_chars {
         value.clone()
     } else {
-        Value::String(truncate_str(&text, max_chars))
+        Value::String(truncate_chars(&text, max_chars, ACTIVITY_TRUNCATE_SUFFIX))
     }
 }
 

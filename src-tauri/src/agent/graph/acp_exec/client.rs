@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, Error, InitializeRequest, NewSessionRequest,
-    NewSessionResponse, PromptRequest, RequestPermissionRequest, RequestPermissionResponse,
-    SessionConfigKind, SessionConfigOptionValue, SessionConfigSelectOptions, SessionId,
-    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
-    TextContent,
+    NewSessionResponse, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SessionConfigKind,
+    SessionConfigOptionValue, SessionConfigSelectOptions, SessionId, SessionNotification,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::ByteStreams;
@@ -73,10 +73,14 @@ pub(super) async fn run_prompt_turn(
     let mut diagnostics = plan.diagnostics;
     let permission_mode = harness.permission_mode;
     let mode_id = permission_mode.mode_id();
-    let read_only = matches!(permission_mode, PermissionMode::Plan);
+    let plan_mode = matches!(permission_mode, PermissionMode::Plan);
     let model_keyword = harness.model_id.clone();
 
     let notify_handler = handler.clone();
+    let permission_handler = handler.clone();
+    // 计划批准后的 bypass 跟进需要连接/会话句柄（与取消分支共享同一对槽）。
+    let permission_conn_slot = Arc::clone(&conn_slot);
+    let permission_session_slot = Arc::clone(&session_slot);
     let connect = agent_client_protocol::Client
         .builder()
         .on_receive_notification(
@@ -90,8 +94,55 @@ pub(super) async fn run_prompt_turn(
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _connection| {
-                let outcome = handler.answer_permission(permission_mode, &request);
-                responder.respond(RequestPermissionResponse::new(outcome))
+                // 权限应答可能要等全局审查模型（秒级 LLM）：连接事件循环是
+                // 单异步任务，handler 运行期间不处理任何其他消息（crate 文档
+                // 明确警告）。把应答整体挪进独立任务、经 responder 延迟应答
+                // （恰好应答一次的语义由 Responder 保证；任务被丢弃时 drop
+                // guard 会补 Internal Error，不会让请求悬挂）。
+                let handler = permission_handler.clone();
+                let conn_slot = Arc::clone(&permission_conn_slot);
+                let session_slot = Arc::clone(&permission_session_slot);
+                tokio::spawn(async move {
+                    let is_plan_approval = request
+                        .tool_call
+                        .fields
+                        .name
+                        .as_deref()
+                        .map(|name| name == "ExitPlanMode")
+                        .unwrap_or(false);
+                    let outcome = handler.answer_permission(&request).await;
+                    // 「批准」= 选中了一个 allow 类选项。Selected 本身不够：
+                    // 选项表缺 allow 变体时 `select_plan_approval` 会退到
+                    // reject_once（Selected），此时切 bypass 等于推翻拒绝。
+                    let approved = match &outcome {
+                        RequestPermissionOutcome::Selected(selected) => {
+                            request.options.iter().any(|option| {
+                                option.option_id == selected.option_id
+                                    && matches!(
+                                        option.kind,
+                                        PermissionOptionKind::AllowOnce
+                                            | PermissionOptionKind::AllowAlways
+                                    )
+                            })
+                        }
+                        _ => false,
+                    };
+                    if let Err(error) = responder.respond(RequestPermissionResponse::new(outcome)) {
+                        eprintln!(
+                            "[graph] ACP 权限应答发送失败（节点 {}）：{error}",
+                            handler.node_id
+                        );
+                        return;
+                    }
+                    // 计划批准后统一切回 bypassPermissions：0.79.0 的
+                    // ExitPlanMode 选项表没有 bypass 变体（elevated 档恒为
+                    // auto），批准选项只充当载体，目标级别由此处保证。
+                    if is_plan_approval && approved {
+                        restore_bypass_after_plan_approval(&conn_slot, &session_slot, &handler)
+                            .await;
+                    }
+                });
+                Ok(())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -118,12 +169,14 @@ pub(super) async fn run_prompt_turn(
                 *session_slot.lock() = Some(session_id.clone());
                 let mut stage_diagnostics = Vec::new();
                 if let Err(error) = apply_mode(&connection, &session, &session_id, mode_id).await {
-                    if read_only {
-                        // 只读节点 fail-closed：权限模式未生效时执行器默认模式
-                        // 可能放行写操作，直接失败优于带病运行。
+                    if plan_mode {
+                        // plan 节点 fail-closed：模式未生效意味着「先计划后执行」
+                        // 的节点语义落空，直接失败优于带病运行。bypass 节点设置
+                        // 失败仅记诊断（宽松优先，浮出的权限请求仍由审查 AI
+                        // 把关）。
                         return Err(Error::new(
                             ERR_SET_MODE,
-                            format!("只读节点权限模式未能生效（fail-closed）：{error}"),
+                            format!("plan 节点权限模式未能生效（fail-closed）：{error}"),
                         ));
                     }
                     stage_diagnostics.push(format!("{error}，沿用当前模式"));
@@ -197,9 +250,49 @@ async fn wait_for_cancel(cancel_rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// 会话权限模式：baseToolGroup → Claude Code 权限模式（plan / acceptEdits）。
-/// 返回 Err 表示模式未能生效；调用方决定 fail-closed（只读节点）还是降级
-/// 继续（coding 节点记 diagnostic 沿用当前模式）。
+/// 计划批准后的 bypass 跟进：把会话权限模式切回 bypassPermissions。
+/// 0.79.0 的 ExitPlanMode 批准选项没有 bypass 变体（elevated 档恒为 auto），
+/// 目标级别只能由客户端在批准后主动保证。失败不致命（记审计活动 + 日志，
+/// 会话停留在批准选项携带的模式继续运行）。
+async fn restore_bypass_after_plan_approval(
+    conn_slot: &Arc<Mutex<Option<ConnectionTo<Agent>>>>,
+    session_slot: &Arc<Mutex<Option<SessionId>>>,
+    handler: &super::HandlerContext,
+) {
+    let Some(connection) = conn_slot.lock().clone() else {
+        return;
+    };
+    let Some(session_id) = session_slot.lock().clone() else {
+        return;
+    };
+    let result = connection
+        .send_request(SetSessionModeRequest::new(
+            session_id,
+            "bypassPermissions".to_string(),
+        ))
+        .block_task()
+        .await;
+    let (title, content) = match &result {
+        Ok(_) => (
+            "权限模式：计划批准后切换 bypassPermissions".to_string(),
+            "执行计划已获批准，会话切回 bypassPermissions 全权限模式".to_string(),
+        ),
+        Err(error) => (
+            "权限模式：计划批准后切换 bypassPermissions 失败".to_string(),
+            format!("会话沿用批准选项携带的模式继续运行：{error}"),
+        ),
+    };
+    let action = handler.mapper.lock().lifecycle_activity(&title, &content);
+    handler.apply(vec![action]);
+    if result.is_err() {
+        eprintln!("[graph] {title}（节点 {}）：{content}", handler.node_id);
+    }
+}
+
+/// 会话权限模式应用：usePlanMode → plan（先计划后执行），否则
+/// bypassPermissions（全权限）。返回 Err 表示模式未能生效；调用方决定
+/// fail-closed（plan 节点：计划先行是节点语义）还是降级继续（bypass 节点
+/// 记 diagnostic 沿用当前模式，浮出的权限请求仍由审查 AI 把关）。
 async fn apply_mode(
     connection: &ConnectionTo<Agent>,
     session: &NewSessionResponse,

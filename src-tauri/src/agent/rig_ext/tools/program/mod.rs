@@ -1,56 +1,43 @@
-//! 工具程序 DSL 执行器：run_tool_program。
-//! 数据面（可被程序调用的工具集合）由调用方（编排器工厂）注入。
+//! `run_tool_program`：进程内 JavaScript 编排本轮注入的数据面工具。
 //!
-//! 模型只能看到这个工具的描述，看不到数据面工具自己的 schema。描述由
-//! `guide` 按本轮数据面现写：程序形状、引用限制、每个授权工具的字段名。
-//! 字面量参数在执行前按该 schema 校验；文本结果禁止 `/data/...` 子路径。
-//! 子步骤直接 `execute`，不另建工具运行台账，文本按内联上限截断。
+//! 模型只看到这个入口。可调用的名字和字段在系统提示的「数据面 SDK」里，
+//! 由同一份 `contracts()` 生成。单次绑定的参数错误是程序可捕获的
+//! `ToolCallError`；只有未捕获的失败、无法执行的源码、超时或取消才让整次失败。
 
-mod ast;
+mod bindings;
+mod dispatch;
 mod error;
-mod executor;
-mod guide;
 mod leaf_host;
+mod limits;
 mod managed;
-mod support;
-mod validate;
-mod value;
+mod runtime;
+mod sdk;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rig::tool::{PortableDynamicTool, ToolExecutionError};
+use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
+use serde_json::Value;
 use tauri::ipc::Channel;
 use tokio::sync::watch;
 
-use self::error::{ProgramError, ProgramErrorKind};
-use self::validate::CapabilityPolicy;
+use self::error::{CodeRunFailed, FailureKind};
+use self::leaf_host::LeafHost;
+use self::limits::ProgramLimits;
 use super::deps::RigToolDeps;
+use crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext;
 
-/// 这些工具的程序结果是整段文本，`/data` 没有子字段。并行能力另见策略表
-/// `supports_parallel_readonly`，不在这里抄一份。
-const TEXT_RESULT_TOOLS: &[&str] = &[
-    "read_file",
-    "list_dir",
-    "glob",
-    "grep",
-    "ssh_list_servers",
-    "ssh_memo_read",
-];
-
-/// 描述数据面工具时用的快照。描述文本在工具构造时生成，不随单次调用变化。
+/// 描述数据面工具时用的快照。SDK 与绑定都从这里取名字、说明和参数 schema。
 pub(super) struct ToolContract {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
     pub supports_parallel_readonly: bool,
-    pub returns_text: bool,
 }
 
 /// 程序可调用的数据面：按名查找注入的 `PortableDynamicTool`。
 ///
-/// 工具存在于数据面即视为已授权（对齐旧「runtime_capabilities ∩ 注册表」
-/// 目录语义——授权裁剪由调用方组装数据面时完成）。
+/// 工具存在于数据面即视为已授权。授权裁剪由调用方组装数据面时完成。
 #[derive(Clone, Default)]
 pub(crate) struct DataPlane {
     tools: Arc<HashMap<String, PortableDynamicTool>>,
@@ -65,8 +52,7 @@ impl DataPlane {
     ///
     /// runtime=None 时叶子走裸执行路径：`managed::execute` 直接
     /// `tool.execute(arguments)`，跳过受管叶子的登记、结算与命令门禁。
-    /// 生产路径必须随后接 `with_runtime(deps)`（见 `program_tool`）；只有测试与
-    /// 未接管 runtime 的外部调用方停在 None 形态。
+    /// 生产路径必须随后接 `with_runtime(deps)`（见 `program_tool`）。
     pub(crate) fn new(tools: Vec<PortableDynamicTool>) -> Self {
         let mut map = HashMap::with_capacity(tools.len());
         for tool in tools {
@@ -87,7 +73,6 @@ impl DataPlane {
     }
 
     /// 注入运行时依赖，把叶子切到受管路径（登记为内部工具运行 + 结算 + 门禁）。
-    /// 生产入口 `program_tool` 恒走这里；`DataPlane::new` 之后未调用本方法即 runtime=None。
     fn with_runtime(mut self, deps: RigToolDeps) -> Self {
         self.runtime = Some(deps);
         self
@@ -106,14 +91,6 @@ impl DataPlane {
         self.tools.get(name)
     }
 
-    /// 静态校验用的能力目录条目。
-    pub(crate) fn policy_for(&self, name: &str) -> Option<CapabilityPolicy> {
-        self.get(name).map(|_| CapabilityPolicy {
-            supports_parallel_readonly: super::spec::supports_parallel_readonly(name),
-            returns_text: TEXT_RESULT_TOOLS.contains(&name),
-        })
-    }
-
     pub(super) fn contracts(&self) -> Vec<ToolContract> {
         let mut entries = self
             .tools
@@ -123,7 +100,6 @@ impl DataPlane {
                 let name = definition.name;
                 ToolContract {
                     supports_parallel_readonly: super::spec::supports_parallel_readonly(&name),
-                    returns_text: TEXT_RESULT_TOOLS.contains(&name.as_str()),
                     description: definition.description,
                     parameters: definition.parameters,
                     name,
@@ -133,6 +109,12 @@ impl DataPlane {
         entries.sort_by(|left, right| left.name.cmp(&right.name));
         entries
     }
+}
+
+/// 本轮数据面的 SDK 文本。调用方必须用构造 `program_tool` 的同一批工具生成。
+pub(crate) fn data_plane_sdk(tools: &[PortableDynamicTool]) -> String {
+    let plane = DataPlane::new(tools.to_vec());
+    sdk::render_section(&plane.contracts())
 }
 
 /// `run_tool_program` 工具入口：数据面与叶子事件通道由调用方注入。
@@ -149,130 +131,178 @@ pub(crate) fn program_tool(
     )
 }
 
+const PROGRAM_DESCRIPTION: &str = "\
+用一段 JavaScript 异步函数体编排本轮数据面里的只读工具，完成一次调查。\
+名字和字段只看系统提示中的「数据面 SDK」。返回这次调查要交给后续推理的结果。";
+
+fn program_parameters_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "description"],
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "异步函数体，不是完整脚本。用 await tools.名字(参数对象) 调用「数据面 SDK」中的工具，用 return 交回结果。没有文件、网络或进程。"
+            },
+            "description": {
+                "type": "string",
+                "description": "这次调查的标题，写清要查什么。"
+            }
+        }
+    })
+}
+
 fn build_program_tool(
     cancel_rx: Option<watch::Receiver<bool>>,
     plane: DataPlane,
 ) -> PortableDynamicTool {
-    let description = guide::render_description(&plane);
     PortableDynamicTool::new(
         "run_tool_program",
-        description,
-        ast::tool_program_parameters_schema(),
+        PROGRAM_DESCRIPTION,
+        program_parameters_schema(),
         move |args| {
             let plane = plane.clone();
-            let cancel_rx =
-                crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
-                    .map(|context| context.cancel_rx)
-                    .or_else(|| cancel_rx.clone());
-            Box::pin(async move {
-                let limits = validate::ProgramLimits::default();
-                let catalog = |name: &str| plane.policy_for(name);
-                let program = validate::validate_program_value(&args, &catalog, &limits)
-                    .map_err(program_error_tool_error)?;
-                guide::reject_invalid_literal_arguments(&program, &plane)
-                    .map_err(program_error_tool_error)?;
-                executor::execute_program(&program, &plane, &limits, cancel_rx).await
-            })
+            let cancel_rx = cancel_rx.clone();
+            Box::pin(async move { execute_program(plane, cancel_rx, args).await })
         },
     )
 }
 
-/// 将静态验证或运行期 ProgramError 映射为 rig 工具错误。
-///
-/// 模型可以改程序再试的失败都标成 retryable，避免和同批 `message` 一起被收口：
-/// - Cancelled → `cancelled`；
-/// - ChildFatal / Internal → `other` 且 retryable=false；
-/// - DeadlineExceeded → `timeout`（默认可重试）；
-/// - PolicyDenied → `permission_denied` 且 retryable（换成已授权工具即可）；
-/// - Parse / Validation / LimitExceeded / InvalidReference → `invalid_args` 且 retryable；
-/// - ChildRecoverable → `other` 且 retryable。
-///
-/// 步骤、位置和已完成步骤写进模型可见文本。rig 工具结果没有单独的 metadata 通道。
-pub(crate) fn program_error_tool_error(error: ProgramError) -> ToolExecutionError {
-    let kind = error.kind;
-    let message = model_error_message(&error);
-    let mapped = match kind {
-        ProgramErrorKind::Cancelled => ToolExecutionError::cancelled(message),
-        ProgramErrorKind::ChildFatal | ProgramErrorKind::Internal => {
-            ToolExecutionError::other(message).with_retryable(false)
-        }
-        ProgramErrorKind::DeadlineExceeded => ToolExecutionError::timeout(message),
-        ProgramErrorKind::PolicyDenied => {
-            ToolExecutionError::permission_denied(message).with_retryable(true)
-        }
-        ProgramErrorKind::Parse
-        | ProgramErrorKind::Validation
-        | ProgramErrorKind::LimitExceeded
-        | ProgramErrorKind::InvalidReference => {
-            ToolExecutionError::invalid_args(message).with_retryable(true)
-        }
-        ProgramErrorKind::ChildRecoverable => {
-            ToolExecutionError::other(message).with_retryable(true)
-        }
+async fn execute_program(
+    plane: DataPlane,
+    cancel_rx: Option<watch::Receiver<bool>>,
+    args: Value,
+) -> Result<ToolOutput, ToolExecutionError> {
+    let code = required_text(&args, "code")?;
+    let _description = required_text(&args, "description")?;
+    if let Some(name) = bindings::reserved_conflict(plane.tools.keys()) {
+        return Err(program_error_tool_error(CodeRunFailed::new(
+            FailureKind::Exception,
+            format!("数据面占用了保留名字 '{name}'，本次程序拒绝启动"),
+            "",
+        )));
+    }
+    let parent = ToolInvocationContext::current();
+    let cancel = parent
+        .as_ref()
+        .map(|context| context.cancel_rx.clone())
+        .or(cancel_rx)
+        .unwrap_or_else(|| watch::channel(false).1);
+    let host = match (plane.runtime.as_ref(), parent.as_ref()) {
+        (Some(deps), Some(context)) => Some(Arc::new(LeafHost::new(
+            deps,
+            context,
+            plane.run_events.clone(),
+        ))),
+        _ => None,
     };
-    match serde_json::to_value(kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-    {
-        Some(code) => mapped.with_code(code),
-        None => mapped,
+    // 实时挂载前提：前端卡片由 toolStarted 按 toolCallId 建立、没有 runId，而主路径
+    // 调度器 run_events=None 不发根 run 的 ToolRunUpdated——不先补这一条，叶子的
+    // parentRunId 在前端找不到父卡片，实时进度会被静默丢弃。失败只降级可见性，
+    // 不影响程序执行。
+    if let (Some(deps), Some(context), Some(run_events)) = (
+        plane.runtime.as_ref(),
+        parent.as_ref(),
+        plane.run_events.as_ref(),
+    ) {
+        let (db, task) = (deps.db.clone(), context.task_id.clone());
+        match tokio::task::spawn_blocking(move || db.load_tool_run(&task)).await {
+            Ok(Ok(run)) => crate::agent::common::emit(
+                run_events,
+                crate::agent::rig_ext::events::AgentEvent::ToolRunUpdated { run },
+            ),
+            Ok(Err(error)) => eprintln!(
+                "[agent] run_tool_program 父运行记录读取失败，叶子实时事件可能无法挂载：{error:#}"
+            ),
+            Err(error) => eprintln!("[agent] run_tool_program 父运行记录读取任务失败：{error}"),
+        }
+    }
+    let installed = bindings::install(&plane, host.clone(), parent);
+    let outcome = runtime::run(code, installed, cancel, ProgramLimits::default()).await;
+    if let Some(host) = host.as_ref() {
+        if let Err(error) = host.shutdown().await {
+            eprintln!("[agent] run_tool_program 叶子宿主收尾失败：{error:#}");
+        }
+    }
+    outcome
+        .map(|success| ToolOutput::text(render_success(&success)))
+        .map_err(program_error_tool_error)
+}
+
+fn required_text<'a>(args: &'a Value, field: &str) -> Result<&'a str, ToolExecutionError> {
+    match args.get(field).and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Ok(text),
+        _ => Err(ToolExecutionError::invalid_args(format!(
+            "错误：run_tool_program 需要非空字符串参数 {field}"
+        ))
+        .with_retryable(true)
+        .with_code("invalid_arguments")),
     }
 }
 
-fn model_error_message(error: &ProgramError) -> String {
-    let mut message = format!("错误：ToolProgram 执行失败：{}", error.message);
-    let mut extras = Vec::new();
-    if let Some(step) = error.step_id.as_deref() {
-        match error.tool.as_deref() {
-            Some(tool) if !tool.is_empty() => extras.push(format!("步骤 {step}（{tool}）")),
-            _ => extras.push(format!("步骤 {step}")),
-        }
+fn render_success(success: &runtime::ProgramSuccess) -> String {
+    let body = match &success.value {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string(other).unwrap_or_else(|_| "null".to_string()),
+    };
+    if success.logs.is_empty() {
+        body
+    } else if body.is_empty() {
+        success.logs.clone()
+    } else {
+        format!("{}\n{body}", success.logs)
     }
-    if let Some(path) = error.node_path.as_deref() {
-        extras.push(format!("位置 {path}"));
-    }
-    if !extras.is_empty() {
-        message.push(' ');
-        message.push_str(&extras.join("，"));
-        message.push('。');
-    }
-    if !error.completed_steps.is_empty() {
-        message.push_str(&format!(
-            " 已完成步骤：{}。这些步骤的输出没有随错误返回，修正后会重新执行。",
-            error.completed_steps.join("、")
-        ));
-    }
-    message
+}
+
+fn program_error_tool_error(error: CodeRunFailed) -> ToolExecutionError {
+    let message = error.model_text();
+    let mapped = match error.kind {
+        FailureKind::Exception => ToolExecutionError::invalid_args(message).with_retryable(true),
+        FailureKind::OutputLimit => ToolExecutionError::other(message).with_retryable(true),
+        FailureKind::Timeout => ToolExecutionError::timeout(message).with_retryable(true),
+        FailureKind::Abort => ToolExecutionError::cancelled(message),
+    };
+    mapped.with_code(error.kind.as_str())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use serde_json::json;
 
-    use super::error::{ProgramError, ProgramErrorKind};
-    use super::{build_program_tool, DataPlane};
+    use super::error::{CodeRunFailed, FailureKind};
+    use super::{build_program_tool, program_error_tool_error, DataPlane};
     use rig::tool::{PortableDynamicTool, ToolErrorKind, ToolOutput};
 
     fn echo_tool() -> PortableDynamicTool {
-        PortableDynamicTool::new("echo", "echo", json!({ "type": "object" }), |args| {
-            Box::pin(async move { Ok(ToolOutput::json(args)) })
-        })
+        PortableDynamicTool::new(
+            "echo",
+            "echo",
+            json!({ "type": "object", "additionalProperties": true }),
+            |args| Box::pin(async move { Ok(ToolOutput::text(args.to_string())) }),
+        )
     }
 
     #[test]
-    fn data_plane_looks_up_by_name_and_marks_parallel_readonly() {
-        let plane = DataPlane::new(vec![echo_tool()]);
-        assert!(plane.get("echo").is_some());
+    fn data_plane_marks_registered_readonly_tools_parallel() {
+        let plane = DataPlane::new(vec![
+            PortableDynamicTool::new("read_file", "read", json!({}), |_| {
+                Box::pin(async { Ok(ToolOutput::text("")) })
+            }),
+            echo_tool(),
+        ]);
+        let contracts = plane.contracts();
+        let read = contracts
+            .iter()
+            .find(|entry| entry.name == "read_file")
+            .unwrap();
+        let echo = contracts.iter().find(|entry| entry.name == "echo").unwrap();
+        assert!(read.supports_parallel_readonly);
+        assert!(!echo.supports_parallel_readonly);
         assert!(plane.get("missing").is_none());
-        // echo 不在 PARALLEL_READONLY_TOOLS 表中：不可并行（fail-closed）。
-        assert_eq!(
-            plane.policy_for("echo"),
-            Some(super::validate::CapabilityPolicy {
-                supports_parallel_readonly: false,
-                returns_text: false,
-            })
-        );
-        assert_eq!(plane.policy_for("missing"), None);
     }
 
     #[test]
@@ -288,96 +318,97 @@ mod tests {
     }
 
     #[test]
-    fn error_mapping_preserves_kind_code_and_retryability() {
-        // 模型能改程序再试的失败（形状、参数、引用、策略、子调用）都是 retryable。
-        // 取消、内部错误和子调用致命错误保持不可重试。
+    fn error_mapping_uses_the_code_run_kinds() {
         let cases = [
             (
-                ProgramErrorKind::Parse,
+                FailureKind::Exception,
                 ToolErrorKind::InvalidArgs,
                 Some(true),
+                "exception",
             ),
             (
-                ProgramErrorKind::Validation,
-                ToolErrorKind::InvalidArgs,
-                Some(true),
-            ),
-            (
-                ProgramErrorKind::LimitExceeded,
-                ToolErrorKind::InvalidArgs,
-                Some(true),
-            ),
-            (
-                ProgramErrorKind::InvalidReference,
-                ToolErrorKind::InvalidArgs,
-                Some(true),
-            ),
-            (
-                ProgramErrorKind::PolicyDenied,
-                ToolErrorKind::PermissionDenied,
-                Some(true),
-            ),
-            (
-                ProgramErrorKind::ChildRecoverable,
+                FailureKind::OutputLimit,
                 ToolErrorKind::Other,
                 Some(true),
+                "output-limit",
             ),
             (
-                ProgramErrorKind::ChildFatal,
-                ToolErrorKind::Other,
-                Some(false),
-            ),
-            (
-                ProgramErrorKind::Cancelled,
-                ToolErrorKind::Cancelled,
-                Some(false),
-            ),
-            (
-                ProgramErrorKind::DeadlineExceeded,
+                FailureKind::Timeout,
                 ToolErrorKind::Timeout,
                 Some(true),
+                "timeout",
             ),
             (
-                ProgramErrorKind::Internal,
-                ToolErrorKind::Other,
+                FailureKind::Abort,
+                ToolErrorKind::Cancelled,
                 Some(false),
+                "abort",
             ),
         ];
-        for (program_kind, expected_kind, expected_retryable) in cases {
-            let error = super::program_error_tool_error(ProgramError::new(program_kind, "boom"));
-            assert_eq!(error.kind(), expected_kind, "{program_kind:?}");
-            assert_eq!(error.retryable(), expected_retryable, "{program_kind:?}");
-            assert_eq!(error.message(), "错误：ToolProgram 执行失败：boom");
-            let code = serde_json::to_value(program_kind).unwrap();
-            assert_eq!(error.code(), code.as_str());
+        for (kind, expected_kind, retryable, code) in cases {
+            let error = program_error_tool_error(CodeRunFailed::new(kind, "boom", "seen"));
+            assert_eq!(error.kind(), expected_kind, "{kind:?}");
+            assert_eq!(error.retryable(), retryable, "{kind:?}");
+            assert_eq!(error.code(), Some(code));
+            let text = error.message();
+            assert!(
+                text.contains(&format!("code run failed ({code})")),
+                "{text}"
+            );
+            assert!(text.contains("seen"), "{text}");
+            assert!(!text.contains("重新执行"), "{text}");
         }
     }
 
     #[tokio::test]
-    async fn program_tool_executes_end_to_end() {
+    async fn missing_code_is_invalid_args_before_the_runtime() {
         let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]));
-        let program = json!({
-            "version": 1,
-            "root": { "op": "sequence", "steps": [
-                { "op": "call", "id": "first", "tool": "echo", "arguments": { "value": "hello" } },
-                { "op": "return", "value": { "$ref": { "step": "first", "pointer": "/data/value" } } }
-            ] }
-        });
-
-        let output = tool.execute(program).await.expect("program succeeds");
-        assert_eq!(output.as_text(), Some("hello"));
+        let error = tool
+            .execute(json!({ "description": "调查" }))
+            .await
+            .expect_err("missing code");
+        assert_eq!(error.kind(), ToolErrorKind::InvalidArgs);
+        assert_eq!(error.code(), Some("invalid_arguments"));
     }
 
     #[tokio::test]
-    async fn program_tool_rejects_invalid_program_as_invalid_args() {
-        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]));
+    async fn reserved_binding_name_rejects_the_program_before_any_call() {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_tool = Arc::clone(&ran);
+        let message = PortableDynamicTool::new(
+            "message",
+            "message",
+            json!({ "type": "object" }),
+            move |_| {
+                ran_tool.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(ToolOutput::text("nope")) })
+            },
+        );
+        let tool = build_program_tool(None, DataPlane::new(vec![message]));
         let error = tool
-            .execute(json!({ "version": 2, "root": {} }))
+            .execute(json!({
+                "code": "return await tools.message({});",
+                "description": "不该启动"
+            }))
             .await
-            .expect_err("invalid program rejected");
-        // version=2 且 root={} 先被 serde 拒绝（Parse），而非版本校验（Validation）。
+            .expect_err("reserved name");
         assert_eq!(error.kind(), ToolErrorKind::InvalidArgs);
-        assert_eq!(error.code(), Some("parse"));
-        assert!(error.message().starts_with("错误：ToolProgram 执行失败："));
+        assert!(error.message().contains("message"), "{}", error.message());
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn program_tool_returns_the_javascript_result() {
+        let tool = build_program_tool(None, DataPlane::new(vec![echo_tool()]));
+        let output = tool
+            .execute(json!({
+                "code": "console.log('note'); return await tools.echo({ value: 'hello' });",
+                "description": "回读 echo"
+            }))
+            .await
+            .expect("program succeeds");
+        let text = output.as_text().unwrap_or("");
+        assert!(text.contains("note"), "{text}");
+        assert!(text.contains("hello"), "{text}");
     }
 }

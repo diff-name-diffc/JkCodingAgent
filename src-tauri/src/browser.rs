@@ -131,9 +131,8 @@ impl BrowserManager {
         }
         let profile_directory = options.profile_directory.clone();
         let user_data_dir = options.user_data_dir;
-        let project_path_str = project_path.to_string_lossy().to_string();
 
-        let process = spawn_sidecar(&app, &session_id, &project_path_str).await?;
+        let process = spawn_sidecar(&app, &session_id).await?;
         self.sessions
             .lock()
             .await

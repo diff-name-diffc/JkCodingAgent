@@ -121,20 +121,11 @@ pub enum McpServerState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum McpToolTaskSupport {
-    Forbidden,
-    Optional,
-    Required,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolStatus {
     pub name: String,
     pub exposed_name: String,
     pub description: String,
-    pub task_support: McpToolTaskSupport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,7 +171,6 @@ pub struct ResolvedMcpTool {
     pub server_name: String,
     pub description: String,
     pub parameters: Value,
-    pub task_support: McpToolTaskSupport,
 }
 
 /// 已解析的服务器传输配置。

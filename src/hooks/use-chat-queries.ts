@@ -9,7 +9,7 @@ import type {
   SessionSearchResult,
 } from "../types";
 import { withDispatcherSessionsRunning } from "../components/dispatcherSessionStore";
-import { bindPurpose } from "../components/settings/providers/provider-registry";
+import { bindPurpose, type PurposeKind } from "../components/settings/providers/provider-registry";
 import {
   SESSION_QUERY_KEYS,
   useSessionListEventMerge,
@@ -228,14 +228,18 @@ export function useChatModelsQuery() {
   });
 }
 
+/**
+ * 输入框模型选择器的绑定变更：选中模型库条目即把它绑定为指定用途
+ * （普通聊天 → chatChat，项目对话 → projectChat——两者是独立槽位，
+ * 后端运行时按 AgentContext 分别读取，写错槽位就是「切换不生效」）。
+ * 与设置页 PurposeSelect 走同一 bindPurpose。
+ */
 export function useBindChatModel() {
   const qc = useQueryClient();
   return useMutation({
-    // 选中模型库条目即把它绑定为「聊天主模型」用途（写入 chat.chatModelConfigs，
-    // 运行时与设置页消费的结构不变），与设置页 PurposeSelect 走同一 bindPurpose。
-    mutationFn: async (entry: ModelLibraryEntry) => {
+    mutationFn: async ({ kind, entry }: { kind: PurposeKind; entry: ModelLibraryEntry }) => {
       const current = await invoke<AhaSettingsV2>("aha_get_settings_v2");
-      const next = bindPurpose(current, "chatChat", entry);
+      const next = bindPurpose(current, kind, entry);
       return invoke<AhaSettingsV2>("aha_save_settings_v2", { settings: next });
     },
     onSuccess: () => {

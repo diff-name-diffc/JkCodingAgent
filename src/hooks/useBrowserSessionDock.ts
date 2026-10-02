@@ -24,13 +24,6 @@ async function runBrowserCommand(command: string, args: Record<string, unknown>)
  * 这里只保留用户主动点击聊天链接 → 会话浏览器内导航 → 打开浏览器标签的路径。
  */
 export function useBrowserSessionLinkNav({ activeSessionId, projectPath, onOpen }: BrowserLinkNavOptions) {
-  const openUrl = useCallback(async () => {
-    if (!activeSessionId) return;
-    // 链接 URL 由调用方经 markdown 链接点击路径先行导航（browser_navigate），
-    // 此处仅负责打开浏览器标签视图；保留命令封装以维持单一调用形态。
-    onOpen();
-  }, [activeSessionId, onOpen]);
-
   const navigateToUrl = useCallback(
     async (url: string) => {
       if (!activeSessionId) return;
@@ -44,5 +37,5 @@ export function useBrowserSessionLinkNav({ activeSessionId, projectPath, onOpen 
     [activeSessionId, onOpen, projectPath],
   );
 
-  return { openUrl, navigateToUrl };
+  return { navigateToUrl };
 }

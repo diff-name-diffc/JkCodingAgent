@@ -12,6 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
@@ -19,6 +20,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
+use super::acp_exec::permission_review::{
+    build_graph_digest, GraphReviewShared, PermissionReviewMaterials,
+};
 use super::acp_exec::{NodeExecContext, NodeExecOutcome};
 use super::harness::{build_harness_catalog, resolve_node_harness};
 use super::input::{assemble_node_input, state_value_from_output};
@@ -275,6 +279,12 @@ async fn run_graph(
             .flatten()
             .unwrap_or_default();
     }
+    // 全局权限审查材料：图摘要与审查模型配置每个 run 构建一次（Arc 共享），
+    // 节点级快照在派发点按节点生成。
+    let review_shared = Arc::new(GraphReviewShared {
+        config: settings.review.clone(),
+        graph_digest: build_graph_digest(&definition, &user_requirement),
+    });
     // 初始共享 state 与上游输出：resume 复用 plan 现有 state 与 cached 节点产出。
     let mut state = plan_state;
     let mut outputs: HashMap<String, String> = existing_runs
@@ -411,6 +421,10 @@ async fn run_graph(
                     break;
                 }
             };
+            let review = Arc::new(PermissionReviewMaterials::new(
+                Arc::clone(&review_shared),
+                &node,
+            ));
             joins.spawn(run_node_task(NodeTaskContext {
                 exec: NodeExecContext {
                     app: app.clone(),
@@ -424,6 +438,7 @@ async fn run_graph(
                     acp: settings.graph.acp.clone(),
                     store: store.clone(),
                     cancel_rx: cancel_rx.clone(),
+                    review,
                 },
                 store: store.clone(),
                 input,
@@ -607,8 +622,13 @@ async fn run_graph(
     }
 
     // 防御：理论上循环退出时不应有未结算节点（失败已传递 skip）；若有则兜底跳过。
+    // 触发即状态机 bug，留痕供事后定位（静默落库会掩盖根因）。
     if queue.has_unsettled() {
         for remaining in queue.cancel_remaining() {
+            eprintln!(
+                "[graph] run 收尾发现未结算节点（plan={plan_id} run={} node={remaining}），已兜底跳过",
+                run.id
+            );
             if let Some(node) = node_by_id.get(&remaining) {
                 mark_node_skipped(
                     app,

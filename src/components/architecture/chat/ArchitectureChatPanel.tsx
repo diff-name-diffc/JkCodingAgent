@@ -10,7 +10,7 @@ import { lazy, Suspense, useState } from "react";
 import { Bot, Eye, LayoutList, PanelRightClose, Plus, Send, Square } from "lucide-react";
 import { cn } from "../../../lib/cn";
 import { isModelNotConfiguredError } from "../../../lib/run-error-classify";
-import { isImeComposing } from "../../../utils";
+import { isImeComposing } from "../../../lib/keyboard-bindings";
 import { useAhaSettingsStore } from "../../settings/use-aha-settings";
 import {
   entriesForCategory,

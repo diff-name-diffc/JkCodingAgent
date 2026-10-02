@@ -13,7 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { RagLogEntry, RagLogLevel } from "../../../types";
-import { isImeComposing } from "../../../utils";
+import { isImeComposing } from "../../../lib/keyboard-bindings";
 
 const MAX_LOG_LINES = 2000;
 

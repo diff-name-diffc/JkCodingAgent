@@ -24,7 +24,7 @@ pub(super) const TOOL_RUN_SELECT_COLUMNS: &str =
     "r.id, r.workspace_id, r.tool_call_id, r.parent_run_id, r.origin, r.step_id, r.sequence,
      r.tool_name, r.provider, r.category, r.status, r.arguments_json,
      r.effective_arguments_json, r.result_mode, r.message_id, r.error_kind,
-     r.error_message, r.action_kind, r.started_at, r.finished_at, r.duration_ms,
+     r.error_message, r.started_at, r.finished_at, r.duration_ms,
      r.metadata_json, r.created_at, r.updated_at, r.agent_run_id, r.scope_id, r.dispatch_round, r.root_request_message_id, r.reply_message_id, r.dispatch_mode, r.phase";
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,7 +54,6 @@ pub struct DispatcherToolRunRecord {
     pub message_id: Option<String>,
     pub error_kind: Option<String>,
     pub error_message: Option<String>,
-    pub action_kind: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub duration_ms: u64,
@@ -105,7 +104,6 @@ pub struct FinishToolRun {
     pub message_id: Option<String>,
     pub error_kind: Option<String>,
     pub error_message: Option<String>,
-    pub action_kind: Option<String>,
     pub metadata_json: Option<String>,
 }
 
@@ -159,7 +157,6 @@ pub(super) fn map_tool_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Dispatch
         message_id: row.get("message_id")?,
         error_kind: row.get("error_kind")?,
         error_message: row.get("error_message")?,
-        action_kind: row.get("action_kind")?,
         started_at: row.get("started_at")?,
         finished_at: row.get("finished_at")?,
         duration_ms,

@@ -73,6 +73,74 @@ fn verdict_badge(status: &str) -> &'static str {
     }
 }
 
+/// 投递「重新验收」简短回执：只含结论徽章 + 理由 + 本次验收调用的 token
+/// 用量，不重复节点统计/共享 state（原 run 回执仍保留，历史结论不覆盖）。
+/// 投递失败只记日志（与 deliver_receipt 一致，不影响重验收结果本身）。
+pub(crate) async fn deliver_reverify_note(
+    app: &AppHandle,
+    db: &DispatcherDb,
+    workspace_id: &str,
+    plan: &GraphPlanRecord,
+    run: &GraphRunSummary,
+    verdict: &VerdictOutcome,
+    elapsed_ms: u64,
+) {
+    let (prompt, completion) = verdict
+        .usage
+        .as_ref()
+        .map(|usage| (usage.prompt_tokens, usage.completion_tokens))
+        .unwrap_or((0, 0));
+    let usage_stats = DispatcherMessageUsageStats {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
+        elapsed_ms,
+    };
+    let content = build_reverify_markdown(plan, run, verdict, &usage_stats);
+    let message = db
+        .add_visible_message_with_usage_async(workspace_id, "assistant", &content, &usage_stats)
+        .await;
+    match message {
+        Ok(_) => {
+            if let Ok(Some(session)) = db.get_dispatcher_session_async(workspace_id).await {
+                let _ = app.emit("dispatcher-session-updated", session);
+            }
+        }
+        Err(error) => {
+            eprintln!("[graph] 写入重新验收回执失败（{workspace_id}）：{error:#}");
+        }
+    }
+}
+
+fn build_reverify_markdown(
+    plan: &GraphPlanRecord,
+    run: &GraphRunSummary,
+    verdict: &VerdictOutcome,
+    usage_stats: &DispatcherMessageUsageStats,
+) -> String {
+    let mut lines = vec![
+        format!(
+            "🔁 执行图《{}》第 {} 次运行重新验收 · {}",
+            sanitize_for_markdown(&plan.title),
+            run.attempt_no,
+            verdict_badge(&verdict.status)
+        ),
+        String::new(),
+    ];
+    if !verdict.reason.trim().is_empty() {
+        lines.push(format!(
+            "**验收结论**：{}",
+            sanitize_for_markdown(verdict.reason.trim())
+        ));
+        lines.push(String::new());
+    }
+    lines.push(format!(
+        "**Token 用量**：输入 {} / 输出 {}（合计 {}）。",
+        usage_stats.prompt_tokens, usage_stats.completion_tokens, usage_stats.total_tokens
+    ));
+    lines.join("\n")
+}
+
 /// 外部内容（节点错误信息、共享 state 值、验收理由等）嵌入回执 markdown 前的
 /// 中性化：换行/连续空白折叠为单个空格（多行堆栈会破坏回执所在的列表/段落
 /// 结构）；反引号与 `* _ # [ ] < >` 等 markdown 元字符替换为全角形式——
@@ -288,6 +356,7 @@ mod tests {
             output_key: format!("out_{node_id}"),
             expected_files: vec![],
             export_policy: Default::default(),
+            use_plan_mode: false,
         };
         let mut record = GraphNodeRunRecord::pending("run", "plan", &node);
         record.status = status.into();
@@ -506,5 +575,61 @@ mod tests {
         assert!(content.contains("验收通过"));
         assert!(content.contains("产出满足需求"));
         assert!(content.contains("成功 1"));
+    }
+
+    #[test]
+    fn reverify_note_carries_verdict_and_usage_only() {
+        let plan = GraphPlanRecord {
+            id: "plan".into(),
+            workspace_id: "w".into(),
+            title: "测试图".into(),
+            summary: String::new(),
+            definition_json: "{}".into(),
+            status: "completed".into(),
+            state_json: "{}".into(),
+            requirement: "需求".into(),
+            inherits_plan_id: None,
+            inherits_run_id: None,
+            created_at: 0,
+            updated_at: 0,
+            latest_run_id: None,
+            runs: vec![],
+            node_runs: vec![],
+        };
+        let run = GraphRunSummary {
+            id: "run".into(),
+            plan_id: "plan".into(),
+            attempt_no: 1,
+            status: "completed".into(),
+            mode: "full".into(),
+            verdict_status: crate::agent::graph::types::VERDICT_UNKNOWN.into(),
+            verdict_reason: String::new(),
+            started_at: 0,
+            finished_at: Some(1),
+        };
+        let verdict = VerdictOutcome {
+            status: VERDICT_PASS.into(),
+            reason: "产出满足需求\n结论".into(),
+            usage: Some(crate::agent::db::LlmUsage {
+                prompt_tokens: 12,
+                completion_tokens: 3,
+                total_tokens: 15,
+                prompt_tokens_details: None,
+            }),
+        };
+        let stats = DispatcherMessageUsageStats {
+            prompt_tokens: 12,
+            completion_tokens: 3,
+            total_tokens: 15,
+            elapsed_ms: 800,
+        };
+        let content = build_reverify_markdown(&plan, &run, &verdict, &stats);
+        assert!(content.contains("重新验收"));
+        assert!(content.contains("第 1 次运行"));
+        assert!(content.contains("验收通过"));
+        // 理由经 sanitize：换行折叠，不破坏回执结构。
+        assert!(content.contains("产出满足需求 结论"));
+        assert!(content.contains("输入 12 / 输出 3"));
+        assert!(!content.contains("节点统计"), "简短回执不重复节点统计");
     }
 }

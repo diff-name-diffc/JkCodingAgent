@@ -215,7 +215,7 @@ impl RigSubAgentRuntime {
             {
                 return Err("子智能体同一批出现重复 tool_call_id，已拒绝执行".into());
             }
-            messages.push(build_assistant_turn(&visible_text, &tool_calls));
+            messages.push(build_assistant_message(&visible_text, &tool_calls, None));
 
             coordinator
                 .observed(u64::from(iteration))

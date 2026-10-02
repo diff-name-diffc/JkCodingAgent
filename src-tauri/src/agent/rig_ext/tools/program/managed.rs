@@ -6,7 +6,7 @@
 //!
 //! 两处刻意的取舍：
 //! - 叶子的工具级事件走空接收端：叶子是程序内部子台账（不产生可见聊天卡片），
-//!   且前端 `toolStarted` 分支会按 wire call id（`program-call:step1`）新建顶层
+//!   且前端 `toolStarted` 分支会按 wire call id（`{父调用}:ptc:1`）新建顶层
 //!   工具卡片；叶子生命周期改由 `LeafHost` 经真实通道发 `ToolRunUpdated`（R64）。
 //! - 每个叶子各建一个 `AppToolExecutionPolicy`（借用空事件通道），这是廉价的值克隆，
 //!   不是每叶子一个调度器。
@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 /// 执行一个程序叶子。
 ///
-/// `sequence` 是叶子在程序内的声明序号（`collect_call_sequences`），它同时充当
+/// `sequence` 是绑定获准执行时的提交序号（从 1 起），它同时充当
 /// 登记用的 round，使 `dispatcher_tool_runs.sequence = sequence * 32` 在同一父 run
 /// 内唯一——否则同一程序的两个叶子会撞 `idx_dispatcher_tool_runs_parent_sequence`
 /// 唯一索引，第二个叶子以 fatal 收场、整个程序中止。
@@ -135,7 +135,7 @@ async fn execute_managed(
         &call,
         &policy,
         &RigToolResultPolicy::default(),
-        // 叶子在自己的批次里是唯一一个调用：把声明序号当 round 用，
+        // 叶子在自己的批次里是唯一一个调用：把提交序号当 round 用，
         // 登记 sequence = sequence * 32，同一程序内两两不同。
         sequence,
         &parent.root_request_message_id,
@@ -239,6 +239,7 @@ mod tests {
             tool_call_id: "program-call".to_string(),
             root_request_message_id: "anchor".to_string(),
             cancel_rx,
+            prepared_arguments: None,
         };
 
         let (first, second) = context

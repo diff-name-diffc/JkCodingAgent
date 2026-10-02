@@ -149,6 +149,7 @@ where
                             tool_call_id: call.wire_call_id().to_string(),
                             root_request_message_id: root_request_message_id.to_string(),
                             cancel_rx: cancel_rx.clone(),
+                            prepared_arguments: None,
                         })
                         .scope(tool_policy.execute(tool, call))
                         .await
@@ -199,7 +200,6 @@ where
                     message_id: Some(record.id.as_str()),
                     error_kind,
                     error_message: error_kind.map(|_| result_text.as_str()),
-                    action_kind: None,
                 },
             )
             .await;

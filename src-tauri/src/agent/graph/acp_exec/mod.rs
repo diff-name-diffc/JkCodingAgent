@@ -11,6 +11,7 @@
 mod client;
 mod launcher;
 mod mapping;
+pub(crate) mod permission_review;
 mod process;
 #[cfg(test)]
 mod tests;
@@ -20,20 +21,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{
-    PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+    PermissionOption, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     SelectedPermissionOutcome, SessionUpdate, StopReason,
 };
 use parking_lot::Mutex;
 use tauri::AppHandle;
 use tokio::sync::{mpsc, watch};
 
-use super::harness::{PermissionMode, ResolvedNodeHarness};
+use super::harness::ResolvedNodeHarness;
 use super::runner::emit_run_event;
 use super::store::GraphStore;
 use super::types::{AgentActivity, GraphNode, GraphRunEvent};
 use crate::agent::db::settings::AcpAgentConfig as AcpSettings;
 use client::AcpSessionError;
-use mapping::{decide_permission, Mapper, MapperAction, PermissionDecision};
+use mapping::{decide_static, Mapper, MapperAction, PermissionDecision};
+use permission_review::PermissionReviewMaterials;
 
 /// 节点执行整体超时（含进程启动、握手与整轮提示）。
 const NODE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -68,12 +70,16 @@ pub(crate) struct NodeExecContext {
     pub acp: AcpSettings,
     pub store: GraphStore,
     pub cancel_rx: watch::Receiver<bool>,
+    /// 全局权限审查材料（图摘要 + 审查模型配置 + 本节点快照）。
+    pub review: Arc<PermissionReviewMaterials>,
 }
 
 /// session/update 与权限请求处理器共享的上下文。
 /// 处理器运行在 crate 连接事件循环上：只做同步映射 + 轻量分发（emit /
 /// channel send）；activity 落库由 execute_node 的 saver 任务串行执行，
-/// 避免阻塞事件循环导致后续消息停摆（crate 文档明确警告）。
+/// 避免阻塞事件循环导致后续消息停摆（crate 文档明确警告）。权限应答
+/// 因需调用审查模型（秒级 LLM）是唯一例外——client.rs 把它整体挪进
+/// 独立 tokio 任务，事件循环立即返回。
 #[derive(Clone)]
 struct HandlerContext {
     app: AppHandle,
@@ -84,6 +90,7 @@ struct HandlerContext {
     workspace_root: PathBuf,
     mapper: Arc<Mutex<Mapper>>,
     activity_tx: mpsc::UnboundedSender<AgentActivity>,
+    review: Arc<PermissionReviewMaterials>,
 }
 
 impl HandlerContext {
@@ -119,77 +126,146 @@ impl HandlerContext {
         }
     }
 
-    /// 权限自动应答：coding 节点允许（allow_once），read_only 节点与路径越界
-    /// 的调用拒绝（reject_once，无则取消）。每次应答落一条 lifecycle 审计活动。
-    fn answer_permission(
+    /// 权限自动应答：静态快路径（计划模式生命周期 / 路径越界）本地判定，
+    /// 其余交给全局权限审查 AI（图摘要 + 节点任务 + 待审请求）。每次应答落
+    /// 一条 lifecycle 审计活动；审查的 DENY 理由与 CLARIFY 补充文本写入活动
+    /// content 展示（ACP 应答只有 option_id，澄清文本无法回传执行器，行为上
+    /// 按拒绝处理）。审查不可用（未配置/超时/失败/解析失败）fail-open 放行。
+    async fn answer_permission(
         &self,
-        mode: PermissionMode,
         request: &RequestPermissionRequest,
     ) -> RequestPermissionOutcome {
-        let locations = request.tool_call.fields.locations.as_deref().unwrap_or(&[]);
+        let fields = &request.tool_call.fields;
+        let tool_name = fields.name.clone().unwrap_or_default();
+        let locations = fields.locations.as_deref().unwrap_or(&[]);
         // 越界判定：任一声明位置越出工作区即拒绝。无 locations 的调用（如
-        // Bash）无法按路径约束，仍走模式默认策略。
+        // Bash）无法按路径约束，交给审查 AI。
         let out_of_workspace = locations
             .iter()
             .any(|location| !location.path.starts_with(&self.workspace_root));
-        let decision = decide_permission(mode, &request.options, out_of_workspace);
-        let tool_title = request
-            .tool_call
-            .fields
+        let tool_title = fields
             .title
             .clone()
-            .or_else(|| request.tool_call.fields.name.clone())
+            .or_else(|| fields.name.clone())
             .unwrap_or_else(|| "工具调用".into());
-        let (audit, outcome) = match &decision {
-            PermissionDecision::Select(option_id) => {
-                let allowed = request
-                    .options
-                    .iter()
-                    .find(|option| &option.option_id == option_id)
-                    .map(|option| {
-                        matches!(
-                            option.kind,
-                            PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-                        )
-                    })
-                    .unwrap_or(false);
-                let reason = if allowed {
-                    ""
-                } else if out_of_workspace {
-                    "（路径越出工作区）"
-                } else {
-                    "（只读节点）"
-                };
-                (
+
+        let (audit_title, audit_content, outcome) =
+            match decide_static(&tool_name, &request.options, out_of_workspace) {
+                Some(PermissionDecision::Select(option_id)) => {
+                    self.static_selection(&tool_name, &request.options, &option_id, &tool_title)
+                }
+                Some(PermissionDecision::Cancel) => (
                     format!(
-                        "权限自动应答：{} {tool_title}{reason}",
-                        if allowed { "允许" } else { "拒绝" }
-                    ),
-                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                        option_id.clone(),
-                    )),
-                )
-            }
-            PermissionDecision::Cancel => {
-                let reason = if out_of_workspace {
-                    "路径越出工作区，且执行器未提供拒绝选项"
-                } else {
-                    match mode {
-                        PermissionMode::AcceptEdits => {
-                            "执行器未提供一次性允许选项（不升级为常驻授权）"
+                        "权限自动应答：取消 {tool_title}（{}）",
+                        if out_of_workspace {
+                            "路径越出工作区，且执行器未提供拒绝选项"
+                        } else {
+                            "执行器未提供一次性选项"
                         }
-                        PermissionMode::Plan => "执行器未提供拒绝选项",
-                    }
-                };
-                (
-                    format!("权限自动应答：取消 {tool_title}（{reason}）"),
+                    ),
+                    String::new(),
                     RequestPermissionOutcome::Cancelled,
-                )
-            }
-        };
-        let action = self.mapper.lock().lifecycle_activity(&audit, "");
+                ),
+                None => self.reviewed_outcome(request, &tool_title).await,
+            };
+        let action = self
+            .mapper
+            .lock()
+            .lifecycle_activity(&audit_title, &audit_content);
         self.apply(vec![action]);
         outcome
+    }
+
+    /// 静态快路径选中项的审计与应答构造。
+    fn static_selection(
+        &self,
+        tool_name: &str,
+        options: &[PermissionOption],
+        option_id: &agent_client_protocol::schema::v1::PermissionOptionId,
+        tool_title: &str,
+    ) -> (String, String, RequestPermissionOutcome) {
+        let selected = options.iter().find(|option| &option.option_id == option_id);
+        let is_allow = selected
+            .map(|option| {
+                matches!(
+                    option.kind,
+                    PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+                )
+            })
+            .unwrap_or(false);
+        let (title, content) = if tool_name == "EnterPlanMode" {
+            (
+                format!("权限自动应答：允许进入计划模式（{tool_title}）"),
+                String::new(),
+            )
+        } else if tool_name == "ExitPlanMode" {
+            // 批准选项名（如 "Yes, and use auto mode"）记入审计；目标权限级别
+            // 由 client.rs 在批准后统一切回 bypassPermissions（0.79.0 的选项表
+            // 没有 bypass 变体，选项只充当批准载体）。
+            let option_name = selected
+                .map(|option| option.name.as_str())
+                .unwrap_or("（未知选项）");
+            (
+                format!("权限自动应答：批准执行计划（{tool_title}）"),
+                format!("批准选项：{option_name}（批准后统一切回 bypassPermissions）"),
+            )
+        } else if is_allow {
+            (format!("权限自动应答：允许 {tool_title}"), String::new())
+        } else {
+            (
+                format!("权限自动应答：拒绝 {tool_title}（路径越出工作区）"),
+                String::new(),
+            )
+        };
+        (
+            title,
+            content,
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id.clone())),
+        )
+    }
+
+    /// 审查 AI 裁决路径：输出审计（含拒绝理由/澄清文本）与应答。
+    async fn reviewed_outcome(
+        &self,
+        request: &RequestPermissionRequest,
+        tool_title: &str,
+    ) -> (String, String, RequestPermissionOutcome) {
+        use permission_review::ReviewOutcome;
+
+        let verdict = permission_review::review_permission(&self.review, request).await;
+        let materials = self.review.audit_label();
+        let (title, content, decision) = match verdict {
+            ReviewOutcome::Allowed => (
+                format!("权限审查：允许 {tool_title}"),
+                format!("审查对象：{materials}\n结论：允许"),
+                mapping::select_kind(&request.options, PermissionOptionKind::AllowOnce),
+            ),
+            ReviewOutcome::Denied { reason } => (
+                format!("权限审查：拒绝 {tool_title}"),
+                format!("审查对象：{materials}\n结论：拒绝\n理由：{reason}"),
+                mapping::select_kind(&request.options, PermissionOptionKind::RejectOnce),
+            ),
+            ReviewOutcome::Clarify { text } => (
+                format!("权限审查：拒绝 {tool_title}（需澄清）"),
+                format!("审查对象：{materials}\n结论：需澄清，本次按拒绝处理\n澄清文本：{text}"),
+                mapping::select_kind(&request.options, PermissionOptionKind::RejectOnce),
+            ),
+            // fail-open：无人值守的图节点不应被审查链路卡死（越界等硬规则
+            // 在进入审查前已拦截）。
+            ReviewOutcome::Unavailable { reason } => (
+                format!("权限审查：审查不可用，放行 {tool_title}"),
+                format!("审查对象：{materials}\n结论：放行（fail-open）\n原因：{reason}"),
+                mapping::select_kind(&request.options, PermissionOptionKind::AllowOnce),
+            ),
+        };
+        let outcome = match decision {
+            Some(PermissionDecision::Select(option_id)) => {
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
+            }
+            // 无一次性选项（或仅会放大授权的选项）时不升级授权：取消本次调用。
+            Some(PermissionDecision::Cancel) | None => RequestPermissionOutcome::Cancelled,
+        };
+        (title, content, outcome)
     }
 }
 
@@ -221,6 +297,7 @@ pub(crate) async fn execute_node(ctx: &NodeExecContext) -> NodeExecOutcome {
         workspace_root: ctx.workspace_root.clone(),
         mapper: Arc::clone(&mapper),
         activity_tx,
+        review: Arc::clone(&ctx.review),
     };
     // activity 落库任务：与连接事件循环解耦，串行写库保证 upsert 顺序。
     let saver = spawn_activity_saver(ctx.store.clone(), activity_rx);

@@ -1,4 +1,3 @@
-import type { RefObject } from "react";
 
 export const LARGE_FILE_LINE_HEIGHT = 22;
 export const LARGE_FILE_OVERSCAN = 40;
@@ -37,13 +36,4 @@ export interface SelectionRange {
 export interface PendingFocus {
   line: number;
   col: number;
-}
-
-export interface LargeFileRefs {
-  contentAreaRef: RefObject<HTMLDivElement | null>;
-  lineCache: RefObject<Map<number, string>>;
-  syncedLineCache: RefObject<Map<number, string>>;
-  editingLineRef: RefObject<number | null>;
-  pendingFocusRef: RefObject<PendingFocus | null>;
-  charWidthRef: RefObject<number>;
 }

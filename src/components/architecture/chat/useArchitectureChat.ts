@@ -180,12 +180,13 @@ export function useArchitectureChat({
             await runner(onEvent);
           } finally {
             if (getDispatcherActiveRunId(targetSessionId) === runId) {
+              // 兜底收尾与 useDispatcherActions 同款：走到这里说明终态事件
+              // 未送达（Channel 尾部事件晚于 invoke resolve 或随缺口滞留），
+              // 必须做与 finished 等价的完整复位——只翻运行标记会把
+              // liveToolCalls/streamingSegments 残留成重复的工具列表。
               clearDispatcherActiveRunId(targetSessionId);
-              updateLiveSessionState(targetSessionId, (state) => ({
-                ...state,
-                hasPendingRun: false,
-                isLoading: false,
-              }));
+              updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
+              reconcileSessionMessages(targetSessionId);
             }
           }
         });

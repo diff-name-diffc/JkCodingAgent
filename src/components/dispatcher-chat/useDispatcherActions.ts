@@ -88,15 +88,15 @@ export function useDispatcherActions({
             await runner(onEvent);
           } finally {
             if (getDispatcherActiveRunId(targetSessionId) === runId) {
-              // 兜底清槽：正常路径 finished/failed 事件已清除（此处 delete 幂等）；
-              // 命令 reject 且无 failed 事件的路径（如 Agent 构建失败）在此
-              // 清除，否则残留的活动 run 槽位会拦下后续消息对账。
+              // 兜底收尾：走到这里说明终态事件（finished/failed）未送达或未通过
+              // 槽位守卫——Channel 消息经 eval 回调逐条投递，与 invoke 响应是两
+              // 条 IPC 路径，尾部事件可能在 invoke resolve 后才到达（或随丢失的
+              // 消息缺口永久滞留）。收尾必须与 finished 等价：只翻运行标记会把
+              // liveToolCalls/streamingSegments 留在 live state 里，消息列表尾部
+              // 会持续渲染一份重复的工具活动列表。
               clearDispatcherActiveRunId(targetSessionId);
-              updateLiveSessionState(targetSessionId, (state) => ({
-                ...state,
-                hasPendingRun: false,
-                isLoading: false,
-              }));
+              updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
+              reconcileSessionMessages(targetSessionId);
             }
           }
         });
@@ -173,9 +173,8 @@ export function useDispatcherActions({
             state.runError ??
             `${isPlainChat ? "聊天" : "调度智能体"}执行失败：${toErrorMessage(err)}`,
         }));
-        // 命令层 reject（如 Agent 构建失败）不一定伴随 failed 事件；对账
-        // 兜底把已持久化消息刷进列表并清掉乐观 pending 消息。
-        reconcileSessionMessages(targetSessionId);
+        // 消息对账由 enqueueDispatcherRun 的兜底收尾统一承担（两条 reject
+        // 路径——failed 事件已处理 / 未处理——分别由 failed 分支与该兜底覆盖）。
       }
     },
     [

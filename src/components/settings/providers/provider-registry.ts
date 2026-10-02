@@ -22,6 +22,7 @@ export type PurposeKind =
   | SharedPurposeKind
   | "projectChat"
   | "projectSummary"
+  | "projectVerifier"
   | "chatChat"
   | "chatSummary"
   | "review";
@@ -45,6 +46,7 @@ export const PURPOSE_DEFS: PurposeDef[] = [
   { kind: "embedding", title: "文本向量模型", description: "预留的向量模型配置。", testKind: "embedding", isModelListFetchable: true },
   { kind: "projectChat", title: "项目主模型", description: "项目对话和工具调用的主模型。", testKind: "chat", isModelListFetchable: true },
   { kind: "projectSummary", title: "项目摘要模型", description: "项目会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。", testKind: "summary", isModelListFetchable: true },
+  { kind: "projectVerifier", title: "项目验收模型", description: "执行图运行收尾的验收评审模型；留空时回退项目摘要模型。", testKind: "summary", isModelListFetchable: true },
   { kind: "chatChat", title: "聊天主模型", description: "聊天对话和工具调用的主模型。", testKind: "chat", isModelListFetchable: true },
   { kind: "chatSummary", title: "聊天摘要模型", description: "聊天会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。", testKind: "summary", isModelListFetchable: true },
   { kind: "review", title: "SSH 审查模型", description: "SSH 命令执行前的安全审查模型。", testKind: "review", isModelListFetchable: true },
@@ -67,6 +69,8 @@ export function getPurposeConfigs(settings: AhaSettingsV2, kind: PurposeKind): D
       return settings.project.chatModelConfigs;
     case "projectSummary":
       return settings.project.summaryModelConfigs;
+    case "projectVerifier":
+      return settings.project.verifierModelConfigs ?? [];
     case "chatChat":
       return settings.chat.chatModelConfigs;
     case "chatSummary":
@@ -80,7 +84,7 @@ export function getPurposeConfigs(settings: AhaSettingsV2, kind: PurposeKind): D
 
 function setContextConfigs(
   context: AhaContextConfig,
-  field: "chatModelConfigs" | "summaryModelConfigs",
+  field: "chatModelConfigs" | "summaryModelConfigs" | "verifierModelConfigs",
   configs: DispatcherModelConfig[],
 ): AhaContextConfig {
   return { ...context, [field]: configs };
@@ -96,6 +100,8 @@ function setPurposeConfigs(
       return { ...settings, project: setContextConfigs(settings.project, "chatModelConfigs", configs) };
     case "projectSummary":
       return { ...settings, project: setContextConfigs(settings.project, "summaryModelConfigs", configs) };
+    case "projectVerifier":
+      return { ...settings, project: setContextConfigs(settings.project, "verifierModelConfigs", configs) };
     case "chatChat":
       return { ...settings, chat: setContextConfigs(settings.chat, "chatModelConfigs", configs) };
     case "chatSummary":
@@ -113,7 +119,7 @@ function setPurposeConfigs(
 }
 
 function emptyModelConfig(): DispatcherModelConfig {
-  return { url: "", apiKey: "", model: "", active: true, systemPrompt: "" };
+  return { url: "", apiKey: "", model: "", active: true };
 }
 
 /** 某用途当前生效的绑定（active 的那条；无则未配置）。 */
@@ -142,7 +148,6 @@ export function bindPurpose(
       apiKey: target.apiKey,
       model: target.model,
       active: true,
-      systemPrompt: "",
       ...(target.id ? { libraryId: target.id } : {}),
     },
   ]);
@@ -168,14 +173,3 @@ export function modelCapabilityTags(model: string, contextWindow?: number): stri
   return tags;
 }
 
-// ── 聊天对话模型 system_prompt 清除（保存管线使用） ──────────────────────────
-
-function withoutModelSystemPrompts(
-  providers: DispatcherModelConfig[],
-): DispatcherModelConfig[] {
-  return providers.map((provider) => ({ ...provider, systemPrompt: "" }));
-}
-
-export function withoutChatModelSystemPrompts(config: AhaContextConfig): AhaContextConfig {
-  return { ...config, chatModelConfigs: withoutModelSystemPrompts(config.chatModelConfigs) };
-}

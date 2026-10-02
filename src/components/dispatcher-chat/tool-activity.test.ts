@@ -27,7 +27,6 @@ function run(patch: Partial<DispatcherToolRunRecord>): DispatcherToolRunRecord {
     messageId: null,
     errorKind: null,
     errorMessage: null,
-    actionKind: null,
     startedAt: "2026-08-18T00:00:00Z",
     finishedAt: null,
     durationMs: 0,

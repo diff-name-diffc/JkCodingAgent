@@ -1,6 +1,7 @@
-//! 终局验收（verifier）：run 收尾时用摘要模型对照需求快照评估执行产出，
-//! 产出 pass/partial/fail/unknown 验收结论。这是闭环编排的「验证」环节——
-//! 图跑完 ≠ 任务完成，验收结论随回执回流会话供用户与编排器判断。
+//! 终局验收（verifier）：run 收尾时用验收模型（独立槽位，未配置时回退摘要
+//! 槽位）对照需求快照评估执行产出，产出 pass/partial/fail/unknown 验收结论。
+//! 这是闭环编排的「验证」环节——图跑完 ≠ 任务完成，验收结论随回执回流会话
+//! 供用户与编排器判断。
 //!
 //! 设计要点：
 //! - 验收是短结论分类任务：**显式关闭思考**（`with_thinking(false)`）。
@@ -55,32 +56,42 @@ pub(crate) struct VerdictOutcome {
     pub usage: Option<LlmUsage>,
 }
 
-/// 项目上下文摘要/验收槽位解析（active 优先）→ url/key/model 缺省回退
-/// `agent_config`；验收是短结论分类任务：低温 + 关思考（推理模型的思考 token
-/// 与可见输出共享预算，带着思考调用可能耗尽预算导致结论为空）。
-pub(crate) fn build_summary_spec(
+/// 项目验收槽位解析（active 优先）：**验收槽位 → 摘要槽位 → `agent_config`
+/// 三级字段级回退**——验收模型是独立配置（摘要网关故障时可单独替换），
+/// 未配置的字段沿用摘要槽位，保证不配置新槽位时行为与历史完全一致。
+/// 验收是短结论分类任务：低温 + 关思考（推理模型的思考 token 与可见输出
+/// 共享预算，带着思考调用可能耗尽预算导致结论为空）。
+pub(crate) fn build_verifier_spec(
     settings: &AhaSettingsV2,
     agent_config: &DispatcherAgentConfig,
 ) -> PurposeModelSpec {
-    let active = settings
-        .project
-        .summary_model_configs
-        .iter()
-        .find(|c| c.active)
-        .or_else(|| settings.project.summary_model_configs.first());
-    let api_key = active
-        .map(|c| c.api_key.trim().to_string())
-        .filter(|key| !key.is_empty())
+    fn active_entry(
+        configs: &[crate::agent::db::DispatcherModelConfig],
+    ) -> Option<&crate::agent::db::DispatcherModelConfig> {
+        configs
+            .iter()
+            .find(|c| c.active)
+            .or_else(|| configs.first())
+    }
+    fn non_empty(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+    let verifier = active_entry(&settings.project.verifier_model_configs);
+    let summary = active_entry(&settings.project.summary_model_configs);
+    let api_key = verifier
+        .and_then(|c| non_empty(&c.api_key))
+        .or_else(|| summary.and_then(|c| non_empty(&c.api_key)))
         .unwrap_or_else(|| agent_config.api_key.clone());
-    let api_base = active
-        .map(|c| c.url.trim().to_string())
-        .filter(|url| !url.is_empty())
+    let api_base = verifier
+        .and_then(|c| non_empty(&c.url))
+        .or_else(|| summary.and_then(|c| non_empty(&c.url)))
         .unwrap_or_else(|| agent_config.api_base.clone());
     let model = normalize_summary_model(
-        active
-            .map(|c| c.model.as_str())
-            .filter(|model| !model.trim().is_empty())
-            .unwrap_or(&agent_config.summary_model),
+        &verifier
+            .and_then(|c| non_empty(&c.model))
+            .or_else(|| summary.and_then(|c| non_empty(&c.model)))
+            .unwrap_or_else(|| agent_config.summary_model.clone()),
     );
     PurposeModelSpec {
         api_key,
@@ -103,13 +114,16 @@ pub(crate) async fn verify_run(
     node_runs: &[GraphNodeRunRecord],
 ) -> VerdictOutcome {
     let facts = build_facts(definition, state, node_runs);
-    let spec = build_summary_spec(settings, agent_config);
+    let spec = build_verifier_spec(settings, agent_config);
     if spec.model.trim().is_empty() {
-        return unknown_with_facts("未配置摘要/验收模型", &facts);
+        return unknown_with_facts("未配置验收模型（验收/摘要槽位均未配置）", &facts);
     }
     // url/key 缺失会让请求打到无效地址，提前给出准确原因。
     if spec.api_base.trim().is_empty() || spec.api_key.trim().is_empty() {
-        return unknown_with_facts("摘要/验收模型配置不完整（缺少 URL 或 API Key）", &facts);
+        return unknown_with_facts(
+            "验收模型配置不完整（缺少 URL 或 API Key；可在 设置 → 模型用途 → 项目验收模型 配置）",
+            &facts,
+        );
     }
     let model = match completions_model(&spec) {
         Ok(model) => model,
@@ -541,6 +555,7 @@ mod tests {
                     output_key: format!("out_n{i}"),
                     expected_files: vec![],
                     export_policy: Default::default(),
+                    use_plan_mode: false,
                 };
                 let mut record = GraphNodeRunRecord::pending("run", "plan", &node);
                 record.status = NODE_FAILED.to_string();
@@ -595,18 +610,75 @@ mod tests {
             api_base: "http://localhost".into(),
             model: "main".into(),
             summary_model: "summary-model".into(),
-            vision_model: String::new(),
-            max_tokens: Some(4096),
             temperature: 0.7,
             max_tool_iterations: 10,
             exec_timeout_secs: 60,
             restrict_to_workspace: true,
             context_debug: false,
         };
-        let spec = build_summary_spec(&settings, &config);
+        let spec = build_verifier_spec(&settings, &config);
         assert_eq!(spec.model, "summary-model");
         assert_eq!(spec.api_key, "key");
         // 验收是短结论分类任务：请求必须显式关闭思考，防止思考链挤占结论预算。
         assert!(!spec.enable_thinking);
+    }
+
+    fn slot_entry(url: &str, key: &str, model: &str) -> crate::agent::db::DispatcherModelConfig {
+        crate::agent::db::DispatcherModelConfig {
+            url: url.into(),
+            api_key: key.into(),
+            model: model.into(),
+            active: true,
+            library_id: String::new(),
+            max_tokens: None,
+            context_window: None,
+        }
+    }
+
+    fn verifier_test_config() -> DispatcherAgentConfig {
+        DispatcherAgentConfig {
+            root_dir: std::path::PathBuf::new(),
+            db_path: std::path::PathBuf::new(),
+            api_key: "agent-key".into(),
+            api_base: "http://agent".into(),
+            model: "main".into(),
+            summary_model: "agent-summary".into(),
+            temperature: 0.7,
+            max_tool_iterations: 10,
+            exec_timeout_secs: 60,
+            restrict_to_workspace: true,
+            context_debug: false,
+        }
+    }
+
+    #[test]
+    fn verifier_slot_takes_priority_over_summary_slot() {
+        let config = verifier_test_config();
+        let mut settings = AhaSettingsV2::default();
+        settings.project.summary_model_configs =
+            vec![slot_entry("http://summary", "summary-key", "summary-model")];
+        settings.project.verifier_model_configs = vec![slot_entry(
+            "http://verifier",
+            "verifier-key",
+            "verifier-model",
+        )];
+        let spec = build_verifier_spec(&settings, &config);
+        assert_eq!(spec.api_base, "http://verifier");
+        assert_eq!(spec.api_key, "verifier-key");
+        assert_eq!(spec.model, "verifier-model");
+    }
+
+    #[test]
+    fn verifier_slot_falls_back_to_summary_slot_when_unset() {
+        let config = verifier_test_config();
+        let mut settings = AhaSettingsV2::default();
+        settings.project.summary_model_configs =
+            vec![slot_entry("http://summary", "summary-key", "summary-model")];
+        // 验收槽位有条目但字段为空（如库条目停用后被解析清空）：逐字段回退摘要槽位。
+        settings.project.verifier_model_configs = vec![slot_entry("", "", "")];
+        let spec = build_verifier_spec(&settings, &config);
+        assert_eq!(spec.api_base, "http://summary");
+        assert_eq!(spec.api_key, "summary-key");
+        assert_eq!(spec.model, "summary-model");
     }
 }

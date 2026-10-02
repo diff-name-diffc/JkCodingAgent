@@ -27,8 +27,6 @@ struct BrowserFrameEvent {
 
 pub(super) struct BrowserProcess {
     pub(super) session_id: String,
-    #[allow(dead_code)]
-    project_path: String,
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
@@ -119,7 +117,6 @@ pub(super) fn browser_command_timeout(params: &Value) -> Duration {
 pub(super) async fn spawn_sidecar(
     app: &AppHandle,
     session_id: &str,
-    project_path: &str,
 ) -> Result<Arc<BrowserProcess>, String> {
     let driver_path = resolve_driver_path(app)?;
     let node_path = resolve_node_path(app);
@@ -161,7 +158,6 @@ pub(super) async fn spawn_sidecar(
 
     let process = Arc::new(BrowserProcess {
         session_id: session_id.to_string(),
-        project_path: project_path.to_string(),
         stdin: Mutex::new(stdin),
         child: Mutex::new(child),
         pending: Mutex::new(HashMap::new()),

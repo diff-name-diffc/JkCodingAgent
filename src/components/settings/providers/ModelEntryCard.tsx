@@ -7,9 +7,9 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { FieldLabel } from "../FieldLabel";
 import { StatusBadge } from "../StatusBadge";
 import { TestButton } from "../TestButton";
-import { toast } from "../toast";
+import { toast } from "../../Toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
-import { isImeComposing } from "../../../utils";
+import { isImeComposing } from "../../../lib/keyboard-bindings";
 import { parseBoundedNumberInput } from "../../app-settings/rag/rag-config";
 import type { ModelLibraryEntry } from "../../../types";
 import {

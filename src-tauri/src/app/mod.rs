@@ -194,6 +194,7 @@ pub fn run() {
             agent::graph::commands::graph_plan_update,
             agent::graph::commands::graph_harness_catalog_get,
             agent::graph::commands::graph_run_get,
+            agent::graph::commands::graph_run_reverify,
             agent::graph::commands::graph_run_start,
             agent::graph::commands::graph_run_cancel,
             agent::graph::commands::graph_run_resume,

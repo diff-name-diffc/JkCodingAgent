@@ -41,6 +41,5 @@ export function useDispatcherSessionTokenUsage(sessionId: string) {
   return {
     entries,
     refresh,
-    reset,
   };
 }

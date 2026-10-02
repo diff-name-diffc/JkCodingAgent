@@ -145,6 +145,7 @@ async fn loop_streams_deltas_executes_tool_and_persists_messages() {
     hooks.max_iterations = 8;
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let mut usage_tracker = crate::agent::common::UsageTracker::new();
+    crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS.with(|count| count.set(0));
 
     let reply = run_rig_loop(
         &fixture.db,
@@ -165,6 +166,15 @@ async fn loop_streams_deltas_executes_tool_and_persists_messages() {
 
     // 模型被调用两次（工具轮 + 收口轮）。
     assert_eq!(model.request_count(), 2);
+    // B-04 回归守护：一次工具调用整链只做一次参数准备。此处经 DirectToolExecution
+    // 钉住 enqueue 的准入/台账合一；策略层（before_call/execute）的复用由
+    // app_policy 的用例单独守护。
+    assert_eq!(
+        crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS
+            .with(std::cell::Cell::get),
+        1,
+        "一次工具调用只允许一次参数准备（enqueue 准入产出后沿链复用）"
+    );
     // 收口正文落库。
     assert_eq!(reply.plain_text().trim(), "完成");
 

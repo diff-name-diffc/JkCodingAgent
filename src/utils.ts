@@ -38,29 +38,6 @@ export function save<T>(key: string, val: T) {
   }
 }
 
-type ImeKeyboardEvent = {
-  key?: string;
-  keyCode?: number;
-  which?: number;
-  nativeEvent?: {
-    isComposing?: boolean;
-    keyCode?: number;
-    which?: number;
-  };
-};
-
-// macOS 中文输入法在确认候选时，部分场景下会把 Enter 暴露成 keyCode 229 / Process。
-export function isImeComposing(event: ImeKeyboardEvent): boolean {
-  return Boolean(
-    event.nativeEvent?.isComposing ||
-    event.nativeEvent?.keyCode === 229 ||
-    event.nativeEvent?.which === 229 ||
-    event.keyCode === 229 ||
-    event.which === 229 ||
-    event.key === "Process",
-  );
-}
-
 /** 相对时间：1 分钟内「刚刚」，之后按 分钟/小时/天，超过 7 天显示 M/D。 */
 export function formatRelativeTime(iso: string): string {
   const time = new Date(iso).getTime();
@@ -119,8 +96,9 @@ export function getGitStatusLabel(status: string): string {
 
 // ── Git 文件路径工具 ──────────────────────────────────────────────────────────
 
+/** 取路径最后一段（POSIX 与 Windows 分隔符都识别；无分隔符时返回原文）。 */
 export function fileName(path: string): string {
-  return path.split("/").pop() ?? path;
+  return path.split(/[\\/]/).pop() ?? path;
 }
 
 export function fileDir(path: string): string {

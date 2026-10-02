@@ -54,6 +54,9 @@ const DEFAULT_USER: &str = r#"# 用户偏好
 - 默认用中文；只有用户明确要求时再切换语言。
 "#;
 
+/// 默认最大工具迭代轮数（`max_tool_iterations` 缺省与 loop 钩子初值的单一出处）。
+pub(crate) const DEFAULT_MAX_TOOL_ITERATIONS: usize = 200;
+
 #[derive(Debug, Clone)]
 pub struct DispatcherAgentConfig {
     pub root_dir: PathBuf,
@@ -62,24 +65,11 @@ pub struct DispatcherAgentConfig {
     pub api_base: String,
     pub model: String,
     pub summary_model: String,
-    pub vision_model: String,
-    /// 输出预算兜底。None（默认）→ 请求体省略 max_tokens，由服务端默认
-    /// 预算接管。容量的唯一权威源是模型库条目（AhaSettingsV2.modelLibrary
-    /// 的 maxTokens，经用途槽位回填进 provider）；本字段仅覆盖 env 开发
-    /// 回退与无设置初始构建路径，不再提供硬编码缺省值（历史 8192 已删除）。
-    pub max_tokens: Option<u32>,
     pub temperature: f32,
     pub max_tool_iterations: usize,
     pub exec_timeout_secs: u64,
     pub restrict_to_workspace: bool,
     pub context_debug: bool,
-}
-
-/// 模型 env 回退开关：默认关闭。设置中心（dispatcher_settings 表）是模型
-/// 配置的唯一权威源；仅当显式设置 `AHA_ALLOW_ENV_PROVIDER=1`（开发场景）
-/// 时才允许从环境变量解析模型凭据，消除「DB + env 双权威源」的漂移面。
-fn env_provider_allowed() -> bool {
-    std::env::var("AHA_ALLOW_ENV_PROVIDER").is_ok_and(|value| value == "1")
 }
 
 /// 纯路径解析：返回 `~/.jkcodingagent`，不建目录、不写文件。
@@ -101,42 +91,18 @@ impl DispatcherAgentConfig {
         write_if_missing(root_dir.join("USER.md"), DEFAULT_USER)?;
         write_if_missing(root_dir.join("memory").join("MEMORY.md"), "# 记忆\n\n")?;
 
-        let (api_key, api_base, model, summary_model, vision_model) = if env_provider_allowed() {
-            (
-                std::env::var("DASHSCOPE_API_KEY")
-                    .or_else(|_| std::env::var("OPENAI_API_KEY"))
-                    .unwrap_or_default(),
-                std::env::var("DASHSCOPE_API_BASE")
-                    .or_else(|_| std::env::var("OPENAI_API_BASE"))
-                    .unwrap_or_else(|_| {
-                        "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
-                    }),
-                std::env::var("MODEL_NAME").unwrap_or_else(|_| "qwen3.6-plus".to_string()),
-                std::env::var("SUMMARY_MODEL_NAME")
-                    .unwrap_or_else(|_| DEFAULT_SUMMARY_MODEL.to_string()),
-                std::env::var("VISION_MODEL_NAME").unwrap_or_default(),
-            )
-        } else {
-            (
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            )
-        };
-
+        // 模型配置的唯一权威源是设置中心（模型库 → 用途槽位）；历史上的
+        // env 回退路径（DASHSCOPE_*/MODEL_NAME 等）已删除，凭据字段恒为空串，
+        // 仅作为 resolve_purpose_specs 的占位初值，运行期一律由设置回填。
         Ok(Self {
             db_path: root_dir.join("jkbot.sqlite3"),
             root_dir,
-            api_key,
-            api_base,
-            model,
-            summary_model,
-            vision_model,
-            max_tokens: None,
+            api_key: String::new(),
+            api_base: String::new(),
+            model: String::new(),
+            summary_model: String::new(),
             temperature: 0.1,
-            max_tool_iterations: 200,
+            max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
             exec_timeout_secs: 60,
             restrict_to_workspace: true,
             context_debug: false,

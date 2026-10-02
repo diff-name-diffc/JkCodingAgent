@@ -1,89 +1,56 @@
-//! ToolProgram 结构化错误（逐字迁移自旧自实现工具层（已随迁移删除）的工具程序 error 模块）。
+//! PTC 程序的运行失败。工具参数或单次调用错误留在程序内部的 `ToolCallError`，
+//! 不使用这个类型。
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProgramErrorKind {
-    Parse,
-    Validation,
-    LimitExceeded,
-    InvalidReference,
-    PolicyDenied,
-    ChildRecoverable,
-    ChildFatal,
-    Cancelled,
-    DeadlineExceeded,
-    Internal,
+/// 整次程序无法继续时的种类。文本里的名字与 DeepSeek Harness 的 `code run failed` 对齐。
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) enum FailureKind {
+    Exception,
+    Timeout,
+    Abort,
+    OutputLimit,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Error, Eq, PartialEq)]
+impl FailureKind {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Exception => "exception",
+            Self::Timeout => "timeout",
+            Self::Abort => "abort",
+            Self::OutputLimit => "output-limit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Error, Eq, PartialEq)]
 #[error("{message}")]
-#[serde(rename_all = "camelCase")]
-pub struct ProgramError {
-    pub kind: ProgramErrorKind,
-    pub message: Box<str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_path: Option<Box<str>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step_id: Option<Box<str>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool: Option<Box<str>>,
-    #[serde(default, skip_serializing_if = "completed_steps_is_empty")]
-    pub completed_steps: Box<[String]>,
+pub(super) struct CodeRunFailed {
+    pub kind: FailureKind,
+    pub message: String,
+    pub logs: String,
 }
 
-fn completed_steps_is_empty(steps: &[String]) -> bool {
-    steps.is_empty()
-}
-
-impl ProgramError {
-    pub fn new(kind: ProgramErrorKind, message: impl Into<String>) -> Self {
+impl CodeRunFailed {
+    pub(super) fn new(
+        kind: FailureKind,
+        message: impl Into<String>,
+        logs: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
-            message: message.into().into_boxed_str(),
-            node_path: None,
-            step_id: None,
-            tool: None,
-            completed_steps: Box::default(),
+            message: message.into(),
+            logs: logs.into(),
         }
     }
 
-    pub fn at_path(mut self, node_path: impl Into<String>) -> Self {
-        self.node_path = Some(node_path.into().into_boxed_str());
-        self
-    }
-
-    pub fn for_step(mut self, step_id: impl Into<String>, tool: impl Into<String>) -> Self {
-        self.step_id = Some(step_id.into().into_boxed_str());
-        self.tool = Some(tool.into().into_boxed_str());
-        self
-    }
-
-    pub fn with_completed_steps(mut self, completed_steps: Vec<String>) -> Self {
-        self.completed_steps = completed_steps.into_boxed_slice();
-        self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ProgramError, ProgramErrorKind};
-
-    #[test]
-    fn error_context_is_structured_and_serializable() {
-        let error = ProgramError::new(ProgramErrorKind::PolicyDenied, "工具不允许")
-            .at_path("/root/steps/1")
-            .for_step("write", "write_file")
-            .with_completed_steps(vec!["read".to_string()]);
-
-        let value = serde_json::to_value(&error).expect("serialize error");
-        assert_eq!(value["kind"], "policy_denied");
-        assert_eq!(value["nodePath"], "/root/steps/1");
-        assert_eq!(value["stepId"], "write");
-        assert_eq!(value["tool"], "write_file");
-        assert_eq!(value["completedSteps"][0], "read");
-        assert_eq!(error.to_string(), "工具不允许");
+    /// 模型可见文本：种类、消息、已经打印的内容。
+    pub(super) fn model_text(&self) -> String {
+        let mut text = format!("code run failed ({}): {}", self.kind.as_str(), self.message);
+        if !self.logs.is_empty() {
+            text.push('\n');
+            text.push_str(&self.logs);
+        }
+        text
     }
 }

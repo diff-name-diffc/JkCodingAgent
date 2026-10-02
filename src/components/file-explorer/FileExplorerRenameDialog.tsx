@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { isImeComposing } from "../../utils";
+import { isImeComposing } from "../../lib/keyboard-bindings";
 import { buildSiblingPath, getRelativePathDisplay } from "../../utils/filePaths";
 
 type RenameTarget = {

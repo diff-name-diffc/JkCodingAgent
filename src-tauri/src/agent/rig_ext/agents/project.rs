@@ -4,7 +4,7 @@
 //! `submit_graph` 协议工具提交，经校验后落 `graph_plans` 并等待用户确认；
 //! 图执行由 `agent::graph::runner` 承担。模型可见工具仅四个入口
 //! （run_tool_program / message / submit_graph / graph_plan_report），
-//! 只读数据面（read_file/list_dir/glob/grep）由 ToolProgram 内部代理。
+//! 只读数据面（read_file/list_dir/glob/grep）由 `run_tool_program` 的绑定调用。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps};
 use crate::agent::rig_ext::tools::fs::fs_tools;
-use crate::agent::rig_ext::tools::program::program_tool;
+use crate::agent::rig_ext::tools::program::{data_plane_sdk, program_tool};
 use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
 use crate::mcp::McpScope;
 
@@ -65,7 +65,7 @@ impl RigOrchestratorAgent {
     pub fn new(config: DispatcherAgentConfig, db: DispatcherDb) -> Self {
         let specs =
             resolve_purpose_specs(&AhaSettingsV2::default(), AgentContext::Project, &config);
-        // env 兜底初值（`CONTEXT_DEBUG`）；run 构建时以设置为准覆盖。
+        // 构造期初值（默认关闭）；run 构建时以设置为准覆盖。
         let context_debug = config.context_debug;
         Self {
             config,
@@ -143,8 +143,9 @@ impl RigOrchestratorAgent {
             .map_err(|error| anyhow::anyhow!("创建项目工作区失败：{error}"))?;
 
         if !self.is_configured() {
+            // 同 plain_chat：设置中心是唯一配置源，env 回退已删除。
             anyhow::bail!(
-                "错误：项目编排 Agent 的 LLM API Key 未配置。请在设置中配置，或设置 DASHSCOPE_API_KEY / OPENAI_API_KEY 环境变量。"
+                "错误：项目编排 Agent 的 LLM API Key 未配置。请在设置中心「模型服务」配置后重试。"
             );
         }
         crate::agent::config::validate_provider_completeness(
@@ -175,7 +176,7 @@ impl RigOrchestratorAgent {
 
         // 工具依赖（项目工作区 + 项目作用域 MCP + 审查/图像凭据）。
         let deps = self.build_deps(workspace_id, &workspace, &request.cancel_rx);
-        let surface = self.build_surface(&deps, &static_prompt, &on_event);
+        let (surface, data_plane_sdk) = self.build_surface(&deps, &static_prompt, &on_event);
         let definitions = surface.definitions();
 
         // 历史（不含 system）：系统提示逐轮由 preamble 重建。
@@ -192,14 +193,13 @@ impl RigOrchestratorAgent {
                 .context_window
                 .unwrap_or(crate::agent::db::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS);
             if estimated > capacity * 8 / 10 {
-                crate::agent::debug::ContextDebugLogger::new(true, workspace.clone()).log(
+                crate::agent::debug::ContextDebugLogger::new(workspace.clone()).log(
                     "上下文窗口接近上限",
                     vec![
                         ("工作区".to_string(), workspace_id.to_string()),
                         ("估算tokens".to_string(), estimated.to_string()),
                         ("容量".to_string(), capacity.to_string()),
                     ],
-                    vec![],
                 );
             }
         }
@@ -222,7 +222,7 @@ impl RigOrchestratorAgent {
             .any(|definition| definition.name == "local_zsh");
         let base_preamble = format!(
             "{}{}",
-            build_iteration_system_prompt(&static_prompt, &definitions),
+            build_iteration_system_prompt(&static_prompt, &definitions, &data_plane_sdk),
             super::plain_chat::render_runtime_workspace(
                 &workspace,
                 self.config.restrict_to_workspace,
@@ -284,14 +284,15 @@ impl RigOrchestratorAgent {
 
     /// 模型可见工具面：四个入口（run_tool_program + 三个协议壳）。
     ///
-    /// `on_event` 作为 ToolProgram 叶子台账的真实事件通道注入：叶子以
+    /// `on_event` 作为程序叶子台账的真实事件通道注入：叶子以
     /// `parentRunId` 挂进 `run_tool_program` 卡片，不产生顶层工具卡片。
+    /// 返回的 SDK 与注入程序的数据面是同一批工具。
     fn build_surface(
         &self,
         deps: &RigToolDeps,
         _static_prompt: &str,
         on_event: &Channel<AgentEvent>,
-    ) -> RigToolSurface {
+    ) -> (RigToolSurface, String) {
         let configured = &self.allowed_runtime_tools;
         let granted = ORCHESTRATOR_RUNTIME_TOOL_NAMES
             .into_iter()
@@ -301,6 +302,7 @@ impl RigOrchestratorAgent {
             .into_iter()
             .filter(|tool| granted.contains(&tool.name()))
             .collect::<Vec<PortableDynamicTool>>();
+        let sdk = data_plane_sdk(&data_plane);
 
         let tools = vec![
             program_tool(deps, data_plane, on_event.clone()),
@@ -309,7 +311,7 @@ impl RigOrchestratorAgent {
             graph_plan_report_shell(),
         ];
         debug_assert_eq!(tools.len(), ORCHESTRATOR_PROTOCOL_TOOL_NAMES.len());
-        RigToolSurface::new(tools)
+        (RigToolSurface::new(tools), sdk)
     }
 
     /// 数据面能力清单（设置页 `settings.project.allowed_tools` 的枚举对象）：

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CHROME,
-  editorRatioFromWidths,
+  editorFitsBesideSession,
   resolveWorkspaceBudget,
   splitDualPaneWidths,
   terminalDragBounds,
@@ -101,6 +101,31 @@ describe("resolveWorkspaceBudget 降级树", () => {
     expect(b.degradations.map((d) => d.kind)).toContain("terminal-height-clamped");
   });
 
+  it("默认外壳是 rail 52、无右工具栏：1320px 可以并排会话和执行图", () => {
+    expect(DEFAULT_CHROME.railWidth).toBe(52);
+    expect(DEFAULT_CHROME.toolbarWidth).toBe(0);
+    expect(
+      editorFitsBesideSession(
+        base({
+          viewportWidth: 1320,
+          navWidthPref: 248,
+          editorRatioPref: 0.5,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("主区不够双栏最低宽度时，打开执行图必须独占编辑区", () => {
+    expect(
+      editorFitsBesideSession(
+        base({
+          viewportWidth: 1100,
+          navWidthPref: 248,
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("宽屏完整双栏锚点（对齐 02-design §3.2 样例）", () => {
     const b = resolveWorkspaceBudget(
       base({
@@ -115,13 +140,6 @@ describe("resolveWorkspaceBudget 降级树", () => {
     expect(b.mainWidth).toBe(1600 - 52 - 248);
     expect(b.dualPane).toBe(true);
     expect(b.chatWidth + b.splitterWidth + b.editorWidth).toBe(b.mainWidth);
-  });
-});
-
-describe("editorRatioFromWidths", () => {
-  it("由像素反推占比并夹取 0–1", () => {
-    expect(editorRatioFromWidths(460, 520, 8)).toBeCloseTo(520 / 988, 5);
-    expect(editorRatioFromWidths(0, 0, 0)).toBe(0.5);
   });
 });
 

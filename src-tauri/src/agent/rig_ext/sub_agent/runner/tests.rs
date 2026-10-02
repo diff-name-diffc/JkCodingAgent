@@ -129,9 +129,16 @@ fn truncation_keeps_head_and_tail() {
 
 #[test]
 fn tagged_thinking_is_split_into_reasoning() {
-    let (visible, thinking) = split_tagged_thinking("前<think>推理</think>后");
+    // 思考链拆分已归一到主循环共享实现（`r#loop::split_choice`）：
+    // <think> 块从正文拆入思考链。
+    use rig::message::{AssistantContent, Text};
+    let (visible, thinking, tool_calls) =
+        crate::agent::rig_ext::r#loop::split_choice(&[AssistantContent::Text(Text::new(
+            "前<think>推理</think>后",
+        ))]);
     assert_eq!(visible, "前后");
     assert_eq!(thinking, "推理");
+    assert!(tool_calls.is_empty());
 }
 
 #[tokio::test]
@@ -235,6 +242,7 @@ async fn child_tools_cross_decision_rounds_without_writing_parent_messages() {
         tool_call_id: "parent-call".into(),
         root_request_message_id: "anchor".into(),
         cancel_rx: rx.clone(),
+        prepared_arguments: None,
     };
     invocation
         .scope(async {

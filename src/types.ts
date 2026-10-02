@@ -1,5 +1,4 @@
 export * from "./types/infrastructure";
-export * from "./types/ssh-sync";
 export * from "./types/chat";
 export * from "./types/sub-agent";
 export * from "./types/graph";

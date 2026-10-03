@@ -1,15 +1,45 @@
 /**
- * navigator.clipboard.writeText 的 WebKit 兜底安装器。
+ * 剪贴板写入的唯一入口与 WebKit 兜底链。
  *
- * macOS Tauri 的 WKWebView（以及部分内嵌 WebView 场景）里，异步 Clipboard API
- * 会在缺少 WebView 焦点/用户激活判定时抛 NotAllowedError——聊天代码块、mermaid
- * 块的复制按钮（streamdown 内部实现）与 KaTeX 点击复制都会因此「点了没反应」。
- * execCommand("copy") 同步复制在 WebKit 手势栈内仍可用，但它必须在用户事件
- * 处理器同步执行——promise 回调里补调会被拒绝。因此这里采用「同步优先」次序：
- * 先在调用现场（点击处理器内）尝试 execCommand，成功即返回；失败（个别环境
- * 不支持）再回退原生异步 API。两条路都失败才向上抛错，保持调用方现有 catch
- * 语义。选区与焦点在兜底后还原，避免破坏聊天区拖选自动复制（use-copy-on-select）。
+ * macOS Tauri 的 WKWebView 里，前端两条复制路径都不可靠：
+ * - 异步 Clipboard API 在缺少 WebView 焦点/用户激活判定时抛 NotAllowedError；
+ * - execCommand("copy") 必须在用户事件处理器同步执行，且在 Radix 弹层
+ *   （ContextMenu/DropdownMenu，modal 默认开启 FocusScope focus trap）的
+ *   onSelect 期间，兜底 textarea 的 focus() 会被 focus trap 同步拉回菜单内，
+ *   选区进不了 textarea——复制静默落空（右键菜单「复制路径」失灵的根因）。
+ *
+ * 因此 copyTextToClipboard 走「原生优先」降级链：
+ *   1. Tauri clipboard 插件（原生写剪贴板，不受 WebView 焦点/激活/focus trap
+ *      影响，也覆盖生产环境自定义协议下 navigator.clipboard 可能缺失的场景）；
+ *   2. execCommand("copy") 同步兜底（纯浏览器 dev 环境，需用户手势栈；
+ *      选区与焦点在兜底后还原，避免破坏聊天区拖选自动复制 use-copy-on-select）；
+ *   3. 原生异步 Clipboard API（最后手段）。
+ * 三条路都失败才向上抛错，保持调用方现有 catch 语义。
  */
+import { writeText as tauriClipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
+
+let nativeWriteText: ((text: string) => Promise<void>) | null = null;
+
+export async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    await tauriClipboardWriteText(text);
+    return;
+  } catch {
+    // 非 Tauri 环境（纯浏览器 dev / 测试）或插件不可用：继续降级。
+  }
+
+  if (copyViaExecCommand(text)) {
+    return;
+  }
+
+  if (nativeWriteText) {
+    await nativeWriteText(text);
+    return;
+  }
+
+  throw new Error("Clipboard API not available");
+}
+
 export function installClipboardWriteFallback(): void {
   if (typeof document === "undefined" || typeof navigator === "undefined") {
     return;
@@ -17,27 +47,17 @@ export function installClipboardWriteFallback(): void {
 
   const clipboard = navigator.clipboard;
   if (clipboard && typeof clipboard.writeText === "function") {
-    const nativeWriteText = clipboard.writeText.bind(clipboard);
-    clipboard.writeText = (text: string): Promise<void> => {
-      if (copyViaExecCommand(text)) {
-        return Promise.resolve();
-      }
-      return nativeWriteText(text);
-    };
+    nativeWriteText = clipboard.writeText.bind(clipboard);
+    clipboard.writeText = (text: string): Promise<void> => copyTextToClipboard(text);
     return;
   }
 
-  // Clipboard API 整体缺失的极端环境：直接替换为 execCommand 实现（尽力而为）。
+  // Clipboard API 整体缺失的极端环境：直接替换为统一入口（尽力而为）。
   try {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
-        writeText: (text: string): Promise<void> => {
-          if (!copyViaExecCommand(text)) {
-            return Promise.reject(new Error("Clipboard API not available"));
-          }
-          return Promise.resolve();
-        },
+        writeText: (text: string): Promise<void> => copyTextToClipboard(text),
       },
     });
   } catch {

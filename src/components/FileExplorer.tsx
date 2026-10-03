@@ -5,6 +5,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { RotateCcw } from "lucide-react";
 import { toast } from "./Toast";
+import { copyTextToClipboard } from "../lib/clipboard-fallback";
 import { isSystemGroupNode, type TreeNode } from "./file-explorer/tree";
 import {
   FileExplorerRenameDialog,
@@ -92,7 +93,9 @@ export function FileExplorer({
   const copyPath = useCallback(
     async (path: string, withMentionPrefix: boolean) => {
       try {
-        await navigator.clipboard.writeText(withMentionPrefix ? `@${path}` : path);
+        // 必须走统一入口（原生插件优先）：右键菜单 onSelect 期间 Radix focus trap
+        // 仍生效，直接调 navigator.clipboard 的 execCommand 兜底会静默落空。
+        await copyTextToClipboard(withMentionPrefix ? `@${path}` : path);
       } catch (error) {
         console.error("复制路径失败:", error);
         toast.error(`复制路径失败：${resolveErrorMessage(error)}`);

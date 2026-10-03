@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { pickCurrentBranchName, type GitBranchInfo } from "./git-branch";
+import { pickCurrentBranchName } from "./git-branch";
+import type { GitBranchInfo } from "../types/infrastructure";
 
 function branch(name: string, current: boolean, remote: string | null = null): GitBranchInfo {
   return { name, current, remote };

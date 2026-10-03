@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { pickCurrentBranchName, type GitBranchInfo } from "../lib/git-branch";
+import { pickCurrentBranchName } from "../lib/git-branch";
+import type { GitBranchInfo } from "../types/infrastructure";
 
 /**
  * 头部上下文用的当前 Git 分支（UI-11）。

@@ -10,7 +10,7 @@ import { AlertCircle } from "lucide-react";
 import { LargeFileViewer } from "./LargeFileViewer";
 import { MonacoEditorPane } from "./MonacoEditorPane";
 import { ImageFilePane } from "./ImageFilePane";
-import { FilePaneHeader, type FileSaveStatus } from "./FilePaneHeader";
+import { FilePaneHeader } from "./FilePaneHeader";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import { resolveFilePresentation } from "../../file-icons";
 import type { EditorTab } from "../../hooks/useProjectPanels";
@@ -45,7 +45,6 @@ export function FileTabPane({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [content, setContent] = useState<string | null>(null);
   const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
-  const [largeDirty, setLargeDirty] = useState(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedContentRef = useRef("");
@@ -61,8 +60,8 @@ export function FileTabPane({
   const isMarkdown = presentation.isMarkdown;
 
   const isLargeFile = fileMeta !== null && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD;
-  /** 脏定义：小文件在防抖保存中/保存失败，大文件有未落盘编辑；saved 短暂回显不算。 */
-  const dirty = isLargeFile ? largeDirty : saveStatus === "saving" || saveStatus === "error";
+  /** 脏定义：防抖保存中/保存失败；saved 短暂回显不算。大文件为只读查看，恒不脏。 */
+  const dirty = saveStatus === "saving" || saveStatus === "error";
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -131,7 +130,6 @@ export function FileTabPane({
     setContent(null);
     contentRef.current = null;
     setFileMeta(null);
-    setLargeDirty(false);
     queuedSaveContentRef.current = null;
     saveInFlightRef.current = false;
 
@@ -212,14 +210,12 @@ export function FileTabPane({
     return <ImageFilePane filePath={tab.path} fileName={tab.name} projectPath={projectPath} />;
   }
 
-  const headerSaveStatus: FileSaveStatus = isLargeFile ? (largeDirty ? "unsaved" : "idle") : saveStatus;
-
   return (
     <div className="ai-file-pane">
       <FilePaneHeader
         projectPath={projectPath}
         filePath={tab.path}
-        saveStatus={headerSaveStatus}
+        saveStatus={saveStatus}
         isMarkdown={isMarkdown}
         previewMode={previewMode}
         onTogglePreview={isMarkdown ? () => setPreviewMode((prev) => !prev) : undefined}
@@ -242,7 +238,6 @@ export function FileTabPane({
             filePath={tab.path}
             projectPath={projectPath}
             meta={fileMeta}
-            onDirtyChange={setLargeDirty}
           />
         )}
 

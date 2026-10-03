@@ -13,10 +13,10 @@ import {
   BranchOption,
   CommitDetailPanel,
   CommitRow,
-  type GitBranchInfo,
   type GitCommit,
   type GitCommitDetail,
 } from "./git/GitHistoryParts";
+import type { GitBranchInfo } from "../types";
 
 interface GitRemoteCounts {
   ahead: number;

@@ -3,12 +3,7 @@ import { Search, Plus, ChevronDown, X, Tag, Check, GitFork, GitBranch } from "lu
 import { invoke } from "@tauri-apps/api/core";
 import * as Popover from "@radix-ui/react-popover";
 import { isImeComposing } from "../../lib/keyboard-bindings";
-
-interface GitBranchInfo {
-  name: string;
-  current: boolean;
-  remote: string | null;
-}
+import type { GitBranchInfo } from "../../types/infrastructure";
 
 function BranchDialog({
   projectPath,

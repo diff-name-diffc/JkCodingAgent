@@ -4,9 +4,12 @@
 //! agent-client-protocol crate 的 ByteStreams 传输）：`launcher` 解析启动
 //! 计划（托管安装 / 自定义命令 + env 白名单），`process` 自有 spawn
 //! （env_clear + 进程组守卫 + stdout 单行上限），initialize →
-//! session/new(cwd=workspace) → session/prompt(节点输入)；session/update
-//! 通知经 `mapping` 映射为 graph-run-event / AgentActivity 词汇，整轮结束
-//! 按 stopReason 结算。子进程回收由 `process::ChildGuard` 负责。
+//! session/new(cwd=workspace, `_meta` 钉住 `ENABLE_TOOL_SEARCH=false`，见
+//! `client::pinned_settings_meta`——节点会话继承用户级 Claude Code 设置，
+//! 该 flag 的延迟加载模式在代理/非官方模型下会吞掉内置工具) →
+//! session/prompt(节点输入)；session/update 通知经 `mapping` 映射为
+//! graph-run-event / AgentActivity 词汇，整轮结束按 stopReason 结算。
+//! 子进程回收由 `process::ChildGuard` 负责。
 
 mod client;
 mod launcher;

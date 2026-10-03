@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, Error, InitializeRequest, NewSessionRequest,
+    CancelNotification, ContentBlock, Error, InitializeRequest, Meta, NewSessionRequest,
     NewSessionResponse, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SessionConfigKind,
     SessionConfigOptionValue, SessionConfigSelectOptions, SessionId, SessionNotification,
@@ -20,6 +20,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::ByteStreams;
 use agent_client_protocol::{Agent, ConnectionTo};
 use parking_lot::Mutex;
+use serde_json::json;
 use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -38,6 +39,31 @@ const ERR_SET_MODE: i32 = -32004;
 pub(super) enum AcpSessionError {
     Cancelled,
     Failed(String),
+}
+
+/// session/new 的 `_meta`：经 claude-agent-acp 的 `claudeCode.options.settings`
+/// 通道注入 programmatic settings 层，把 `ENABLE_TOOL_SEARCH` 钉死为 false。
+///
+/// 节点会话经 `settingSources: ["user", ...]` 继承用户级 Claude Code 设置；
+/// 用户开启 `ENABLE_TOOL_SEARCH=true`（工具延迟加载）后，在第三方代理 /
+/// 非官方模型的组合下，内置 Read/Bash/Grep/Glob 既不直出、ToolSearch 也
+/// 搜不出（0.79.0 实测：精确名正则 `^(Bash|Read|Grep|Glob)$` 返回 no
+/// match），节点模型只能靠恰好可用的 MCP 工具兜底。programmatic settings
+/// 层的 env 优先级高于用户 settings.json（适配器自身也靠这层保护 provider
+/// 路由不被用户配置覆盖）。图节点是短生命周期单任务会话，全量工具直出的
+/// token 开销可控，可用性优先。适配器升级（`launcher.rs` 的版本常量）时
+/// 需复核 `_meta` 契约仍在。
+pub(super) fn pinned_settings_meta() -> Meta {
+    match json!({
+        "claudeCode": {
+            "options": {
+                "settings": { "env": { "ENABLE_TOOL_SEARCH": "false" } }
+            }
+        }
+    }) {
+        serde_json::Value::Object(map) => map,
+        _ => unreachable!("meta 字面量必为 JSON 对象"),
+    }
 }
 
 pub(super) struct PromptTurnResult {
@@ -159,7 +185,7 @@ pub(super) async fn run_prompt_turn(
                         Error::new(ERR_INITIALIZE, format!("ACP initialize 失败：{error}"))
                     })?;
                 let session = connection
-                    .send_request(NewSessionRequest::new(cwd))
+                    .send_request(NewSessionRequest::new(cwd).meta(pinned_settings_meta()))
                     .block_task()
                     .await
                     .map_err(|error| {

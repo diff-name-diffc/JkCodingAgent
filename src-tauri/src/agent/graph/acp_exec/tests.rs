@@ -455,3 +455,15 @@ fn redacts_secret_key_token_variants() {
     assert_eq!(redacted["name"], "visible");
     assert_eq!(redacted["description"], "also visible");
 }
+
+#[test]
+fn pinned_settings_meta_pins_tool_search_off() {
+    // 路径必须与 claude-agent-acp 0.79.0 的读取点一致：
+    // params._meta.claudeCode.options.settings → SDK programmatic settings
+    // （env 优先级高于用户 settings.json）。
+    let meta = super::client::pinned_settings_meta();
+    assert_eq!(
+        meta["claudeCode"]["options"]["settings"]["env"]["ENABLE_TOOL_SEARCH"],
+        json!("false")
+    );
+}

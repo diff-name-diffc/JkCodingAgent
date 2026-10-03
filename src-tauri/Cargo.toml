@@ -18,7 +18,9 @@ categories = ["gui", "development-tools"]
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "jkcodingagent_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# staticlib 仅供 iOS 移动端使用（tauri mobile），桌面构建不消费该产物——
+# 移除后 `tauri build` 桌面链路不受影响，省去巨型 .a 的编译时间与磁盘占用。
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
@@ -54,7 +56,11 @@ thiserror = "2"
 ropey = "1"
 sha2 = "0.11"
 russh = "0.63"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+# 格式白名单与运行时闸门严格对齐：mime_for_ext / sniff_image_mime 仅放行
+# png/jpeg/webp/gif 四类，bmp/ico/tiff 在所有入口（粘贴、fetch 魔数嗅探、
+# 保存登记）都被拒绝——文件浏览器预览直接流原始字节给 webview，不经本 crate
+# 解码，因此不需要其解码器。收窄后解码失败仍走既有降级路径（原样返回/报错）。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 rmcp = { version = "3.4", default-features = false, features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-client-unix-socket"] }
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.35"
@@ -77,6 +83,12 @@ split-debuginfo = "unpacked"
 incremental = true
 
 [profile.release]
+# 体积优先（构建时间让位）：
+# - strip：剥离符号表与调试信息，是 75MB 主二进制的最大单项体积来源；
+# - fat LTO + codegen-units=1：跨 crate 全图内联与死代码消除，比 thin/64
+#   再省 5~15%（代价是 release 链接阶段明显变慢，本图实测记录见提交说明）。
+# panic 保持 unwind：Tauri/wry 依赖 catch_unwind 收敛 panic，不能改 abort。
 panic = "unwind"
-lto = "thin"
-codegen-units = 64
+strip = true
+lto = "fat"
+codegen-units = 1

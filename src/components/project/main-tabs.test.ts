@@ -92,69 +92,97 @@ describe("main-tabs 文件树同步", () => {
 });
 
 describe("main-tabs 执行图标签（UI-13）", () => {
-  it("graphTabId 稳定于 planId，新建即激活", () => {
-    const s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+  it("graphTabId 稳定于 sessionId，新建即激活", () => {
+    const s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", "plan-1");
     expect(s.tabs).toHaveLength(1);
     expect(s.tabs[0]).toEqual({
-      id: graphTabId("plan-1"),
+      id: graphTabId("session-a"),
       kind: "graph",
       planId: "plan-1",
       sessionId: "session-a",
+      view: "canvas",
     });
-    expect(s.activeTabId).toBe(graphTabId("plan-1"));
+    expect(s.activeTabId).toBe(graphTabId("session-a"));
   });
 
-  it("同 planId 重复打开幂等只激活（切视图不新建）", () => {
-    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+  it("planId 传 null 进入列表态（会话图列表）", () => {
+    const s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", null);
+    expect(s.tabs[0]).toEqual({
+      id: graphTabId("session-a"),
+      kind: "graph",
+      planId: null,
+      sessionId: "session-a",
+      view: "canvas",
+    });
+  });
+
+  it("view 直达详情态一级视图（列表行「结果」入口传 result）", () => {
+    const s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", "plan-1", "result");
+    expect(s.tabs[0].kind === "graph" && s.tabs[0].view).toBe("result");
+  });
+
+  it("同 planId 不同 view 视为外部导航更新 view；完全相同才幂等", () => {
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", "plan-1", "result");
+    s = openGraphTab(s, "session-a", "plan-1", "canvas");
+    expect(s.tabs[0].kind === "graph" && s.tabs[0].view).toBe("canvas");
+    expect(openGraphTab(s, "session-a", "plan-1", "canvas")).toBe(s);
+  });
+
+  it("同会话同 planId 重复打开幂等只激活（切视图不新建）", () => {
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", "plan-1");
     s = openFileTab(s, "/a.ts", "a.ts");
-    s = openGraphTab(s, "plan-1", "session-a");
+    s = openGraphTab(s, "session-a", "plan-1");
     expect(s.tabs).toHaveLength(2);
-    expect(s.activeTabId).toBe(graphTabId("plan-1"));
+    expect(s.activeTabId).toBe(graphTabId("session-a"));
   });
 
-  it("同会话换 planId 替换旧图标签，每会话至多一个图视图", () => {
-    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
-    s = openGraphTab(s, "plan-2", "session-a");
-    expect(s.tabs.map((t) => t.id)).toEqual([graphTabId("plan-2")]);
-    expect(s.activeTabId).toBe(graphTabId("plan-2"));
+  it("同会话列表⇄详情切换只更新 planId，不新建标签", () => {
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", null);
+    s = openGraphTab(s, "session-a", "plan-1");
+    s = openGraphTab(s, "session-a", "plan-2");
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0].kind === "graph" && s.tabs[0].planId).toBe("plan-2");
+    s = openGraphTab(s, "session-a", null);
+    expect(s.tabs[0].kind === "graph" && s.tabs[0].planId).toBeNull();
+    expect(s.activeTabId).toBe(graphTabId("session-a"));
   });
 
   it("不同会话的图标签互不影响", () => {
-    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
-    s = openGraphTab(s, "plan-2", "session-b");
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", "plan-1");
+    s = openGraphTab(s, "session-b", "plan-2");
     expect(s.tabs.map((t) => t.id).sort()).toEqual([
-      graphTabId("plan-1"),
-      graphTabId("plan-2"),
+      graphTabId("session-a"),
+      graphTabId("session-b"),
     ]);
   });
 
   it("关闭活动图标签回退右邻；混合关闭语义与文件一致", () => {
-    let s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    let s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", "plan-1");
     s = openFileTab(s, "/a.ts", "a.ts");
     s = openFileTab(s, "/b.ts", "b.ts");
-    s = selectTab(s, graphTabId("plan-1"));
-    const after = closeTab(s, graphTabId("plan-1"));
+    s = selectTab(s, graphTabId("session-a"));
+    const after = closeTab(s, graphTabId("session-a"));
     expect(after.activeTabId).toBe(fileTabId("/a.ts"));
-    expect(closeOtherTabs(s, graphTabId("plan-1")).tabs).toHaveLength(1);
-    expect(closeTabsToRight(s, graphTabId("plan-1")).tabs.map((t) => t.id)).toEqual([
-      graphTabId("plan-1"),
+    expect(closeOtherTabs(s, graphTabId("session-a")).tabs).toHaveLength(1);
+    expect(closeTabsToRight(s, graphTabId("session-a")).tabs.map((t) => t.id)).toEqual([
+      graphTabId("session-a"),
     ]);
   });
 
   it("文件重命名/删除不触碰图标签", () => {
     let s = openFileTab(EMPTY_EDITOR_TABS, "/old.ts", "old.ts");
-    s = openGraphTab(s, "plan-1", "session-a");
+    s = openGraphTab(s, "session-a", "plan-1");
     const renamed = renameFileTab(s, "/old.ts", "/new.ts", "new.ts");
     expect(renamed.tabs.some((t) => t.kind === "graph" && t.planId === "plan-1")).toBe(true);
     const deleted = deleteFileTab(renamed, "/new.ts");
-    expect(deleted.tabs.map((t) => t.id)).toEqual([graphTabId("plan-1")]);
-    expect(deleted.activeTabId).toBe(graphTabId("plan-1"));
+    expect(deleted.tabs.map((t) => t.id)).toEqual([graphTabId("session-a")]);
+    expect(deleted.activeTabId).toBe(graphTabId("session-a"));
   });
 
   it("closeAll 清空图标签", () => {
-    const s = openGraphTab(EMPTY_EDITOR_TABS, "plan-1", "session-a");
+    const s = openGraphTab(EMPTY_EDITOR_TABS, "session-a", "plan-1");
     expect(closeAllTabs()).toEqual(EMPTY_EDITOR_TABS);
-    expect(closeTab(s, graphTabId("plan-1"))).toEqual(EMPTY_EDITOR_TABS);
+    expect(closeTab(s, graphTabId("session-a"))).toEqual(EMPTY_EDITOR_TABS);
   });
 });
 

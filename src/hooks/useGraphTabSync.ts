@@ -1,13 +1,13 @@
 import { useCallback, useEffect } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
-import type { EditorTab, EditorTabsState } from "../components/project/main-tabs";
+import type { EditorTab, EditorTabsState, GraphPanelView } from "../components/project/main-tabs";
 
 export type GraphTab = Extract<EditorTab, { kind: "graph" }>;
 
 interface UseGraphTabSyncOptions {
   activeSessionId: string | null;
   editorTabs: EditorTabsState;
-  onOpenGraphTab: (planId: string, sessionId: string) => void;
+  onOpenGraphTab: (sessionId: string, planId: string | null, view: GraphPanelView) => void;
   onCloseGraphTab: (tabId: string) => void;
   /** 每次用户点开执行图的序号。用来在放不下双栏时让出会话栏，且不重复抢回。 */
   onGraphOpenRequest?: (openSeq: number) => void;
@@ -38,7 +38,7 @@ export function useGraphTabSync({
   useEffect(() => {
     if (!graphPanel || !activeSessionId) return;
     if (graphPanel.sessionId !== activeSessionId) return;
-    onOpenGraphTab(graphPanel.planId, graphPanel.sessionId);
+    onOpenGraphTab(graphPanel.sessionId, graphPanel.planId, graphPanel.view);
     onGraphOpenRequest?.(graphPanel.openSeq);
   }, [graphPanel, activeSessionId, onOpenGraphTab, onGraphOpenRequest]);
 

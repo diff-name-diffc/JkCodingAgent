@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import type { McpStatus, OpenSettingsOptions, Project } from "../../types";
 import type { useProjectPanels } from "../../hooks/useProjectPanels";
 import type { GraphTab } from "../../hooks/useGraphTabSync";
+import { DEFAULT_GRAPH_PANEL_VIEW } from "./main-tabs";
 import { splitDualPaneWidths, type WorkspaceBudget } from "./workspace-budget";
 import { nextSplitterValue, splitterKeyDelta } from "../../lib/splitter-step";
 import { ChatPageV2 } from "../chat-page-v2";
@@ -9,6 +10,7 @@ import { ErrorBoundary } from "../ErrorBoundary";
 import { MarkdownLinkProvider } from "../markdown/MarkdownLinkContext";
 import { ProjectWorkbench } from "./ProjectWorkspaceLayout";
 import { ProjectLazyPaneFallback } from "./ProjectLazyPaneFallback";
+import { useWorkspaceStore } from "../../stores/workspace-store";
 
 const FileViewer = lazy(() =>
   import("../FileViewer").then((module) => ({ default: module.FileViewer })),
@@ -18,6 +20,11 @@ const GitDiffViewer = lazy(() =>
 );
 const GraphPanel = lazy(() =>
   import("../graph/GraphPanel").then((module) => ({ default: module.GraphPanel })),
+);
+const GraphPlanListView = lazy(() =>
+  import("../graph/GraphPlanListView").then((module) => ({
+    default: module.GraphPlanListView,
+  })),
 );
 const BrowserPanel = lazy(() =>
   import("../browser/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
@@ -70,6 +77,8 @@ export function ProjectWorkbenchContent({
   onExpandMainArea,
 }: ProjectWorkbenchContentProps) {
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
+  // 图详情「返回列表」走意图通道（与列表→详情同一双向通道，useGraphTabSync 消费）。
+  const openGraphPanel = useWorkspaceStore((state) => state.openGraphPanel);
   // UI-13：编辑区内容判定收敛到 useProjectPanels 单一派生值（含 file/diff/graph 标签）。
   const hasEditorContent = panels.hasEditorContent;
   const editorRequested = panels.editorWorkbenchVisible && hasEditorContent;
@@ -235,14 +244,27 @@ export function ProjectWorkbenchContent({
     >
       <Suspense fallback={<ProjectLazyPaneFallback label="编辑器加载中..." />}>
         {activeGraphTab ? (
-          <GraphPanel
-            planId={activeGraphTab.planId}
-            sessionId={activeGraphTab.sessionId}
-            active={workspaceVisible && showEditorPane}
-            onClose={() => onCloseGraphTab(activeGraphTab)}
-            onExpandMainArea={onExpandMainArea}
-            mainAreaExpanded={!sessionWorkbenchVisible}
-          />
+          activeGraphTab.planId ? (
+            <GraphPanel
+              planId={activeGraphTab.planId}
+              sessionId={activeGraphTab.sessionId}
+              active={workspaceVisible && showEditorPane}
+              onClose={() => onCloseGraphTab(activeGraphTab)}
+              onBackToList={() => openGraphPanel(activeGraphTab.sessionId, null)}
+              onExpandMainArea={onExpandMainArea}
+              mainAreaExpanded={!sessionWorkbenchVisible}
+              initialView={activeGraphTab.view ?? DEFAULT_GRAPH_PANEL_VIEW}
+              onOpenFile={panels.handleFileSelect}
+            />
+          ) : (
+            <GraphPlanListView
+              sessionId={activeGraphTab.sessionId}
+              active={workspaceVisible && showEditorPane}
+              onClose={() => onCloseGraphTab(activeGraphTab)}
+              onExpandMainArea={onExpandMainArea}
+              mainAreaExpanded={!sessionWorkbenchVisible}
+            />
+          )
         ) : panels.activeEditorTab?.kind === "browser" ? (
           /* 浏览器预览标签（UI-18）：内容跟随活动会话；关标签=隐藏面板不停进程；
              扩大按钮与执行图同语义（收起会话 pane 占满主区）。 */

@@ -9593,6 +9593,22 @@
     color: var(--text-muted);
   }
 
+  /* 执行结果类型 chip（v11：结果视图 / 列表行 / 聊天流图卡片） */
+  .ai-graph-chip--review {
+    background: rgb(var(--accent-rgb) / 0.12);
+    color: var(--accent);
+  }
+
+  .ai-graph-chip--edit {
+    background: rgb(var(--success-rgb) / 0.12);
+    color: var(--success);
+  }
+
+  .ai-graph-chip--unknown {
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+  }
+
   /* 节点状态徽章（原 chip--node-* 六类）已由共享 StatusPill 取代（UI-14） */
 
   /* React Flow 自定义节点 */
@@ -10281,6 +10297,264 @@
 
   .ai-graph-output-section {
     position: relative;
+  }
+
+  /* 详情态一级视图切换（执行图 | 执行结果）：与头部自绘按钮同一形态语言 */
+  .ai-graph-view-switch {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border-accent);
+    border-radius: 8px;
+    background: var(--bg-subtle);
+  }
+
+  .ai-graph-view-switch-tab {
+    border: 0;
+    border-radius: 6px;
+    padding: 3px 10px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    cursor: pointer;
+  }
+
+  .ai-graph-view-switch-tab:hover {
+    color: var(--text-primary);
+  }
+
+  .ai-graph-view-switch-tab.is-active {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    box-shadow: 0 1px 2px rgb(23 32 29 / 0.08);
+  }
+
+  /* 已产出执行结果的「执行结果」页签：非活动态以 accent 点亮，
+     运行完成后结果是最值得看的落点（用户可见的强调） */
+  .ai-graph-view-switch-tab.has-result:not(.is-active) {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* 列表行右侧「结果」直达按钮 */
+  .ai-graph-list-result-btn {
+    flex-shrink: 0;
+    width: 36px;
+    border: 1px solid var(--border-dim);
+    border-radius: 8px;
+    background: var(--bg-subtle);
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .ai-graph-list-result-btn:hover {
+    border-color: rgb(var(--accent-rgb) / 0.5);
+    background: rgb(var(--accent-rgb) / 0.08);
+  }
+
+  /* 执行结果视图（详情态一级视图）：结论 md + 修改文件清单 */
+  .ai-graph-result {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px 18px;
+    overflow-y: auto;
+  }
+
+  .ai-graph-result-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .ai-graph-result-chips {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ai-graph-result-meta-text {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* 验收理由正文：按结论状态着色的左边条引用块 */
+  .ai-graph-result-verdict {
+    margin: 0;
+    padding: 8px 12px;
+    border-left: 3px solid var(--border-strong);
+    border-radius: 0 8px 8px 0;
+    background: var(--bg-subtle);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .ai-graph-result-verdict[data-status="pass"] {
+    border-left-color: var(--success);
+  }
+
+  .ai-graph-result-verdict[data-status="partial"] {
+    border-left-color: var(--warning);
+  }
+
+  .ai-graph-result-verdict[data-status="fail"] {
+    border-left-color: var(--danger);
+  }
+
+  .ai-graph-result-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .ai-graph-result-section-label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .ai-graph-result-hint {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-hint);
+  }
+
+  .ai-graph-result-empty {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* 结果视图整页空态（未运行 / 运行中 / 历史运行无结果） */
+  .ai-graph-result-blank {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 32px 16px;
+    color: var(--text-hint);
+  }
+
+  .ai-graph-result-blank-title {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .ai-graph-result-blank-hint {
+    margin: 0;
+    max-width: 320px;
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-hint);
+  }
+
+  .ai-graph-result-files {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid var(--border-dim);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .ai-graph-result-file {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 0;
+    border-bottom: 1px solid var(--border-dim);
+    background: var(--bg-card);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .ai-graph-result-file:last-child {
+    border-bottom: 0;
+  }
+
+  .ai-graph-result-file:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  /* 工作区外路径（审计前缀）：不可打开，弱化且保留说明 */
+  .ai-graph-result-file:disabled {
+    cursor: default;
+    opacity: 0.75;
+  }
+
+  .ai-graph-result-file-name {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--text-primary);
+  }
+
+  .ai-graph-result-file-dir {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--text-hint);
+  }
+
+  /* 节点输出 markdown 渲染态与「渲染/原文」切换 */
+  .ai-graph-drawer-output-toggle {
+    border: 0;
+    padding: 1px 6px;
+    background: transparent;
+    border-radius: 4px;
+    color: var(--text-hint);
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .ai-graph-drawer-output-toggle:hover {
+    color: var(--accent);
+    background: var(--bg-subtle);
+  }
+
+  .ai-graph-drawer-output-md {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ai-graph-drawer-output-omitted {
+    margin: 0;
+    font-size: 10px;
+    color: var(--text-hint);
+  }
+
+  .ai-graph-drawer-output-empty {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   .ai-graph-tool-shell {

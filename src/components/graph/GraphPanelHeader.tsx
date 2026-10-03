@@ -1,7 +1,9 @@
-import { useMemo } from "react";
-import { Maximize2, Minimize2, Play, RefreshCw, RotateCcw, Square, X } from "lucide-react";
+import { useCallback, useMemo, useRef } from "react";
+import { ArrowLeft, Maximize2, Minimize2, Play, RefreshCw, RotateCcw, Square, X } from "lucide-react";
 import type { GraphDefinition, GraphNodeStatus, GraphPlanRecord, GraphPlanStatus } from "../../types";
+import type { GraphPanelView } from "../project/main-tabs";
 import { cn } from "../../lib/cn";
+import { isRovingKey, nextRovingIndex } from "../../lib/roving-index";
 import { Button } from "../ui/button";
 import { StatusPill } from "../detail/StatusPill";
 import { PLAN_STATUS_META, computeGraphLayers } from "./graph-utils";
@@ -13,10 +15,15 @@ interface GraphPanelHeaderProps {
   paused: boolean;
   actionPending: boolean;
   statusByNodeId: Map<string, GraphNodeStatus>;
+  /** 详情态一级视图（画布 / 执行结果），头部切换控件受控于此。 */
+  view: GraphPanelView;
+  onViewChange: (view: GraphPanelView) => void;
   onStart: (mode: "full" | "resume") => void;
   onResumeCheckpoint: () => void;
   onCancel: () => void;
   onClose: () => void;
+  /** 返回会话图列表（两级视图的详情→列表）。 */
+  onBackToList?: () => void;
   /** 对最近一次已收尾的运行重新执行验收（验收模型修复/复检结论）。 */
   onReverify: () => void;
   reverifyPending: boolean;
@@ -24,6 +31,12 @@ interface GraphPanelHeaderProps {
   onExpandMainArea?: () => void;
   mainAreaExpanded?: boolean;
 }
+
+/** 详情态一级视图页签（tablist 方向键导航的索引基础，顺序即渲染顺序）。 */
+const VIEW_TABS: { key: GraphPanelView; label: string }[] = [
+  { key: "canvas", label: "执行图" },
+  { key: "result", label: "执行结果" },
+];
 
 /**
  * 图编排面板两层头部：标题/状态/验收/操作 + 任务统计/整体进度。
@@ -40,10 +53,13 @@ export function GraphPanelHeader({
   paused,
   actionPending,
   statusByNodeId,
+  view,
+  onViewChange,
   onStart,
   onResumeCheckpoint,
   onCancel,
   onClose,
+  onBackToList,
   onReverify,
   reverifyPending,
   onExpandMainArea,
@@ -57,6 +73,31 @@ export function GraphPanelHeader({
   // 重验收入口：存在已收尾的运行（非 running 的计划 + 最近一次 run 已出验收字段）
   // 才有意义——验收失败/未能验收时用户修复验收模型后在此补救，也可对既有结论复检。
   const canReverify = planStatus !== "running" && planStatus !== "draft" && Boolean(plan?.runs?.[0]);
+
+  // tablist 方向键（roving tabindex + automatic activation，与 ContextNav 同一
+  // 模式）：方向键移动焦点即切换视图；非当前视图的页签 tabindex=-1 不占 Tab 序。
+  const viewTabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const activeViewIndex = Math.max(
+    0,
+    VIEW_TABS.findIndex((tab) => tab.key === view),
+  );
+  const handleViewTabsKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (!isRovingKey(event.key, "horizontal")) return;
+      event.preventDefault();
+      const next = nextRovingIndex({
+        count: VIEW_TABS.length,
+        current: activeViewIndex,
+        key: event.key,
+        wrap: true,
+        orientation: "horizontal",
+      });
+      if (next === activeViewIndex) return;
+      onViewChange(VIEW_TABS[next].key);
+      viewTabRefs.current[next]?.focus();
+    },
+    [activeViewIndex, onViewChange],
+  );
 
   // ── 头部统计：任务数 / 最大并行（最大层宽）/ 状态计数 / 整体进度 ──
   const stats = useMemo(() => {
@@ -78,9 +119,20 @@ export function GraphPanelHeader({
     const total = nodes.length;
     const progress = total > 0 ? Math.round((counts.settled / total) * 100) : 0;
     const codingNodes = nodes.filter((node) => node.baseToolGroup === "coding").length;
-    // 粗估 token：task 字符数 / 4（仅启动前参考，标注「估算」）。
+    // 粗估 token：ASCII 约 4 字符/token，非 ASCII（中文等）按 1 字符/token 的
+    // 保守下限（中文实际约 1~1.5 token/字）。仅按任务描述文本估算——不含
+    // 系统提示、工具调用与上下文累积，真实消耗通常高一个数量级，
+    // 只作启动前的量级参考（标注「估算」）。
     const estimatedTokens = Math.round(
-      nodes.reduce((sum, node) => sum + node.task.length, 0) / 4,
+      nodes.reduce((sum, node) => {
+        let ascii = 0;
+        let nonAscii = 0;
+        for (const ch of node.task) {
+          if (ch.charCodeAt(0) < 128) ascii += 1;
+          else nonAscii += 1;
+        }
+        return sum + ascii / 4 + nonAscii;
+      }, 0),
     );
     return { total, maxParallel, progress, codingNodes, estimatedTokens, ...counts };
   }, [definition, statusByNodeId]);
@@ -102,6 +154,17 @@ export function GraphPanelHeader({
   return (
     <header className="ai-graph-panel-header">
       <div className="ai-graph-panel-header-top">
+        {onBackToList && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="返回执行图列表"
+            title="返回执行图列表"
+            onClick={onBackToList}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        )}
         <div className="ai-graph-panel-heading">
           <span className="ai-graph-panel-title">{plan?.title ?? "执行图"}</span>
           {plan?.summary && (
@@ -109,6 +172,35 @@ export function GraphPanelHeader({
               {plan.summary}
             </span>
           )}
+        </div>
+        {/* 详情态一级视图切换：画布 ↔ 执行结果。最近一次运行已产出结果时
+            结果页签带强调标记（运行完成后结果是最值得看的落点）。 */}
+        <div
+          className="ai-graph-view-switch"
+          role="tablist"
+          aria-label="图详情视图"
+          onKeyDown={handleViewTabsKeyDown}
+        >
+          {VIEW_TABS.map((tab, index) => (
+            <button
+              key={tab.key}
+              ref={(element) => {
+                viewTabRefs.current[index] = element;
+              }}
+              type="button"
+              role="tab"
+              aria-selected={view === tab.key}
+              tabIndex={view === tab.key ? 0 : -1}
+              className={cn(
+                "ai-graph-view-switch-tab",
+                view === tab.key && "is-active",
+                tab.key === "result" && Boolean(plan?.runs?.[0]?.result) && "has-result",
+              )}
+              onClick={() => onViewChange(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
         {/* 两结论独立分区（UI-13）：运行状态与验收结论各带前缀标签，不混为一谈 */}
         <span className="ai-graph-header-conclusion">
@@ -223,8 +315,11 @@ export function GraphPanelHeader({
           </span>
         )}
         {stats.estimatedTokens > 0 && (
-          <span className="ai-graph-stat" title="按任务描述长度粗估，仅供参考">
-            ≈{stats.estimatedTokens} tokens（估算）
+          <span
+            className="ai-graph-stat"
+            title="按任务描述文本粗估输入量级（不含系统提示与工具执行开销，实际消耗通常更高），仅供参考"
+          >
+            ≈{stats.estimatedTokens.toLocaleString()} tokens（估算）
           </span>
         )}
         {stats.running > 0 && (

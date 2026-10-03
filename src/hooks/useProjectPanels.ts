@@ -7,6 +7,7 @@ import {
   closeOtherTabs,
   closeTab,
   closeTabsToRight,
+  DEFAULT_GRAPH_PANEL_VIEW,
   deleteFileTab,
   fileTabs,
   openBrowserTab,
@@ -17,6 +18,7 @@ import {
   selectTab,
   type EditorTab,
   type EditorTabsState,
+  type GraphPanelView,
 } from "../components/project/main-tabs";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
 
@@ -100,11 +102,15 @@ export function useProjectPanels(workspaceId: string) {
     setEditorTabs((prev) => (prev.activeTabId ? closeTab(prev, prev.activeTabId) : prev));
   }, []);
 
-  /** 打开/激活执行图标签（UI-13）；同 planId 幂等，reducer 保证切视图不新建。 */
-  const handleOpenGraphTab = useCallback((planId: string, sessionId: string) => {
-    setEditorWorkbenchVisible(true);
-    setEditorTabs((prev) => openGraphTab(prev, planId, sessionId));
-  }, []);
+  /** 打开/激活执行图标签（UI-13）；planId 为 null 进入列表态，reducer 幂等；
+   * view 指定详情态初始一级视图（画布 / 执行结果）。 */
+  const handleOpenGraphTab = useCallback(
+    (sessionId: string, planId: string | null, view: GraphPanelView = DEFAULT_GRAPH_PANEL_VIEW) => {
+      setEditorWorkbenchVisible(true);
+      setEditorTabs((prev) => openGraphTab(prev, sessionId, planId, view));
+    },
+    [],
+  );
 
   const handleCloseGraphTab = useCallback((tabId: string) => {
     setEditorTabs((prev) => closeTab(prev, tabId));

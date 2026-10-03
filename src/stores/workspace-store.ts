@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { DEFAULT_GRAPH_PANEL_VIEW, type GraphPanelView } from "../components/project/main-tabs";
 import {
   DEFAULT_WORKSPACE_PREFS,
   sanitizeWorkspacePrefs,
@@ -13,15 +14,22 @@ interface WorkspaceState {
    * 每会话临时详情（不持久化）：执行图面板归属。
    * 绑定 sessionId 后，多项目保活挂载不再共享同一个 planId（UI-08 串台修复）。
    * UI-13 起作为「打开执行图标签」的意图通道：tab 是渲染真值，store 只是意图。
+   * planId 为 null 表示列表态（会话全部执行图列表），非 null 直达该图详情；
+   * view 指定详情态初始一级视图（画布 / 执行结果，列表行「结果」入口用）。
    */
-  graphPanel: { sessionId: string; planId: string; openSeq: number } | null;
+  graphPanel: {
+    sessionId: string;
+    planId: string | null;
+    view: GraphPanelView;
+    openSeq: number;
+  } | null;
   /**
    * 每会话执行图视图记忆（不持久化，UI-13/UI-14）：图标签关闭再打开、
    * 详情返回时保留选中节点、视口、共享状态展开态与手动布局覆盖。
    */
   graphViewBySession: Record<string, GraphViewMemory>;
   setPrefs: (workspaceId: string, patch: Partial<WorkspacePrefs>) => void;
-  openGraphPanel: (sessionId: string, planId: string) => void;
+  openGraphPanel: (sessionId: string, planId: string | null, view?: GraphPanelView) => void;
   closeGraphPanel: (sessionId?: string) => void;
   setGraphView: (sessionId: string, patch: Partial<GraphViewMemory>) => void;
   clearGraphView: (sessionId: string) => void;
@@ -52,11 +60,12 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             },
           };
         }),
-      openGraphPanel: (sessionId, planId) =>
+      openGraphPanel: (sessionId, planId, view = DEFAULT_GRAPH_PANEL_VIEW) =>
         set((state) => ({
           graphPanel: {
             sessionId,
             planId,
+            view,
             // 同一次点击的序号。重复点同一张图也要递增，窄窗才能再次把编辑区让出来。
             openSeq: (state.graphPanel?.openSeq ?? 0) + 1,
           },

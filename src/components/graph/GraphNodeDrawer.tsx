@@ -8,6 +8,7 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { StatusPill } from "../detail/StatusPill";
+import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import { createSerialTaskQueue, hydrateGraphPlan, useGraphPlan } from "./graph-store";
 import { ExecutionTimelineList, executionHint } from "./ExecutionTimelineList";
 import {
@@ -49,6 +50,8 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   // 输入区默认收起、输出区默认展开（执行时以工具调用列表为主视图）
   const [inputOpen, setInputOpen] = useState(false);
   const [outputOpen, setOutputOpen] = useState(true);
+  // 输出默认按 markdown 渲染（节点输出即结论文本），可切回纯原文核对。
+  const [outputRaw, setOutputRaw] = useState(false);
   const [draftTask, setDraftTask] = useState(node?.task ?? "");
   const [draftExpectedFiles, setDraftExpectedFiles] = useState((node?.expectedFiles ?? []).join(", "));
   const [saving, setSaving] = useState(false);
@@ -58,7 +61,7 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
   useEffect(() => { setSelectedRunId(plan?.latestRunId ?? ""); }, [plan?.latestRunId]);
   // 切换节点时重置折叠状态：组件常驻挂载（不随 nodeId 重建），
   // 否则会从上一节点继承输入/输出区的展开收起状态
-  useEffect(() => { setInputOpen(false); setOutputOpen(true); }, [nodeId]);
+  useEffect(() => { setInputOpen(false); setOutputOpen(true); setOutputRaw(false); }, [nodeId]);
   useEffect(() => { setDraftTask(node?.task ?? ""); }, [node?.task, nodeId]);
   useEffect(() => { setDraftExpectedFiles((node?.expectedFiles ?? []).join(", ")); }, [node?.expectedFiles, nodeId]);
   useEffect(() => {
@@ -274,17 +277,40 @@ export function GraphNodeDrawer(props: GraphNodeDrawerProps) {
         </section>
 
         <section className="ai-graph-drawer-section ai-graph-output-section">
-          <button type="button" className="ai-graph-drawer-label ai-graph-drawer-label--toggle" onClick={() => setOutputOpen((value) => !value)} aria-expanded={outputOpen}>
-            {outputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            {liveOutput ? "实时响应" : "Agent 输出"}
-            {output && <span className="ai-graph-drawer-hint">{formatCharCount(output.length)} 字符</span>}
-          </button>
-          {outputOpen && (
+          <div className="ai-graph-drawer-title-row">
+            <button type="button" className="ai-graph-drawer-label ai-graph-drawer-label--toggle" onClick={() => setOutputOpen((value) => !value)} aria-expanded={outputOpen}>
+              {outputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              {liveOutput ? "实时响应" : "Agent 输出"}
+              {output && <span className="ai-graph-drawer-hint">{formatCharCount(output.length)} 字符</span>}
+            </button>
+            {output && (
+              <button
+                type="button"
+                className="ai-graph-drawer-output-toggle"
+                onClick={() => setOutputRaw((value) => !value)}
+                title={outputRaw ? "切换为 markdown 渲染" : "切换为纯文本原文"}
+              >
+                {outputRaw ? "渲染" : "原文"}
+              </button>
+            )}
+          </div>
+          {outputOpen && (outputRaw ? (
             <pre className="ai-graph-drawer-pre ai-graph-drawer-pre--output">
               {outputOmitted > 0 ? `…（前 ${formatCharCount(outputOmitted)} 字符已省略）\n` : ""}
               {outputDisplay || (status === "running" ? "Claude Agent 正在准备…" : "尚无输出")}
             </pre>
-          )}
+          ) : outputDisplay || status !== "running" ? (
+            <div className="ai-graph-drawer-output-md">
+              {outputOmitted > 0 && (
+                <p className="ai-graph-drawer-output-omitted">…（前 {formatCharCount(outputOmitted)} 字符已省略）</p>
+              )}
+              {outputDisplay
+                ? <MarkdownRenderer content={outputDisplay} variant="document" />
+                : <p className="ai-graph-drawer-output-empty">尚无输出</p>}
+            </div>
+          ) : (
+            <p className="ai-graph-drawer-output-empty">Claude Agent 正在准备…</p>
+          ))}
         </section>
 
         {(upstream.length > 0 || downstream.length > 0) && <section className="ai-graph-drawer-section"><div className="ai-graph-drawer-label">依赖关系</div><div className="ai-graph-drawer-deps-chips">{[...upstream, ...downstream].map((id) => <button key={id} className="ai-graph-dep-chip" onClick={() => onSelectNode(id)}>{titleOf(id)}</button>)}</div></section>}

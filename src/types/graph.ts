@@ -88,6 +88,22 @@ export interface GraphNodeRunRecord {
   retryCount: number;
 }
 
+/** run 收尾组装的执行结果（graph_runs v11 列）：结论节点输出快照 + 修改文件
+ * 并集 + 结果类型。结论节点按确定性规则解析（唯一汇点；多汇点取最晚完成的
+ * 成功汇点），结论节点未成功时 conclusion 为 null。 */
+export interface GraphRunResult {
+  conclusionNodeId: string | null;
+  conclusionMd: string | null;
+  /**
+   * review=纯调研审查类；edit=含成功 coding 节点的执行写入类；
+   * none=执行完成、无结果（无成功节点）；unknown 仅为历史/未收尾落库值
+   * （Rust 读取层归一为 result=null，已组装结果不出现该值）。
+   */
+  resultKind: "review" | "edit" | "none" | "unknown" | (string & {});
+  /** 本次 run 全部节点 affectedFiles 的并集（排序去重）。 */
+  modifiedFiles: string[];
+}
+
 export interface GraphRunSummary {
   id: string;
   planId: string;
@@ -100,6 +116,8 @@ export interface GraphRunSummary {
   verdictReason: string;
   startedAt: number;
   finishedAt: number | null;
+  /** 执行结果（v11 起正常收尾时组装落库，无成功节点为 resultKind="none"；取消/中断与历史 run 为 null）。 */
+  result: GraphRunResult | null;
 }
 export interface AgentActivity {
   id: string;
@@ -159,6 +177,32 @@ export interface GraphPlanUpdatedPayload {
   workspaceId: string;
 }
 
+/** `graph_plan_list_for_session` 的轻量列表项（会话图列表页）。 */
+export interface GraphPlanListItem {
+  id: string;
+  title: string;
+  summary: string;
+  status: GraphPlanStatus;
+  nodeCount: number;
+  createdAt: number;
+  updatedAt: number;
+  /** 最近一次运行摘要（未运行过为 null）。 */
+  latestRun: {
+    id: string;
+    attemptNo: number;
+    status: string;
+    mode: string;
+    verdictStatus: string;
+    finishedAt: number | null;
+    /** 执行结果类型（review/edit；none=执行完成无结果；未收尾与历史 run 为 unknown）。 */
+    resultKind: string;
+    /** 结论 md 预览（SQL 截取；无结论为空串）。 */
+    conclusionPreview: string;
+    /** 修改文件清单长度。 */
+    modifiedFileCount: number;
+  } | null;
+}
+
 // ── graph-run-event data 变体（#[serde(tag = "event", content = "data")]） ──
 
 export interface GraphRunStartedData {
@@ -193,7 +237,7 @@ export interface GraphNodeFinishedData {
   nodeId: string;
   output: string;
   durationMs: number;
-  /** 节点影响文件（后端 git status 快照差分采集）。 */
+  /** 节点影响文件（ACP 工具调用声明的 locations 归一化采集）。 */
   affectedFiles: string[];
 }
 
@@ -201,7 +245,7 @@ export interface GraphNodeFailedData {
   nodeId: string;
   error: string;
   durationMs: number;
-  /** 节点影响文件（后端 git status 快照差分采集；取消分支恒为空）。 */
+  /** 节点影响文件（ACP 工具调用 locations 采集；失败/取消分支恒为空）。 */
   affectedFiles: string[];
 }
 

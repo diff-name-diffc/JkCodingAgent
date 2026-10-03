@@ -65,6 +65,27 @@ export const NODE_STATUS_META: Record<GraphNodeStatus, { label: string }> = {
   cancelled: { label: "取消" },
 };
 
+/** 执行结果类型徽标元数据（graph_runs.result_kind，v11）。 */
+export const RESULT_KIND_META: Record<string, { label: string; className: string }> = {
+  review: { label: "审查报告", className: "ai-graph-chip--review" },
+  edit: { label: "执行结果", className: "ai-graph-chip--edit" },
+  unknown: { label: "无结果", className: "ai-graph-chip--unknown" },
+};
+
+export function resultKindMeta(kind: string) {
+  return RESULT_KIND_META[kind] ?? RESULT_KIND_META.unknown;
+}
+
+/** 列表/卡片用的结果摘要文案：按类型给出「审查报告 / 执行结果 · N 文件」。
+ * unknown（未收尾或历史 run）返回 null，调用方不渲染结果徽标。 */
+export function resultKindBadgeLabel(kind: string, modifiedFileCount: number): string | null {
+  if (kind === "review") return "审查报告";
+  if (kind === "edit") {
+    return modifiedFileCount > 0 ? `执行结果 · ${modifiedFileCount} 文件` : "执行结果";
+  }
+  return null;
+}
+
 export function normalizePlanStatus(status: string): GraphPlanStatus {
   return status in PLAN_STATUS_META ? (status as GraphPlanStatus) : "draft";
 }

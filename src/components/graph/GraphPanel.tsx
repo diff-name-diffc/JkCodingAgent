@@ -16,6 +16,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { invoke } from "@tauri-apps/api/core";
 import type { GraphNodeStatus } from "../../types";
+import { DEFAULT_GRAPH_PANEL_VIEW, type GraphPanelView } from "../project/main-tabs";
 import { toast } from "../Toast";
 import { useWorkspaceStore } from "../../stores/workspace-store";
 import { useGraphPlan } from "./graph-store";
@@ -24,6 +25,7 @@ import { GraphNodeView, type GraphFlowNode } from "./GraphNodeView";
 import { GraphNodeDrawer } from "./GraphNodeDrawer";
 import { GraphCanvasControls } from "./GraphCanvasControls";
 import { GraphPanelHeader } from "./GraphPanelHeader";
+import { GraphResultView } from "./GraphResultView";
 import { GraphStateInspector } from "./GraphStateInspector";
 import {
   EDGE_STATE_COLOR,
@@ -45,9 +47,15 @@ export interface GraphPanelProps {
   active: boolean;
   /** 关闭主区标签。面板不再是模态覆盖层——关闭只影响视图，不影响后台执行。 */
   onClose: () => void;
+  /** 返回会话图列表（两级视图的详情→列表；列表态入口在会话头部/列表行）。 */
+  onBackToList?: () => void;
   /** 扩大/还原占满主区（复用会话 pane 收起机制，切换布局不触发任务重跑）。 */
   onExpandMainArea?: () => void;
   mainAreaExpanded?: boolean;
+  /** 详情态初始一级视图（列表行「结果」入口传 "result" 直达执行结果）。 */
+  initialView?: GraphPanelView;
+  /** 打开工作区文件（执行结果视图的修改文件清单 → 主区文件标签）。 */
+  onOpenFile: (path: string, name: string) => void;
 }
 
 /**
@@ -55,6 +63,8 @@ export interface GraphPanelProps {
  * （portal/覆盖层栈/焦点陷阱已随迁移移除）。React Flow 画布 + 两层头部
  * + 按需共享状态检查器；选中节点/视口/手动布局按会话记忆，
  * 关标签再打开、从节点详情返回时保留（UI-14 验收依赖）。
+ * 详情态内含两个平级一级视图：画布（执行图）与执行结果（结论 md +
+ * 修改文件清单），经头部切换；标签的 view 字段决定初始视图。
  */
 export function GraphPanel(props: GraphPanelProps) {
   // key 于 planId：切换计划整树重建，状态从视图记忆重新初始化，
@@ -71,8 +81,11 @@ function GraphPanelInner({
   sessionId,
   active,
   onClose,
+  onBackToList,
   onExpandMainArea,
   mainAreaExpanded = false,
+  initialView = DEFAULT_GRAPH_PANEL_VIEW,
+  onOpenFile,
 }: GraphPanelProps) {
   const { fitView } = useReactFlow();
   const snapshot = useGraphPlan(planId);
@@ -119,6 +132,21 @@ function GraphPanelInner({
   const planStatus = plan ? normalizePlanStatus(plan.status) : "draft";
   const paused = snapshot.paused;
   const canResumeRun = planStatus === "failed" || planStatus === "cancelled";
+
+  // 详情态一级视图（画布 / 执行结果）：内部切换只改本地态；标签 view 变化
+  // （列表行「结果」入口 / 意图通道）作为外部导航覆盖本地态。
+  const [view, setView] = useState<GraphPanelView>(initialView);
+  useEffect(() => {
+    setView(initialView);
+  }, [initialView]);
+  /** 结果视图空态引导：跳回画布并打开指定节点抽屉。 */
+  const handleOpenNodeFromResult = useCallback(
+    (nodeId: string) => {
+      setView("canvas");
+      setSelectedNodeId(nodeId);
+    },
+    [setSelectedNodeId],
+  );
 
   // Escape 只关抽屉（选中节点）；关闭面板走标签关闭语义。
   // UI-23b：抽屉打开时压入覆盖层栈——统一「栈顶裁决」使底层快捷键
@@ -333,67 +361,80 @@ function GraphPanelInner({
         paused={paused}
         actionPending={actionPending}
         statusByNodeId={statusByNodeId}
+        view={view}
+        onViewChange={setView}
         onStart={(mode) => void handleStart(mode)}
         onResumeCheckpoint={() => void handleResumeCheckpoint()}
         onCancel={() => void handleCancel()}
         onReverify={() => void handleReverify()}
         reverifyPending={reverifyPending}
         onClose={onClose}
+        onBackToList={onBackToList}
         onExpandMainArea={onExpandMainArea}
         mainAreaExpanded={mainAreaExpanded}
       />
 
-      <div className="ai-graph-panel-canvas">
-        {definition && definition.nodes.length > 0 ? (
-          <ReactFlow
-            nodes={flowNodes}
-            edges={flowEdges}
-            nodeTypes={nodeTypes}
-            onNodesChange={handleNodesChange}
-            onMoveEnd={handleMoveEnd}
-            {...(memory?.viewport
-              ? { defaultViewport: memory.viewport }
-              : { fitView: true, fitViewOptions: { padding: 0.18, maxZoom: 1 } })}
-            // maxZoom 限制为 1：CSS transform 放大文本会明显发虚
-            minZoom={0.3}
-            maxZoom={2}
-            nodesDraggable
-            nodesConnectable={false}
-            elementsSelectable
-            proOptions={{ hideAttribution: true }}
-            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-            onPaneClick={() => setSelectedNodeId(null)}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
-            <GraphCanvasControls
-              statusByNodeId={statusByNodeId}
-              hasCustomLayout={Object.keys(dragOverrides).length > 0}
-              onResetLayout={() => {
-                setDragOverrides({});
-                dragOverridesRef.current = {};
-                setGraphView(sessionId, { planId, dragOverrides: {} });
-              }}
-            />
-            <MiniMap
-              pannable
-              zoomable
-              className="ai-graph-minimap"
-              style={{ width: 132, height: 88 }}
-            />
-          </ReactFlow>
-        ) : (
-          <div className="ai-graph-panel-empty">
-            {plan ? "图定义解析失败，无法渲染画布。" : "计划加载中…"}
+      {view === "result" ? (
+        <GraphResultView
+          plan={plan}
+          onOpenNode={handleOpenNodeFromResult}
+          onOpenFile={onOpenFile}
+        />
+      ) : (
+        <>
+          <div className="ai-graph-panel-canvas">
+            {definition && definition.nodes.length > 0 ? (
+              <ReactFlow
+                nodes={flowNodes}
+                edges={flowEdges}
+                nodeTypes={nodeTypes}
+                onNodesChange={handleNodesChange}
+                onMoveEnd={handleMoveEnd}
+                {...(memory?.viewport
+                  ? { defaultViewport: memory.viewport }
+                  : { fitView: true, fitViewOptions: { padding: 0.18, maxZoom: 1 } })}
+                // maxZoom 限制为 1：CSS transform 放大文本会明显发虚
+                minZoom={0.3}
+                maxZoom={2}
+                nodesDraggable
+                nodesConnectable={false}
+                elementsSelectable
+                proOptions={{ hideAttribution: true }}
+                onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+                onPaneClick={() => setSelectedNodeId(null)}
+              >
+                <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
+                <GraphCanvasControls
+                  statusByNodeId={statusByNodeId}
+                  hasCustomLayout={Object.keys(dragOverrides).length > 0}
+                  onResetLayout={() => {
+                    setDragOverrides({});
+                    dragOverridesRef.current = {};
+                    setGraphView(sessionId, { planId, dragOverrides: {} });
+                  }}
+                />
+                <MiniMap
+                  pannable
+                  zoomable
+                  className="ai-graph-minimap"
+                  style={{ width: 132, height: 88 }}
+                />
+              </ReactFlow>
+            ) : (
+              <div className="ai-graph-panel-empty">
+                {plan ? "图定义解析失败，无法渲染画布。" : "计划加载中…"}
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      <GraphStateInspector
-        plan={plan}
-        definition={definition}
-        open={stateOpen}
-        onToggle={toggleStateOpen}
-      />
+          <GraphStateInspector
+            plan={plan}
+            definition={definition}
+            open={stateOpen}
+            onToggle={toggleStateOpen}
+          />
+        </>
+      )}
 
       <AnimatePresence>
         {selectedNodeId && selectedNodeExists && (

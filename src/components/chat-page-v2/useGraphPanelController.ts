@@ -3,7 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import type { GraphPlanRecord, GraphPlanUpdatedPayload } from "../../types";
 import { useWorkspaceStore } from "../../stores/workspace-store";
-import { hydrateGraphPlan } from "../graph/graph-store";
 
 export function useGraphPanelController(
   activeSessionId: string | null,
@@ -21,8 +20,10 @@ export function useGraphPanelController(
   const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
+    // 会话切换/截断重查前先清空旧值：查询返回前的窗口期按钮可用性不得
+    // 沿用旧会话的最近计划（否则可对新会话误开图标签）。
+    setLatestPlanId(null);
     if (isPlainChat || !activeSessionId) {
-      setLatestPlanId(null);
       return;
     }
     let cancelled = false;
@@ -54,9 +55,10 @@ export function useGraphPanelController(
   }, [currentSessionIdRef, isPlainChat]);
 
   const open = useCallback(() => {
+    // 打开的是会话图列表（两级视图的列表态）；latestPlanId 仅作可用性门槛
+    // （会话从未出图则按钮不可用）。
     if (!latestPlanId || !activeSessionId) return;
-    void hydrateGraphPlan(latestPlanId);
-    openGraphPanel(activeSessionId, latestPlanId);
+    openGraphPanel(activeSessionId, null);
   }, [latestPlanId, activeSessionId, openGraphPanel]);
 
   return {

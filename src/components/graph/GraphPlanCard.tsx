@@ -10,6 +10,8 @@ import {
   PLAN_STATUS_META,
   normalizePlanStatus,
   parseGraphDefinition,
+  resultKindBadgeLabel,
+  resultKindMeta,
 } from "./graph-utils";
 
 export interface GraphPlanCardProps {
@@ -39,6 +41,11 @@ export const GraphPlanCard = memo(function GraphPlanCard({
   const summary = plan?.summary || definition?.summary || "";
   const nodeCount = definition?.nodes.length ?? plan?.nodeRuns.length ?? 0;
   const statusMeta = plan ? PLAN_STATUS_META[normalizePlanStatus(plan.status)] : null;
+  // 最近一次运行已产出执行结果时补结果徽标（run.result 结构化落库后可见）。
+  const result = plan?.runs?.[0]?.result ?? null;
+  const resultBadge = result
+    ? resultKindBadgeLabel(result.resultKind, result.modifiedFiles.length)
+    : null;
 
   const open = () => {
     if (!sessionId) return;
@@ -70,6 +77,11 @@ export const GraphPlanCard = memo(function GraphPlanCard({
           </span>
           {statusMeta && (
             <span className={cn("ai-graph-chip", statusMeta.className)}>{statusMeta.label}</span>
+          )}
+          {resultBadge && (
+            <span className={cn("ai-graph-chip", resultKindMeta(result?.resultKind ?? "unknown").className)}>
+              {resultBadge}
+            </span>
           )}
         </div>
         {summary && <div className="ai-graph-plan-card-summary">{summary}</div>}

@@ -51,7 +51,7 @@ App
     ├── ContextNav（会话 / 文件 / 变更 / 历史四页签）
     ├── SessionPanel（会话列表：搜索 / 新建 / 分页）
     ├── 聊天工作台 chat-page-v2（dispatcher 消息流、工具调用、子智能体、图编排入口）
-    ├── 图编排 UI components/graph（GraphPlanCard / GraphPanel / GraphNodeDrawer）
+    ├── 图编排 UI components/graph（GraphPlanCard / GraphPanel / GraphNodeDrawer / GraphPlanListView——每会话单例图标签的两级视图：列表态 ↔ 详情态，`graph_plan_list_for_session` 拉会话全部计划轻量摘要）
     ├── SubAgentExecutionView（子智能体执行卡片）
     ├── 文件浏览器 file-explorer（FileViewer / LargeFileViewer / 图片预览）
     ├── GitChanges / GitHistory（变更 / 提交 / 差异）
@@ -104,7 +104,7 @@ App
   - 子智能体：同层 `compact_history_offline` 规则兜底折叠，不消耗摘要模型，保护头部 2 条（system + 首轮任务）。
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
-- 当前 **v10 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）；`init()` 支持全新建库 / 同版本直开 / 低版本逐级前向迁移（v1→v10 迁移块明细见 `schema.rs`）。
+- 当前 **v11 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）；`init()` 支持全新建库 / 同版本直开 / 低版本逐级前向迁移（v1→v11 迁移块明细见 `schema.rs`）。
 - 每次 schema 变更必须同时：① 更新基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 事务块（DDL/回填与 `user_version` 同事务、幂等可重试）。**禁止改写或删除历史迁移块**——已发布版本用户升级的唯一路径。
 - 破坏性迁移（DROP/清空数据）前必须整库快照（`VACUUM INTO`），保留「备份失败留痕」兜底。
 - 领域自管表（sub_agent / ssh / projects / mcp_servers / app_config）DDL 放在各领域 `ensure_*_tx` 助手，由 `create_baseline` 统一调用，单一出处。
@@ -194,7 +194,7 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 - 普通聊天 → `rig_ext/tools/exec/`（+ `media/`）→ `rig_ext/agents/plain_chat.rs::build_surface` 汇总；
 - 编排器数据面（read_file/list_dir/glob/grep）→ `rig_ext/tools/fs/`，并登记 `rig_ext/tools/mod.rs` 的 `ORCHESTRATOR_RUNTIME_TOOL_NAMES`；
 - 子智能体 → `rig_ext/sub_agent/runner.rs::build`（继承普通聊天 profile）；
-- 协议壳（submit_graph / graph_plan_report / message）→ `rig_ext/agents/project_tools.rs`（fail-closed 壳，回调只报错）；真实动作由 `RigOrchestratorProtocol` 拦截（`rig_ext/agents/project.rs` 实现 `rig_ext::r#loop::ProtocolToolHandler`，submit 拦截在 `project_submit.rs`）。
+- 协议壳（submit_graph / graph_plan_report / message / graph_get / graph_node_{update,add,delete}）→ `rig_ext/agents/project_tools.rs`（fail-closed 壳，回调只报错）；真实动作由 `RigOrchestratorProtocol` 拦截（`rig_ext/agents/project.rs` 实现 `rig_ext::r#loop::ProtocolToolHandler`，submit 拦截在 `project_submit.rs`，图感知 graph_get 与 draft 图节点级 CRUD（update 定点改字段 / add 含 insertBefore 边接管中间插入 / delete 含 force 下游闭包级联）在 `project_graph_ops.rs`——三者复用 `graph/commands.rs::apply_draft_definition_update`（前端 `graph_plan_update` 命令同源：draft 双检 + 整图校验 + 条件更新 + 广播））。
 
 ### 3. 登记策略表 — `src-tauri/src/agent/rig_ext/tools/spec.rs`
 

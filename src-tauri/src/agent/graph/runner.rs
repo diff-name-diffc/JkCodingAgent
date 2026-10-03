@@ -35,8 +35,9 @@ use super::scheduler::{FinishKind, ReadyQueue, MAX_PARALLEL_NODES};
 use super::store::GraphStore;
 use super::types::{
     BaseToolGroup, GraphDefinition, GraphNode, GraphNodeRunRecord, GraphPlanRecord,
-    GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload, GraphRunSummary, NODE_CANCELLED,
-    NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED, RUN_MODE_RESUME,
+    GraphPlanUpdatedPayload, GraphRunEvent, GraphRunEventPayload, GraphRunResult, GraphRunSummary,
+    NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED,
+    RESULT_KIND_EDIT, RESULT_KIND_NONE, RESULT_KIND_REVIEW, RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use super::verifier;
@@ -644,7 +645,7 @@ async fn run_graph(
         }
     }
 
-    // 闭环收尾：验收 → 回执 → 终态落库。
+    // 闭环收尾：验收 → 结果组装 → 回执 → 终态落库。
     let node_runs = store.list_node_runs_async(&run.id).await?;
     let verdict = verifier::verify_run(
         &services.agent_config,
@@ -660,6 +661,12 @@ async fn run_graph(
         .await
     {
         eprintln!("[graph] 写入验收结论失败（{plan_id}）：{error:#}");
+    }
+
+    let result = resolve_run_result(&definition, &node_runs);
+    if let Err(error) = store.update_run_result_async(&run.id, result.clone()).await {
+        // 结果落库失败不阻断终态收尾：面板退化为无结果展示，节点输出仍完整。
+        eprintln!("[graph] 写入执行结果失败（{plan_id}）：{error:#}");
     }
 
     let failed_nodes = queue.failed_nodes();
@@ -683,6 +690,7 @@ async fn run_graph(
             node_runs: &node_runs,
             state: &state,
             verdict: &verdict,
+            result: &result,
         },
     )
     .await;
@@ -699,6 +707,86 @@ async fn run_graph(
         },
     );
     Ok(())
+}
+
+/// run 收尾组装执行结果（graph_runs v11 列），纯函数便于单测：
+/// - 结论节点：图定义的汇点（未被任何节点 depends_on 引用者）。唯一汇点即
+///   结论节点；多汇点取其中 finished_at 最晚的成功节点（软提示引导编排器以
+///   单一汇总节点收口，此规则为未收口图兜底；无可选成功汇点时不指定）。
+///   结论节点未成功或输出为空 → conclusion_md 为 None（UI 退化为验收 + 文件）。
+/// - 结果类型：任一成功节点为 coding 工具组（含 resume 复用 cached 行）→
+///   edit（执行写入类）；有成功节点但全为 read_only → review（调研审查类）；
+///   无成功节点 → none（执行完成、无结果；unknown 保留给未收尾/历史行，
+///   读取层对 unknown 呈现为 result=None）。
+/// - 修改文件清单：本次 run 全部节点 affected_files 的并集（排序去重）。
+pub(crate) fn resolve_run_result(
+    definition: &GraphDefinition,
+    node_runs: &[GraphNodeRunRecord],
+) -> GraphRunResult {
+    let run_by_node: HashMap<&str, &GraphNodeRunRecord> = node_runs
+        .iter()
+        .map(|record| (record.node_id.as_str(), record))
+        .collect();
+
+    // 汇点 = 未被任何 depends_on 引用的节点（出度 0）。
+    let mut has_downstream: HashSet<&str> = HashSet::new();
+    for node in &definition.nodes {
+        for dep in &node.depends_on {
+            has_downstream.insert(dep.as_str());
+        }
+    }
+    let conclusion_node_id = {
+        let sinks: Vec<&GraphNode> = definition
+            .nodes
+            .iter()
+            .filter(|node| !has_downstream.contains(node.id.as_str()))
+            .collect();
+        match sinks.len() {
+            0 => None,
+            1 => Some(sinks[0].id.clone()),
+            _ => sinks
+                .iter()
+                .filter_map(|node| run_by_node.get(node.id.as_str()).copied())
+                .filter(|record| record.status == NODE_SUCCEEDED)
+                // finished_at 缺失（异常行）按 0 参与比较，不参与「最晚」竞争。
+                .max_by_key(|record| record.finished_at.unwrap_or(0))
+                .map(|record| record.node_id.clone()),
+        }
+    };
+
+    let conclusion_md = conclusion_node_id
+        .as_deref()
+        .and_then(|node_id| run_by_node.get(node_id).copied())
+        .filter(|record| record.status == NODE_SUCCEEDED)
+        .map(|record| record.output_text.clone())
+        .filter(|output| !output.trim().is_empty());
+
+    let mut has_succeeded = false;
+    let mut has_succeeded_coding = false;
+    let mut modified_files = std::collections::BTreeSet::new();
+    for record in node_runs {
+        if record.status == NODE_SUCCEEDED {
+            has_succeeded = true;
+            if record.base_tool_group == BaseToolGroup::Coding.as_str() {
+                has_succeeded_coding = true;
+            }
+        }
+        modified_files.extend(record.affected_files.iter().cloned());
+    }
+    let result_kind = if has_succeeded_coding {
+        RESULT_KIND_EDIT
+    } else if has_succeeded {
+        RESULT_KIND_REVIEW
+    } else {
+        RESULT_KIND_NONE
+    };
+
+    GraphRunResult {
+        conclusion_node_id,
+        conclusion_md,
+        result_kind: result_kind.to_string(),
+        modified_files: modified_files.into_iter().collect(),
+    }
 }
 
 async fn resolve_workspace_root(db: &DispatcherDb, workspace_id: &str) -> Result<PathBuf> {
@@ -727,4 +815,143 @@ async fn resolve_workspace_root(db: &DispatcherDb, workspace_id: &str) -> Result
         .context("规范化工作区路径任务失败")?
         .with_context(|| format!("工作区路径不存在或无法访问：{project_id}"))?;
     Ok(root)
+}
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+    use crate::agent::graph::types::{NODE_RUNNING, NODE_SKIPPED};
+
+    fn node(id: &str, group: BaseToolGroup, deps: &[&str]) -> GraphNode {
+        GraphNode {
+            id: id.into(),
+            title: id.into(),
+            role: String::new(),
+            model_ref: "m1".into(),
+            base_tool_group: group,
+            task: "task".into(),
+            depends_on: deps.iter().map(|dep| dep.to_string()).collect(),
+            inject_state_keys: vec![],
+            output_key: format!("out_{id}"),
+            expected_files: vec![],
+            export_policy: Default::default(),
+            use_plan_mode: false,
+        }
+    }
+
+    fn definition(nodes: Vec<GraphNode>) -> GraphDefinition {
+        GraphDefinition {
+            version: 4,
+            title: "测试图".into(),
+            summary: String::new(),
+            state_keys: vec![],
+            nodes,
+            inherits_from: None,
+        }
+    }
+
+    fn record(node: &GraphNode, status: &str) -> GraphNodeRunRecord {
+        let mut record = GraphNodeRunRecord::pending("run", "plan", node);
+        record.status = status.into();
+        record
+    }
+
+    /// 链式图 n1(只读) → n2(coding) → n3(汇总)：唯一汇点 n3 的输出即结论，
+    /// coding 节点成功 → edit；文件清单为各节点并集且排序去重。
+    #[test]
+    fn single_sink_conclusion_and_edit_kind() {
+        let def = definition(vec![
+            node("n1", BaseToolGroup::ReadOnly, &[]),
+            node("n2", BaseToolGroup::Coding, &["n1"]),
+            node("n3", BaseToolGroup::ReadOnly, &["n2"]),
+        ]);
+        let n1 = &def.nodes[0];
+        let n2 = &def.nodes[1];
+        let n3 = &def.nodes[2];
+        let mut r1 = record(n1, NODE_SUCCEEDED);
+        r1.affected_files = vec!["docs/report.md".into()];
+        let mut r2 = record(n2, NODE_SUCCEEDED);
+        r2.affected_files = vec!["src/b.rs".into(), "src/a.rs".into()];
+        let mut r3 = record(n3, NODE_SUCCEEDED);
+        r3.output_text = "## 审查结论\n- 问题 A".into();
+        r3.affected_files = vec!["src/a.rs".into()];
+
+        let result = resolve_run_result(&def, &[r1, r2, r3]);
+        assert_eq!(result.conclusion_node_id.as_deref(), Some("n3"));
+        assert!(result.conclusion_md.as_deref().unwrap().contains("审查结论"));
+        assert_eq!(result.result_kind, RESULT_KIND_EDIT);
+        assert_eq!(
+            result.modified_files,
+            vec!["docs/report.md".to_string(), "src/a.rs".to_string(), "src/b.rs".to_string()]
+        );
+    }
+
+    /// 纯 read_only 成功图 → review；多汇点时取 finished_at 最晚的成功汇点。
+    #[test]
+    fn multi_sink_picks_latest_succeeded_and_review_kind() {
+        let def = definition(vec![
+            node("investigate", BaseToolGroup::ReadOnly, &[]),
+            node("audit_a", BaseToolGroup::ReadOnly, &["investigate"]),
+            node("audit_b", BaseToolGroup::ReadOnly, &["investigate"]),
+        ]);
+        let a = &def.nodes[1];
+        let b = &def.nodes[2];
+        let mut ra = record(a, NODE_SUCCEEDED);
+        ra.finished_at = Some(1_000);
+        ra.output_text = "早完成的分支结论".into();
+        let mut rb = record(b, NODE_SUCCEEDED);
+        rb.finished_at = Some(2_000);
+        rb.output_text = "## 最终结论".into();
+
+        let result = resolve_run_result(&def, &[ra, rb]);
+        assert_eq!(result.conclusion_node_id.as_deref(), Some("audit_b"));
+        assert!(result.conclusion_md.as_deref().unwrap().contains("最终结论"));
+        assert_eq!(result.result_kind, RESULT_KIND_REVIEW);
+    }
+
+    /// 结论节点失败：conclusion_node_id 仍指向汇点（解释结论缺失原因），
+    /// conclusion_md 为 None；成功 coding 节点仍在 → edit。
+    #[test]
+    fn failed_conclusion_node_yields_no_md() {
+        let def = definition(vec![
+            node("fix", BaseToolGroup::Coding, &[]),
+            node("summary", BaseToolGroup::ReadOnly, &["fix"]),
+        ]);
+        let mut rf = record(&def.nodes[0], NODE_SUCCEEDED);
+        rf.affected_files = vec!["src/a.rs".into()];
+        let rs = record(&def.nodes[1], NODE_FAILED);
+
+        let result = resolve_run_result(&def, &[rf, rs]);
+        assert_eq!(result.conclusion_node_id.as_deref(), Some("summary"));
+        assert!(result.conclusion_md.is_none());
+        assert_eq!(result.result_kind, RESULT_KIND_EDIT);
+        assert_eq!(result.modified_files, vec!["src/a.rs".to_string()]);
+    }
+
+    /// 无成功节点（全失败/跳过/未运行）→ none（已组装但无结果），多汇点无可选
+    /// 成功节点时不指定结论节点。
+    #[test]
+    fn no_succeeded_nodes_yields_none_kind() {
+        let def = definition(vec![
+            node("a", BaseToolGroup::Coding, &[]),
+            node("b", BaseToolGroup::Coding, &[]),
+        ]);
+        let ra = record(&def.nodes[0], NODE_FAILED);
+        let rb = record(&def.nodes[1], NODE_SKIPPED);
+        let result = resolve_run_result(&def, &[ra, rb]);
+        assert_eq!(result.result_kind, RESULT_KIND_NONE);
+        assert!(result.conclusion_node_id.is_none());
+        assert!(result.conclusion_md.is_none());
+
+        // 跳过（未运行）不算成功，即使汇总节点行存在也不能产出结论。
+        let def2 = definition(vec![
+            node("work", BaseToolGroup::Coding, &[]),
+            node("summary", BaseToolGroup::ReadOnly, &["work"]),
+        ]);
+        let rw = record(&def2.nodes[0], NODE_RUNNING);
+        let rs = record(&def2.nodes[1], NODE_SKIPPED);
+        let result2 = resolve_run_result(&def2, &[rw, rs]);
+        assert!(result2.conclusion_md.is_none());
+        assert_eq!(result2.result_kind, RESULT_KIND_NONE);
+    }
 }

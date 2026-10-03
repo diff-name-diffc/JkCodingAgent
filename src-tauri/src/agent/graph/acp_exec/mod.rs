@@ -349,9 +349,13 @@ pub(crate) async fn execute_node(ctx: &NodeExecContext) -> NodeExecOutcome {
             error,
             usage_json: "{}".into(),
         },
-        Ok(Ok(turn)) => {
-            settle_stop_reason(turn.stop_reason, output, tool_call_count, affected_files)
-        }
+        Ok(Ok(turn)) => settle_stop_reason(
+            turn.stop_reason,
+            output,
+            tool_call_count,
+            affected_files,
+            turn.usage_json,
+        ),
     }
 }
 
@@ -371,19 +375,20 @@ fn spawn_activity_saver(
 
 /// stopReason 结算：end_turn 成功；max_tokens / max_turn_requests 成功但
 /// 输出附注（产出可能不完整）；refusal 失败；cancelled 取消。
+/// 成功路径写入执行器上报的真实 token 用量（`_meta.quota.token_count`，
+/// 见 `client::extract_usage_json`）；未上报（自定义执行器）时为 "{}"。
 fn settle_stop_reason(
     stop_reason: StopReason,
     output: String,
     tool_call_count: i64,
     affected_files: Vec<String>,
+    usage_json: String,
 ) -> NodeExecOutcome {
     let succeeded = |output: String| NodeExecOutcome::Succeeded {
         output,
         affected_files,
         tool_call_count,
-        // ACP 的逐轮 token 用量仍是 unstable 特性（未开启）；上下文占用经
-        // usage_update 以 context_usage 活动呈现，usage_json 维持 "{}"。
-        usage_json: "{}".into(),
+        usage_json,
     };
     match stop_reason {
         StopReason::EndTurn => succeeded(output),

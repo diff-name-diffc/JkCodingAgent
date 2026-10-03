@@ -8,8 +8,9 @@ use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter};
 
 use super::types::{
-    GraphNodeRunRecord, GraphPlanRecord, GraphRunSummary, NODE_FAILED, NODE_PHASE_CACHED,
-    NODE_SKIPPED, NODE_SUCCEEDED, VERDICT_FAIL, VERDICT_PARTIAL, VERDICT_PASS,
+    GraphNodeRunRecord, GraphPlanRecord, GraphRunResult, GraphRunSummary, NODE_FAILED,
+    NODE_PHASE_CACHED, NODE_SKIPPED, NODE_SUCCEEDED, RESULT_KIND_EDIT, RESULT_KIND_REVIEW,
+    VERDICT_FAIL, VERDICT_PARTIAL, VERDICT_PASS,
 };
 use super::verifier::VerdictOutcome;
 use crate::agent::db::{DispatcherDb, DispatcherMessageUsageStats};
@@ -20,6 +21,9 @@ pub(crate) struct ReceiptData<'a> {
     pub node_runs: &'a [GraphNodeRunRecord],
     pub state: &'a Map<String, Value>,
     pub verdict: &'a VerdictOutcome,
+    /// run 收尾组装的结构化执行结果（v11）：回执只落指针行，完整结论由
+    /// 编排器经 graph_result_read 工具回读。
+    pub result: &'a GraphRunResult,
 }
 
 /// 生成并投递执行回执。投递失败只记日志，不影响 run 终态。
@@ -35,6 +39,7 @@ pub(crate) async fn deliver_receipt(
         node_runs,
         state,
         verdict,
+        result,
     } = data;
     // 本地 run 的 finished_at 在 finish_run 落库后仍未回填，用当前时刻兜底：
     // 回执紧随 finish_run 投递，二者相差可忽略。
@@ -47,7 +52,8 @@ pub(crate) async fn deliver_receipt(
         .unwrap_or(now_ms)
         .saturating_sub(run.started_at) as u64;
     let usage_stats = aggregate_usage(node_runs, verdict, elapsed_ms);
-    let content = build_receipt_markdown(plan, run, node_runs, state, verdict, &usage_stats);
+    let content =
+        build_receipt_markdown(plan, run, node_runs, state, verdict, result, &usage_stats);
     let message = db
         .add_visible_message_with_usage_async(workspace_id, "assistant", &content, &usage_stats)
         .await;
@@ -112,6 +118,34 @@ pub(crate) async fn deliver_reverify_note(
     }
 }
 
+/// 千分位格式化 token 数（12,345），回执 markdown 展示用。
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// 回执的 token 用量行：千分位数字 + tokens 单位。合计为 0 说明节点执行器
+/// 与验收模型均未上报（如自定义执行器不带 quota meta、验收未运行），
+/// 明确标注「未获取」——「输入 0 / 输出 0」会被误读为零消耗。
+fn usage_line(usage_stats: &DispatcherMessageUsageStats) -> String {
+    if usage_stats.total_tokens == 0 {
+        return "**Token 用量**：未获取到用量数据（节点执行器与验收模型均未上报）。".into();
+    }
+    format!(
+        "**Token 用量**：输入 {} / 输出 {}（合计 {} tokens）。",
+        format_token_count(usage_stats.prompt_tokens),
+        format_token_count(usage_stats.completion_tokens),
+        format_token_count(usage_stats.total_tokens)
+    )
+}
+
 fn build_reverify_markdown(
     plan: &GraphPlanRecord,
     run: &GraphRunSummary,
@@ -134,10 +168,7 @@ fn build_reverify_markdown(
         ));
         lines.push(String::new());
     }
-    lines.push(format!(
-        "**Token 用量**：输入 {} / 输出 {}（合计 {}）。",
-        usage_stats.prompt_tokens, usage_stats.completion_tokens, usage_stats.total_tokens
-    ));
+    lines.push(usage_line(usage_stats));
     lines.join("\n")
 }
 
@@ -172,6 +203,7 @@ fn build_receipt_markdown(
     node_runs: &[GraphNodeRunRecord],
     state: &Map<String, Value>,
     verdict: &VerdictOutcome,
+    result: &GraphRunResult,
     usage_stats: &DispatcherMessageUsageStats,
 ) -> String {
     let mut succeeded = 0usize;
@@ -208,6 +240,25 @@ fn build_receipt_markdown(
         lines.push(format!(
             "**验收结论**：{}",
             sanitize_for_markdown(verdict.reason.trim())
+        ));
+        lines.push(String::new());
+    }
+
+    // 执行结果指针行：编排器下一轮在会话流里自动感知有结构化结果可读
+    //（软引导；结论 md 全文经 graph_result_read 工具获取，不进回执正文）。
+    let kind_label = match result.result_kind.as_str() {
+        RESULT_KIND_EDIT => Some("执行结果"),
+        RESULT_KIND_REVIEW => Some("审查报告"),
+        _ => None,
+    };
+    if let Some(kind_label) = kind_label {
+        let files_note = if result.modified_files.is_empty() {
+            String::new()
+        } else {
+            format!("（修改 {} 个文件）", result.modified_files.len())
+        };
+        lines.push(format!(
+            "**执行结果**：{kind_label}{files_note}——完整结论文本可用 graph_result_read 工具读取。"
         ));
         lines.push(String::new());
     }
@@ -271,10 +322,7 @@ fn build_receipt_markdown(
     }
 
     lines.push(String::new());
-    lines.push(format!(
-        "**Token 用量**：输入 {} / 输出 {}（合计 {}）。",
-        usage_stats.prompt_tokens, usage_stats.completion_tokens, usage_stats.total_tokens
-    ));
+    lines.push(usage_line(usage_stats));
     lines.join("\n")
 }
 
@@ -341,7 +389,19 @@ fn parse_usage(raw: &str) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::graph::types::{BaseToolGroup, GraphNode};
+    use crate::agent::graph::types::{
+        BaseToolGroup, GraphNode, GraphRunResult, RESULT_KIND_EDIT, RESULT_KIND_REVIEW,
+        RESULT_KIND_UNKNOWN,
+    };
+
+    fn test_result(kind: &str, files: &[&str]) -> GraphRunResult {
+        GraphRunResult {
+            conclusion_node_id: Some("summary".into()),
+            conclusion_md: Some("## 结论".into()),
+            result_kind: kind.into(),
+            modified_files: files.iter().map(|file| (*file).to_string()).collect(),
+        }
+    }
 
     fn record(node_id: &str, status: &str, phase: &str, usage: &str) -> GraphNodeRunRecord {
         let node = GraphNode {
@@ -500,6 +560,7 @@ mod tests {
             verdict_reason: String::new(),
             started_at: 0,
             finished_at: Some(1),
+            result: None,
         };
         let mut failed_record = record("n1", "failed", "finalizing", "{}");
         failed_record.error_text = Some("编译失败\n```\nerror[E0308]\n```\n见 src/a.rs".into());
@@ -517,6 +578,7 @@ mod tests {
             &runs,
             &state,
             &verdict,
+            &test_result(RESULT_KIND_REVIEW, &[]),
             &aggregate_usage(&runs, &verdict, 0),
         );
         // 错误/state/验收理由中的换行、反引号与 markdown 元字符均被中性化，
@@ -556,6 +618,7 @@ mod tests {
             verdict_reason: String::new(),
             started_at: 0,
             finished_at: Some(1),
+            result: None,
         };
         let runs = vec![record("n1", "succeeded", "finalizing", "{}")];
         let verdict = VerdictOutcome {
@@ -569,12 +632,96 @@ mod tests {
             &runs,
             &Map::new(),
             &verdict,
+            &test_result(RESULT_KIND_EDIT, &["src/a.rs", "src/b.rs"]),
             &aggregate_usage(&runs, &verdict, 0),
         );
         assert!(content.contains("测试图"));
         assert!(content.contains("验收通过"));
         assert!(content.contains("产出满足需求"));
         assert!(content.contains("成功 1"));
+        // 执行结果指针行：类型 + 文件计数 + graph_result_read 工具指引。
+        assert!(content.contains("**执行结果**：执行结果（修改 2 个文件）——完整结论文本可用 graph_result_read 工具读取。"));
+    }
+
+    #[test]
+    fn receipt_result_pointer_line_variants() {
+        let plan = GraphPlanRecord {
+            id: "plan".into(),
+            workspace_id: "w".into(),
+            title: "审查图".into(),
+            summary: String::new(),
+            definition_json: "{}".into(),
+            status: "completed".into(),
+            state_json: "{}".into(),
+            requirement: "需求".into(),
+            inherits_plan_id: None,
+            inherits_run_id: None,
+            created_at: 0,
+            updated_at: 0,
+            latest_run_id: None,
+            runs: vec![],
+            node_runs: vec![],
+        };
+        let run = GraphRunSummary {
+            id: "run".into(),
+            plan_id: "plan".into(),
+            attempt_no: 1,
+            status: "completed".into(),
+            mode: "full".into(),
+            verdict_status: VERDICT_PASS.into(),
+            verdict_reason: String::new(),
+            started_at: 0,
+            finished_at: Some(1),
+            result: None,
+        };
+        let runs = vec![record("n1", "succeeded", "finalizing", "{}")];
+        let verdict = VerdictOutcome {
+            status: VERDICT_PASS.into(),
+            reason: String::new(),
+            usage: None,
+        };
+        let base = |result: &GraphRunResult| {
+            build_receipt_markdown(
+                &plan,
+                &run,
+                &runs,
+                &Map::new(),
+                &verdict,
+                result,
+                &aggregate_usage(&runs, &verdict, 0),
+            )
+        };
+        // 审查类无文件：括号省略。
+        let review = base(&test_result(RESULT_KIND_REVIEW, &[]));
+        assert!(review.contains("**执行结果**：审查报告——完整结论文本可用 graph_result_read 工具读取。"));
+        // unknown（无节点成功）：不落指针行。
+        let unknown = base(&test_result(RESULT_KIND_UNKNOWN, &[]));
+        assert!(!unknown.contains("**执行结果**"));
+    }
+
+    #[test]
+    fn usage_line_formats_thousands_and_marks_missing_data() {
+        assert_eq!(format_token_count(293), "293");
+        assert_eq!(format_token_count(3216), "3,216");
+        assert_eq!(format_token_count(1_234_567), "1,234,567");
+        let stats = DispatcherMessageUsageStats {
+            prompt_tokens: 12_345,
+            completion_tokens: 678,
+            total_tokens: 13_023,
+            elapsed_ms: 0,
+        };
+        assert_eq!(
+            usage_line(&stats),
+            "**Token 用量**：输入 12,345 / 输出 678（合计 13,023 tokens）。"
+        );
+        // 合计为 0 = 执行器与验收模型均未上报：明确标注，不显示「0 / 0」误导。
+        let zero = DispatcherMessageUsageStats {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            elapsed_ms: 0,
+        };
+        assert!(usage_line(&zero).contains("未获取到用量数据"));
     }
 
     #[test]
@@ -606,6 +753,7 @@ mod tests {
             verdict_reason: String::new(),
             started_at: 0,
             finished_at: Some(1),
+            result: None,
         };
         let verdict = VerdictOutcome {
             status: VERDICT_PASS.into(),

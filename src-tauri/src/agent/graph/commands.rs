@@ -7,9 +7,9 @@ use super::harness::build_harness_catalog;
 use super::runner::{emit_plan_updated, execute_graph_run, GraphRunServices};
 use super::store::GraphStore;
 use super::types::{
-    GraphDefinition, GraphHarnessCatalog, GraphPlanRecord, GraphRunDetail, GraphRunSummary,
-    PLAN_CANCELLED, PLAN_COMPLETED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING, RUN_MODE_FULL,
-    RUN_MODE_RESUME,
+    GraphDefinition, GraphHarnessCatalog, GraphPlanRecord, GraphPlanSummaryItem, GraphRunDetail,
+    GraphRunSummary, PLAN_CANCELLED, PLAN_COMPLETED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING,
+    RUN_MODE_FULL, RUN_MODE_RESUME,
 };
 use super::validate::validate_graph;
 use crate::agent::state::DispatcherState;
@@ -41,30 +41,37 @@ pub async fn graph_plan_latest_for_session(
         .map_err(|error| error.to_string())
 }
 
-/// 用户确认前编辑图定义（仅 draft 态允许；更新时重新校验）。
+/// 会话全部图计划的轻量列表（图列表页数据源，不含定义/state 大字段）。
 #[tauri::command]
-pub async fn graph_plan_update(
-    app: AppHandle,
+pub async fn graph_plan_list_for_session(
     state: State<'_, DispatcherState>,
-    plan_id: String,
-    definition_json: String,
-) -> Result<(), String> {
+    workspace_id: String,
+) -> Result<Vec<GraphPlanSummaryItem>, String> {
     let store = GraphStore::new(state.db());
-    let plan = store
-        .get_plan_async(&plan_id)
+    store
+        .list_plan_summaries_for_workspace_async(&workspace_id)
         .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("图计划不存在：{plan_id}"))?;
+        .map_err(|error| error.to_string())
+}
+
+/// draft 图定义更新的共享编排（前端 `graph_plan_update` 命令与编排器
+/// `graph_node_update` 协议拦截共用）：draft 双检 + 整图校验 + store 条件
+/// 更新 + 广播。调用方负责先解析/构造 `GraphDefinition`（含 normalize_ids）。
+/// 错误文本面向调用方可读（校验问题/状态门禁），内部故障也一并字符串化，
+/// 与命令层既有口径一致。
+pub(crate) async fn apply_draft_definition_update(
+    store: &GraphStore,
+    app: Option<&AppHandle>,
+    plan: &super::types::GraphPlanRecord,
+    definition: &GraphDefinition,
+) -> Result<(), String> {
+    let plan_id = plan.id.clone();
     if plan.status != PLAN_DRAFT {
         return Err(format!(
             "当前状态（{}）不允许编辑图定义；仅 draft 态可编辑",
             plan.status
         ));
     }
-
-    let mut definition: GraphDefinition = serde_json::from_str(&definition_json)
-        .map_err(|error| format!("错误：definition_json 不是合法的图定义：{error}"))?;
-    definition.normalize_ids();
 
     let catalog = build_harness_catalog();
     // 种子键沿用 plan 当前 state（draft 态普通图为空，修复图为继承 state）。
@@ -78,7 +85,7 @@ pub async fn graph_plan_update(
             .keys()
             .cloned()
             .collect::<std::collections::HashSet<_>>();
-    validate_graph(&definition, &catalog, &seeded_keys)?;
+    validate_graph(definition, &catalog, &seeded_keys)?;
 
     // 写入前重读状态：前置检查与这里之间隔着目录刷新/校验等多个 await，
     // 若 graph_run_start 并发把计划置为 running，必须放弃写入。store 层的
@@ -95,11 +102,35 @@ pub async fn graph_plan_update(
         ));
     }
     store
-        .update_plan_definition_async(&plan_id, &definition)
+        .update_plan_definition_async(&plan_id, plan_now.updated_at, definition)
         .await
         .map_err(|error| error.to_string())?;
-    emit_plan_updated(&app, &plan_id, &plan.workspace_id);
+    if let Some(app) = app {
+        emit_plan_updated(app, &plan_id, &plan.workspace_id);
+    }
     Ok(())
+}
+
+/// 用户确认前编辑图定义（仅 draft 态允许；更新时重新校验）。
+#[tauri::command]
+pub async fn graph_plan_update(
+    app: AppHandle,
+    state: State<'_, DispatcherState>,
+    plan_id: String,
+    definition_json: String,
+) -> Result<(), String> {
+    let store = GraphStore::new(state.db());
+    let plan = store
+        .get_plan_async(&plan_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("图计划不存在：{plan_id}"))?;
+
+    let mut definition: GraphDefinition = serde_json::from_str(&definition_json)
+        .map_err(|error| format!("错误：definition_json 不是合法的图定义：{error}"))?;
+    definition.normalize_ids();
+
+    apply_draft_definition_update(&store, Some(&app), &plan, &definition).await
 }
 
 /// 确认执行 / 重新执行：draft/failed/cancelled/completed 态允许；置 running 后

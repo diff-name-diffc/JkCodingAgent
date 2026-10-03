@@ -2,11 +2,12 @@
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, ContentChunk, PermissionOption, PermissionOptionKind, Plan, PlanEntry,
-    PlanEntryPriority, PlanEntryStatus, SessionUpdate, TextContent, ToolCall, ToolCallLocation,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    PlanEntryPriority, PlanEntryStatus, PromptResponse, SessionUpdate, TextContent, ToolCall,
+    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use serde_json::json;
 
+use super::client::extract_usage_json;
 use super::mapping::{
     decide_static, redact, Mapper, MapperAction, PermissionDecision, MAX_NODE_OUTPUT_BYTES,
 };
@@ -389,7 +390,14 @@ fn plan_approval_prefers_elevated_option_and_skips_clear_context() {
 
 #[test]
 fn stop_reason_settlement() {
-    match settle_stop_reason(StopReason::EndTurn, "产出".into(), 2, vec!["a.rs".into()]) {
+    let usage = r#"{"prompt_tokens":120,"completion_tokens":30}"#;
+    match settle_stop_reason(
+        StopReason::EndTurn,
+        "产出".into(),
+        2,
+        vec!["a.rs".into()],
+        usage.into(),
+    ) {
         NodeExecOutcome::Succeeded {
             output,
             affected_files,
@@ -399,22 +407,22 @@ fn stop_reason_settlement() {
             assert_eq!(output, "产出");
             assert_eq!(affected_files, vec!["a.rs"]);
             assert_eq!(tool_call_count, 2);
-            assert_eq!(usage_json, "{}");
+            assert_eq!(usage_json, usage, "成功结算透传执行器上报的真实用量");
         }
         _ => panic!("end_turn 应结算为成功"),
     }
-    match settle_stop_reason(StopReason::MaxTokens, "产出".into(), 0, vec![]) {
+    match settle_stop_reason(StopReason::MaxTokens, "产出".into(), 0, vec![], "{}".into()) {
         NodeExecOutcome::Succeeded { output, .. } => {
             assert!(output.contains("产出可能不完整"), "max_tokens 成功但附注");
         }
         _ => panic!("max_tokens 应结算为成功（附注）"),
     }
     assert!(matches!(
-        settle_stop_reason(StopReason::Refusal, String::new(), 0, vec![]),
+        settle_stop_reason(StopReason::Refusal, String::new(), 0, vec![], "{}".into()),
         NodeExecOutcome::Failed { .. }
     ));
     assert!(matches!(
-        settle_stop_reason(StopReason::Cancelled, String::new(), 0, vec![]),
+        settle_stop_reason(StopReason::Cancelled, String::new(), 0, vec![], "{}".into()),
         NodeExecOutcome::Cancelled
     ));
 }
@@ -466,4 +474,48 @@ fn pinned_settings_meta_pins_tool_search_off() {
         meta["claudeCode"]["options"]["settings"]["env"]["ENABLE_TOOL_SEARCH"],
         json!("false")
     );
+}
+
+#[test]
+fn extract_usage_reads_quota_token_count_from_meta() {
+    // claude-agent-acp 0.79.0 的 _meta.quota.token_count 形态（计费口径：
+    // inputTokens 不含缓存，缓存读/写单列）。
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "quota".into(),
+        json!({
+            "token_count": {
+                "totalTokens": 35_450,
+                "inputTokens": 1_200,
+                "cachedInputTokens": 30_000,
+                "cachedWriteTokens": 4_000,
+                "outputTokens": 250,
+                "reasoningOutputTokens": 0,
+            }
+        }),
+    );
+    let response = PromptResponse::new(StopReason::EndTurn).meta(meta);
+    let usage = extract_usage_json(&response);
+    let parsed: serde_json::Value = serde_json::from_str(&usage).unwrap();
+    // prompt_tokens 归一为输入侧合计（input + 缓存读 + 缓存写），
+    // 与 OpenAI prompt_tokens 含缓存的口径一致，回执可直接聚合。
+    assert_eq!(parsed["prompt_tokens"], 35_200);
+    assert_eq!(parsed["completion_tokens"], 250);
+    assert_eq!(parsed["cached_read_tokens"], 30_000);
+    assert_eq!(parsed["cached_write_tokens"], 4_000);
+}
+
+#[test]
+fn extract_usage_tolerates_missing_or_zero_quota() {
+    // 自定义执行器不带 _meta.quota 时按未上报处理（"{}"）。
+    let response = PromptResponse::new(StopReason::EndTurn);
+    assert_eq!(extract_usage_json(&response), "{}");
+    // 全零（响应经过 quota 通道但未实际产生计费）同样按未上报处理。
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "quota".into(),
+        json!({ "token_count": { "inputTokens": 0, "outputTokens": 0 } }),
+    );
+    let response = PromptResponse::new(StopReason::EndTurn).meta(meta);
+    assert_eq!(extract_usage_json(&response), "{}");
 }

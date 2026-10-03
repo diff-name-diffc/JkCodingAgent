@@ -192,6 +192,7 @@ pub fn run() {
             agent::sub_agent::commands::sub_agent_get_run_trace,
             agent::graph::commands::graph_plan_get,
             agent::graph::commands::graph_plan_latest_for_session,
+            agent::graph::commands::graph_plan_list_for_session,
             agent::graph::commands::graph_plan_update,
             agent::graph::commands::graph_harness_catalog_get,
             agent::graph::commands::graph_run_get,

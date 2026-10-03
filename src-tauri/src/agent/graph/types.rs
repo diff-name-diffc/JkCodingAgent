@@ -53,6 +53,16 @@ pub(crate) const VERDICT_PARTIAL: &str = "partial";
 pub(crate) const VERDICT_FAIL: &str = "fail";
 pub(crate) const VERDICT_UNKNOWN: &str = "unknown";
 
+// 执行结果类型（graph_runs.result_kind，v11 起 run 收尾组装）。
+// edit=图含成功的 coding 节点（执行写入类，UI 强调修改文件清单）；
+// review=纯调研审查类（UI 强调结论文本）；
+// none=已组装但无结果（收尾时无任何成功节点，UI 呈现「执行完成、无结果」）；
+// unknown=尚未组装的兜底值（v11 前历史行 / 未收尾 run，读取层呈现为 result=None）。
+pub(crate) const RESULT_KIND_REVIEW: &str = "review";
+pub(crate) const RESULT_KIND_EDIT: &str = "edit";
+pub(crate) const RESULT_KIND_NONE: &str = "none";
+pub(crate) const RESULT_KIND_UNKNOWN: &str = "unknown";
+
 // 节点阶段（graph_node_runs.phase / NodePhaseChanged 事件）。
 // 节点执行器的 lifecycle 事件还会透传运行期阶段字符串（不经此表），
 // 故 phase 字段保持 String；本表覆盖应用侧自行写入的固定阶段。
@@ -191,6 +201,22 @@ impl GraphDefinition {
     }
 }
 
+/// run 收尾组装的执行结果（graph_runs v11 列）：结论节点输出快照 + 修改文件
+/// 并集 + 结果类型。结论节点按确定性规则解析：图定义的唯一汇点（出度 0）；
+/// 多汇点时取其中 finished_at 最晚的成功节点（软提示引导编排器以单一汇总
+/// 节点收口，规则只为未收口图兜底）。结论节点未成功则 conclusion 为 None。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphRunResult {
+    pub conclusion_node_id: Option<String>,
+    pub conclusion_md: Option<String>,
+    /// review | edit | none | unknown（RESULT_KIND_* 词表；unknown 仅历史/未收尾
+    /// 行，读取层归一为 result=None，已组装结果不会出现该值）。
+    pub result_kind: String,
+    /// 本次 run 全部节点 affected_files 的并集（排序去重）。
+    pub modified_files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphRunSummary {
@@ -208,6 +234,8 @@ pub struct GraphRunSummary {
     pub verdict_reason: String,
     pub started_at: i64,
     pub finished_at: Option<i64>,
+    /// 执行结果（v11 起 run 正常收尾时组装落库；取消/中断路径与历史 run 为 None）。
+    pub result: Option<GraphRunResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -231,6 +259,45 @@ pub struct GraphPlanRecord {
     pub latest_run_id: Option<String>,
     pub runs: Vec<GraphRunSummary>,
     pub node_runs: Vec<GraphNodeRunRecord>,
+}
+
+/// 会话图列表的轻量列表项（`graph_plan_list_for_session`）：不携带
+/// definition_json/state_json/node_runs 大字段，节点数由 SQL 提取，
+/// 最近运行摘要经 latest_run_id LEFT JOIN。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphPlanSummaryItem {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    /// 计划状态：与 GraphPlanRecord.status 同一词表。
+    pub status: String,
+    pub node_count: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// 最近一次运行摘要（latest_run_id 关联；未运行过为 None）。
+    pub latest_run: Option<GraphPlanLatestRunSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphPlanLatestRunSummary {
+    pub id: String,
+    pub attempt_no: i64,
+    /// 与 GraphRunSummary.status 同一词表。
+    pub status: String,
+    /// full | resume。
+    pub mode: String,
+    /// pass | partial | fail | unknown。
+    pub verdict_status: String,
+    pub finished_at: Option<i64>,
+    /// 执行结果类型（RESULT_KIND_* 词表）；未收尾/历史 run 为 unknown
+    /// （读取层呈现为无结果），收尾无成功节点为 none。
+    pub result_kind: String,
+    /// 结论 md 预览（SQL 截取，无结论为空串）——列表行结果徽标提示用。
+    pub conclusion_preview: String,
+    /// 修改文件清单长度（列表行「执行结果 · N 文件」徽标用）。
+    pub modified_file_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

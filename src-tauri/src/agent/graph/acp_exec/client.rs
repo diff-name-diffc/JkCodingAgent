@@ -11,16 +11,17 @@ use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, Error, InitializeRequest, Meta, NewSessionRequest,
-    NewSessionResponse, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SessionConfigKind,
-    SessionConfigOptionValue, SessionConfigSelectOptions, SessionId, SessionNotification,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TextContent,
+    NewSessionResponse, PermissionOptionKind, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SessionConfigKind, SessionConfigOptionValue, SessionConfigSelectOptions, SessionId,
+    SessionNotification, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
+    TextContent,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::ByteStreams;
 use agent_client_protocol::{Agent, ConnectionTo};
 use parking_lot::Mutex;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -69,6 +70,47 @@ pub(super) fn pinned_settings_meta() -> Meta {
 pub(super) struct PromptTurnResult {
     pub stop_reason: StopReason,
     pub diagnostics: Vec<String>,
+    /// 本轮真实 token 用量（统一 usage_json 形态，见 `extract_usage_json`）；
+    /// 执行器未上报时为 "{}"。
+    pub usage_json: String,
+}
+
+/// 从 prompt 响应提取真实 token 用量，序列化为回执聚合兼容的 usage_json。
+///
+/// 数据源是 `_meta.quota.token_count`：claude-agent-acp（锁定版本见
+/// `launcher::ACP_AGENT_VERSION`）在 prompt 响应的 `_meta` 通道携带计费口径
+/// 计数——`_meta` 是协议保留扩展通道，不依赖 crate 的 unstable
+/// `unstable_end_turn_token_usage` feature（顶层 `usage` 字段需要它）。
+/// 字段语义（Anthropic 计费口径）：`inputTokens` 不含缓存；缓存读/写单列。
+/// 归一到 `prompt_tokens`（输入侧合计 = input + 缓存读 + 缓存写，与 OpenAI
+/// prompt_tokens 含缓存的口径一致）与 `completion_tokens`，缓存明细随键保留。
+/// 自定义执行器不带该 meta 时返回 "{}"（聚合层按未上报处理）。
+pub(super) fn extract_usage_json(response: &PromptResponse) -> String {
+    let Some(token_count) = response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("quota"))
+        .and_then(|quota| quota.get("token_count"))
+    else {
+        return "{}".into();
+    };
+    let pick = |key: &str| token_count.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let (input, cached_read, cached_write, output) = (
+        pick("inputTokens"),
+        pick("cachedInputTokens"),
+        pick("cachedWriteTokens"),
+        pick("outputTokens"),
+    );
+    if input + cached_read + cached_write + output == 0 {
+        return "{}".into();
+    }
+    json!({
+        "prompt_tokens": input + cached_read + cached_write,
+        "completion_tokens": output,
+        "cached_read_tokens": cached_read,
+        "cached_write_tokens": cached_write,
+    })
+    .to_string()
 }
 
 /// 单轮提示会话：spawn（env_clear + 白名单 env）→ initialize → session/new →
@@ -225,9 +267,11 @@ pub(super) async fn run_prompt_turn(
                     .map_err(|error| {
                         Error::new(ERR_PROMPT, format!("ACP 执行提示失败：{error}"))
                     })?;
+                let usage_json = extract_usage_json(&response);
                 Ok(PromptTurnResult {
                     stop_reason: response.stop_reason,
                     diagnostics: stage_diagnostics,
+                    usage_json,
                 })
             }
         });

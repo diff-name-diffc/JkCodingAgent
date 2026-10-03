@@ -527,6 +527,7 @@ pub(super) fn decide_static(
 /// - allow_always「Yes, and use auto mode」（setMode auto，仅作批准载体）
 /// - allow_once「Yes, manually approve edits」（降为逐次审批）
 /// - reject_once「No, keep planning」
+///
 /// 以及各自带 "clear context" 前缀的变体（批准并清空上下文重启——会丢弃
 /// 本轮节点已积累的上下文，跳过）。
 ///

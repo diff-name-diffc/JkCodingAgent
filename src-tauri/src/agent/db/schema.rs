@@ -42,7 +42,10 @@ use super::DispatcherDb;
 /// 触发器按该列反查投递消息，无索引时对事件表全表扫描）。
 /// v10：dispatcher_settings 新增 `project_verifier_model_configs_json` 列
 /// （执行图验收模型的独立用途槽位；未配置时回退项目摘要槽位）。
-pub(crate) const SCHEMA_VERSION: i32 = 10;
+/// v11：graph_runs 新增执行结果列（conclusion_node_id / conclusion_md /
+/// result_kind / modified_files_json）——run 收尾把「结论节点输出 + 修改文件
+/// 并集 + 结果类型」结构化落库，供图面板结果视图与列表轻量摘要读取。
+pub(crate) const SCHEMA_VERSION: i32 = 11;
 
 mod runtime;
 
@@ -129,6 +132,9 @@ impl DispatcherDb {
         }
         if current_version < 10 {
             self.migrate_v9_to_v10(&mut conn)?;
+        }
+        if current_version < 11 {
+            self.migrate_v10_to_v11(&mut conn)?;
             return Ok(());
         }
 
@@ -558,6 +564,55 @@ impl DispatcherDb {
             .context("advance user_version to 10")?;
         tx.commit().context("commit v9→v10 migration")
     }
+
+    /// v10 → v11：graph_runs 新增执行结果 4 列（结论节点 id / 结论 md 快照 /
+    /// 结果类型 / 修改文件并集 JSON）。纯增量加列（带默认值）、零数据迁移；
+    /// 历史 run 无结果记录，读取层按列默认值呈现 unknown/空清单。事务内失败
+    /// 整体回滚（user_version 不推进），重试安全幂等。按规范仍先做整库快照
+    /// 备份（VACUUM INTO 不能在事务内执行），备份失败只留痕不阻断。
+    fn migrate_v10_to_v11(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v11-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v10→v11 迁移前整库快照失败（纯增量加列，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v10→v11 migration transaction")?;
+        tx.execute(
+            "ALTER TABLE graph_runs ADD COLUMN conclusion_node_id TEXT",
+            [],
+        )
+        .context("add graph_runs.conclusion_node_id column")?;
+        tx.execute("ALTER TABLE graph_runs ADD COLUMN conclusion_md TEXT", [])
+            .context("add graph_runs.conclusion_md column")?;
+        tx.execute(
+            "ALTER TABLE graph_runs
+             ADD COLUMN result_kind TEXT NOT NULL DEFAULT 'unknown'",
+            [],
+        )
+        .context("add graph_runs.result_kind column")?;
+        tx.execute(
+            "ALTER TABLE graph_runs
+             ADD COLUMN modified_files_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )
+        .context("add graph_runs.modified_files_json column")?;
+        tx.pragma_update(None, "user_version", 11)
+            .context("advance user_version to 11")?;
+        tx.commit().context("commit v10→v11 migration")
+    }
 }
 
 /// 全新建库：单事务内执行基线 DDL + 领域建表助手 + 内置种子数据，
@@ -852,6 +907,12 @@ CREATE TABLE IF NOT EXISTS graph_runs (
     verdict_reason TEXT NOT NULL DEFAULT '',
     started_at INTEGER NOT NULL,
     finished_at INTEGER,
+    -- 执行结果（v11）：结论节点 id 与其输出 md 快照（结论节点未成功为 NULL）、
+    -- review|edit|unknown 结果类型、修改文件并集（JSON 数组，BTreeSet 排序）。
+    conclusion_node_id TEXT,
+    conclusion_md TEXT,
+    result_kind TEXT NOT NULL DEFAULT 'unknown',
+    modified_files_json TEXT NOT NULL DEFAULT '[]',
     UNIQUE(plan_id, attempt_no),
     FOREIGN KEY(plan_id) REFERENCES graph_plans(id) ON DELETE CASCADE
 );
@@ -1161,6 +1222,7 @@ mod tests {
             "dispatcher_messages",
             "dispatcher_tool_runs",
             "dispatcher_settings",
+            "graph_runs",
         ] {
             let prefix = format!("CREATE TABLE IF NOT EXISTS {table} (");
             let start = super::BASELINE_DDL.find(&prefix).unwrap();
@@ -1186,6 +1248,36 @@ mod tests {
                    DROP COLUMN project_verifier_model_configs_json;",
             )
             .unwrap();
+        }
+        // graph_runs 建成 v10 形态（删掉 v11 新增的执行结果列）：迁移链现在
+        // 触及该表，fixture 版本号 ≤ v10，打开时需能走到 v10→v11 的加列迁移。
+        revert_v11_graph_run_columns(&conn);
+    }
+
+    /// 把 graph_runs 回退到 v10 形态：按列存在性删除 v11 新增的执行结果列
+    /// （基线 DDL 建出的是当前形态；graph_runs 表不存在的 fixture 查询
+    /// pragma_table_info 返回空集，天然跳过）。与上方 v10 列回退同一约定。
+    fn revert_v11_graph_run_columns(conn: &rusqlite::Connection) {
+        for column in [
+            "conclusion_node_id",
+            "conclusion_md",
+            "result_kind",
+            "modified_files_json",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('graph_runs')
+                         WHERE name = '{column}'"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if exists > 0 {
+                conn.execute_batch(&format!("ALTER TABLE graph_runs DROP COLUMN {column};"))
+                    .unwrap();
+            }
         }
     }
 
@@ -2039,6 +2131,7 @@ mod tests {
              PRAGMA user_version = 8;",
         )
         .unwrap();
+        revert_v11_graph_run_columns(&conn);
     }
 
     /// 目标库的迁移前快照文件（与库文件同目录，`{库名}.{marker}-{stamp}`）；
@@ -2180,8 +2273,11 @@ mod tests {
         for backup in backups {
             let _ = std::fs::remove_file(backup);
         }
-        // v8 fixture 首次打开会继续走 v9→v10 迁移，其快照一并清理。
+        // v8 fixture 首次打开会继续走 v9→v10→v11 迁移，其快照一并清理。
         for backup in backup_files(&path, "pre-v10-backup") {
+            let _ = std::fs::remove_file(backup);
+        }
+        for backup in backup_files(&path, "pre-v11-backup") {
             let _ = std::fs::remove_file(backup);
         }
         cleanup_db_files(&path);
@@ -2203,6 +2299,7 @@ mod tests {
              PRAGMA user_version = 9;",
         )
         .unwrap();
+        revert_v11_graph_run_columns(&conn);
     }
 
     /// v9 库（dispatcher_settings 尚无验收槽位列）打开时前向迁移到 v10：
@@ -2278,6 +2375,92 @@ mod tests {
 
         let backups = backup_files(&path, "pre-v10-backup");
         assert_eq!(backups.len(), 1, "同版本直开不得重跑迁移或再生成快照");
+        for backup in backups {
+            let _ = std::fs::remove_file(backup);
+        }
+        // v9 fixture 首次打开会继续走 v10→v11 迁移，其快照一并清理。
+        for backup in backup_files(&path, "pre-v11-backup") {
+            let _ = std::fs::remove_file(backup);
+        }
+        cleanup_db_files(&path);
+    }
+
+    /// v10 库（graph_runs 尚无执行结果列）打开时前向迁移到 v11：4 列补齐
+    /// （结果类型默认 unknown、文件清单默认 '[]'）、既有行全量保留、版本推进、
+    /// 生成迁移前快照。
+    #[test]
+    fn v10_database_gains_run_result_columns() {
+        let path = temp_db_path("v10-to-v11");
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(super::BASELINE_DDL).unwrap();
+            let tx = conn.transaction().unwrap();
+            super::runtime::extend_schema(&tx).unwrap();
+            tx.commit().unwrap();
+            // v10 形态：仅摘掉 v11 新列（dispatcher_settings 已含 v10 列），
+            // 并预置一帧既有 run 行验证迁移零数据丢失。
+            revert_v11_graph_run_columns(&conn);
+            conn.execute_batch(
+                "INSERT INTO graph_plans (id,workspace_id,title,definition_json,status,created_at,updated_at)
+                 VALUES ('p1','ws','历史图','{}','completed',1,1);
+                 INSERT INTO graph_runs (id,plan_id,attempt_no,status,mode,verdict_status,started_at,finished_at)
+                 VALUES ('r1','p1',1,'completed','full','pass',1,2);",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 10).unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+            let (kind, files, conclusion, node_id, attempt, verdict): (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                String,
+            ) = conn
+                .query_row(
+                    "SELECT result_kind, modified_files_json, conclusion_md,
+                            conclusion_node_id, attempt_no, verdict_status
+                     FROM graph_runs WHERE id = 'r1'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .unwrap();
+            assert_eq!(kind, "unknown", "历史行结果类型兜底 unknown");
+            assert_eq!(files, "[]", "历史行文件清单兜底空数组");
+            assert_eq!(conclusion, None, "历史行无结论");
+            assert_eq!(node_id, None, "历史行无结论节点");
+            assert_eq!(attempt, 1, "既有 run 行全量保留");
+            assert_eq!(verdict, "pass", "既有验收结论保留");
+        }
+        drop(db);
+
+        let backups = backup_files(&path, "pre-v11-backup");
+        assert_eq!(backups.len(), 1, "迁移前应生成整库快照");
+        let snapshot = rusqlite::Connection::open(&backups[0]).unwrap();
+        assert_eq!(
+            snapshot
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                .unwrap(),
+            10
+        );
+        drop(snapshot);
         for backup in backups {
             let _ = std::fs::remove_file(backup);
         }

@@ -89,7 +89,8 @@ mod tests {
         {
             let conn = Connection::open(&path).unwrap();
             // 原基线 DDL 不包含 v8 扩展，因此是真正的 v7 形态；
-            // v10 新增的验收槽位列同样需要移除（v7 库不应有它）。
+            // v10 新增的验收槽位列与 v11 新增的执行结果列同样需要移除
+            //（v7 库不应有它们）。
             conn.execute_batch(super::super::BASELINE_DDL).unwrap();
             conn.execute_batch(
                 "INSERT INTO dispatcher_messages(id, workspace_id, role, created_at)
@@ -100,6 +101,10 @@ mod tests {
                     'succeeded', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z');
                  ALTER TABLE dispatcher_settings
                    DROP COLUMN project_verifier_model_configs_json;
+                 ALTER TABLE graph_runs DROP COLUMN conclusion_node_id;
+                 ALTER TABLE graph_runs DROP COLUMN conclusion_md;
+                 ALTER TABLE graph_runs DROP COLUMN result_kind;
+                 ALTER TABLE graph_runs DROP COLUMN modified_files_json;
                  PRAGMA user_version = 7;",
             )
             .unwrap();

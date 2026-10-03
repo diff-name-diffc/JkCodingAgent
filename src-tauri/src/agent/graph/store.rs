@@ -8,10 +8,11 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
 use super::types::{
-    AgentActivity, GraphDefinition, GraphModelStat, GraphNodeRunRecord, GraphPlanRecord,
-    GraphRunDetail, GraphRunSummary, NODE_FAILED, NODE_PENDING, NODE_PHASE_CACHED,
-    NODE_PHASE_FINALIZING, NODE_RUNNING, NODE_SUCCEEDED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING,
-    RUN_MODE_FULL, RUN_MODE_RESUME, VERDICT_UNKNOWN,
+    AgentActivity, GraphDefinition, GraphModelStat, GraphNodeRunRecord, GraphPlanLatestRunSummary,
+    GraphPlanRecord, GraphPlanSummaryItem, GraphRunDetail, GraphRunResult, GraphRunSummary,
+    NODE_FAILED, NODE_PENDING, NODE_PHASE_CACHED, NODE_PHASE_FINALIZING, NODE_RUNNING,
+    NODE_SUCCEEDED, PLAN_DRAFT, PLAN_FAILED, PLAN_RUNNING, RESULT_KIND_UNKNOWN, RUN_MODE_FULL,
+    RUN_MODE_RESUME, VERDICT_UNKNOWN,
 };
 
 #[derive(Debug, Clone)]
@@ -80,9 +81,87 @@ impl GraphStore {
         }
     }
 
+    /// 会话全部图计划的轻量摘要（图列表页）：不拉 definition_json/state_json
+    /// 大字段，节点数由 SQL 提取，最近运行摘要按 latest_run_id LEFT JOIN。
+    /// 上限 100 条（updated_at 倒序）——会话内计划属低基数资源，超出即异常堆积。
+    pub(crate) fn list_plan_summaries_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<GraphPlanSummaryItem>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.id,p.title,p.summary,p.status,
+                    COALESCE(json_array_length(p.definition_json,'$.nodes'),0),
+                    p.created_at,p.updated_at,
+                    r.id,r.attempt_no,r.status,r.mode,r.verdict_status,r.finished_at,
+                    r.result_kind,COALESCE(substr(r.conclusion_md,1,160),''),
+                    COALESCE(json_array_length(r.modified_files_json),0)
+             FROM graph_plans p LEFT JOIN graph_runs r ON r.id=p.latest_run_id
+             WHERE p.workspace_id=?1
+             ORDER BY p.updated_at DESC LIMIT 100",
+        )?;
+        let rows = stmt
+            .query_map(params![workspace_id], |row| {
+                // LEFT JOIN 的 run 侧列须整体取 Optional 再组装：latest_run_id 为
+                // NULL 时逐列 get 非 Option 类型会直接报错。
+                let run_id: Option<String> = row.get(7)?;
+                let attempt_no: Option<i64> = row.get(8)?;
+                let run_status: Option<String> = row.get(9)?;
+                let mode: Option<String> = row.get(10)?;
+                let verdict: Option<String> = row.get(11)?;
+                let finished_at: Option<i64> = row.get(12)?;
+                // v11 前的历史 run 行 result_kind 为 NOT NULL DEFAULT 'unknown'，
+                // LEFT JOIN 命中时必然可读；仅未运行过（latest_run_id NULL）才为 None。
+                let result_kind: Option<String> = row.get(13)?;
+                let conclusion_preview: Option<String> = row.get(14)?;
+                let modified_file_count: Option<i64> = row.get(15)?;
+                let latest_run = match (
+                    run_id,
+                    attempt_no,
+                    run_status,
+                    mode,
+                    verdict,
+                    result_kind,
+                ) {
+                    (
+                        Some(id),
+                        Some(attempt_no),
+                        Some(status),
+                        Some(mode),
+                        Some(verdict),
+                        Some(result_kind),
+                    ) => Some(GraphPlanLatestRunSummary {
+                        id,
+                        attempt_no,
+                        status,
+                        mode,
+                        verdict_status: verdict,
+                        finished_at,
+                        result_kind,
+                        conclusion_preview: conclusion_preview.unwrap_or_default(),
+                        modified_file_count: modified_file_count.unwrap_or(0),
+                    }),
+                    _ => None,
+                };
+                Ok(GraphPlanSummaryItem {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    summary: row.get(2)?,
+                    status: row.get(3)?,
+                    node_count: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    latest_run,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub(crate) fn update_plan_definition(
         &self,
         plan_id: &str,
+        expected_updated_at: i64,
         definition: &GraphDefinition,
     ) -> Result<()> {
         let json = serde_json::to_string(definition)?;
@@ -91,23 +170,28 @@ impl GraphStore {
         // 条件更新：仅 draft 态允许改写定义。命令层的前置状态检查与这里写入
         // 之间隔着多个 await（目录刷新、校验），无条件 UPDATE 会把新定义覆盖
         // 到已被并发启动（running）的计划上；检查影响行数并给出可区分报错。
+        // updated_at 乐观锁：模型侧（graph_node_*）与前端 graph_plan_update
+        // 并发保存同一 draft 图时，写入必须携带先读快照的 updated_at，
+        // 否则整体拒绝——防止后写静默覆盖先写的定义。
         let affected = tx.execute(
-            "UPDATE graph_plans SET title=?2,summary=?3,definition_json=?4,updated_at=?5 WHERE id=?1 AND status=?6",
-            params![plan_id, definition.title.trim(), definition.summary.trim(), json, chrono::Utc::now().timestamp_millis(), PLAN_DRAFT],
+            "UPDATE graph_plans SET title=?2,summary=?3,definition_json=?4,updated_at=?5 WHERE id=?1 AND status=?6 AND updated_at=?7",
+            params![plan_id, definition.title.trim(), definition.summary.trim(), json, chrono::Utc::now().timestamp_millis(), PLAN_DRAFT, expected_updated_at],
         ).context("更新图计划定义失败")?;
         if affected == 0 {
-            let status: Option<String> = tx
+            let current: Option<(String, i64)> = tx
                 .query_row(
-                    "SELECT status FROM graph_plans WHERE id=?1",
+                    "SELECT status, updated_at FROM graph_plans WHERE id=?1",
                     params![plan_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            match status {
+            match current {
                 None => anyhow::bail!("错误：图计划不存在：{plan_id}"),
-                Some(status) => anyhow::bail!(
+                Some((status, _)) if status != PLAN_DRAFT => anyhow::bail!(
                     "错误：图计划状态已变更（当前：{status}），仅 draft 态可编辑定义，请刷新后重试"
                 ),
+                // 行仍在且为 draft：只能是 updated_at 不匹配（并发改写）。
+                Some((_, _)) => anyhow::bail!("错误：图定义已被并发修改，请刷新后重试"),
             }
         }
         tx.commit()?;
@@ -164,6 +248,7 @@ impl GraphStore {
             verdict_reason: String::new(),
             started_at: now,
             finished_at: None,
+            result: None,
         };
         tx.execute(
             "INSERT INTO graph_runs (id,plan_id,attempt_no,status,mode,verdict_status,started_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -214,6 +299,7 @@ impl GraphStore {
             verdict_reason: String::new(),
             started_at: now,
             finished_at: None,
+            result: None,
         };
         tx.execute(
             "INSERT INTO graph_runs (id,plan_id,attempt_no,status,mode,verdict_status,started_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -244,7 +330,10 @@ impl GraphStore {
     pub(crate) fn get_latest_run(&self, plan_id: &str) -> Result<Option<GraphRunSummary>> {
         self.conn()?
             .query_row(
-                "SELECT id,plan_id,attempt_no,status,mode,verdict_status,verdict_reason,started_at,finished_at FROM graph_runs WHERE plan_id=?1 ORDER BY attempt_no DESC LIMIT 1",
+                &format!(
+                    "SELECT {RUN_SUMMARY_COLUMNS} FROM graph_runs
+                     WHERE plan_id=?1 ORDER BY attempt_no DESC LIMIT 1"
+                ),
                 params![plan_id],
                 map_run,
             )
@@ -262,6 +351,23 @@ impl GraphStore {
         self.conn()?.execute(
             "UPDATE graph_runs SET verdict_status=?2,verdict_reason=?3 WHERE id=?1",
             params![run_id, status, reason],
+        )?;
+        Ok(())
+    }
+
+    /// 写入执行结果（run 正常收尾由 runner::resolve_run_result 产出；先于
+    /// plan-updated 广播落库，保证前端 hydrate 时结果随行可见）。
+    pub(crate) fn update_run_result(&self, run_id: &str, result: &GraphRunResult) -> Result<()> {
+        let modified_files = serde_json::to_string(&result.modified_files)?;
+        self.conn()?.execute(
+            "UPDATE graph_runs SET conclusion_node_id=?2,conclusion_md=?3,result_kind=?4,modified_files_json=?5 WHERE id=?1",
+            params![
+                run_id,
+                result.conclusion_node_id,
+                result.conclusion_md,
+                result.result_kind,
+                modified_files
+            ],
         )?;
         Ok(())
     }
@@ -346,7 +452,10 @@ impl GraphStore {
 
     pub(crate) fn list_runs(&self, plan_id: &str) -> Result<Vec<GraphRunSummary>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT id,plan_id,attempt_no,status,mode,verdict_status,verdict_reason,started_at,finished_at FROM graph_runs WHERE plan_id=?1 ORDER BY attempt_no DESC")?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {RUN_SUMMARY_COLUMNS} FROM graph_runs
+             WHERE plan_id=?1 ORDER BY attempt_no DESC"
+        ))?;
         let rows = stmt
             .query_map(params![plan_id], map_run)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -396,7 +505,15 @@ impl GraphStore {
 
     pub(crate) fn get_run_detail(&self, run_id: &str) -> Result<Option<GraphRunDetail>> {
         let conn = self.conn()?;
-        let run = conn.query_row("SELECT id,plan_id,attempt_no,status,mode,verdict_status,verdict_reason,started_at,finished_at FROM graph_runs WHERE id=?1", params![run_id], map_run).optional()?;
+        let run = conn
+            .query_row(
+                &format!(
+                    "SELECT {RUN_SUMMARY_COLUMNS} FROM graph_runs WHERE id=?1"
+                ),
+                params![run_id],
+                map_run,
+            )
+            .optional()?;
         let Some(run) = run else { return Ok(None) };
         let mut stmt = conn.prepare("SELECT id,run_id,node_id,sequence,kind,status,title,content,payload_json,started_at,finished_at FROM graph_node_activities WHERE run_id=?1 ORDER BY node_id,sequence")?;
         let activities = stmt
@@ -465,15 +582,26 @@ impl GraphStore {
             .await
             .context("读取会话图计划任务失败")?
     }
+    pub(crate) async fn list_plan_summaries_for_workspace_async(
+        &self,
+        id: &str,
+    ) -> Result<Vec<GraphPlanSummaryItem>> {
+        let s = self.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || s.list_plan_summaries_for_workspace(&id))
+            .await
+            .context("查询会话图计划列表任务失败")?
+    }
     pub(crate) async fn update_plan_definition_async(
         &self,
         id: &str,
+        expected_updated_at: i64,
         d: &GraphDefinition,
     ) -> Result<()> {
         let s = self.clone();
         let id = id.to_string();
         let d = d.clone();
-        tokio::task::spawn_blocking(move || s.update_plan_definition(&id, &d))
+        tokio::task::spawn_blocking(move || s.update_plan_definition(&id, expected_updated_at, &d))
             .await
             .context("更新图定义任务失败")?
     }
@@ -579,6 +707,17 @@ impl GraphStore {
             .await
             .context("写入验收结论任务失败")?
     }
+    pub(crate) async fn update_run_result_async(
+        &self,
+        run_id: &str,
+        result: GraphRunResult,
+    ) -> Result<()> {
+        let s = self.clone();
+        let run_id = run_id.to_string();
+        tokio::task::spawn_blocking(move || s.update_run_result(&run_id, &result))
+            .await
+            .context("写入执行结果任务失败")?
+    }
     pub(crate) async fn node_run_stats_async(
         &self,
         workspace_id: &str,
@@ -619,10 +758,31 @@ fn query_plan(
         })
         .optional()?)
 }
+/// graph_runs 的 run 摘要 SELECT 列清单（map_run 的列序契约）：
+/// get_latest_run / list_runs / get_run_detail 共用，新增列必须同步 map_run。
+const RUN_SUMMARY_COLUMNS: &str = "id,plan_id,attempt_no,status,mode,verdict_status,verdict_reason,started_at,finished_at,conclusion_node_id,conclusion_md,result_kind,modified_files_json";
+
 fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphRunSummary> {
     // 严格读取：v25 起这些列均 NOT NULL DEFAULT，读取失败说明 schema 漂移，
     // 显式报错优于静默默认值（会把迁移异常掩盖成正常数据）。
     let verdict_status: String = row.get(5)?;
+    // 执行结果列：result_kind 为 unknown 表示尚未组装（历史 run / 未收尾），
+    // 整体呈现为 None；review | edit | none 为已组装结果原样带出——其中
+    // none = 收尾时无任何成功节点（执行完成、无结果）。
+    let result_kind: String = row.get(11)?;
+    let result = if result_kind == RESULT_KIND_UNKNOWN {
+        None
+    } else {
+        let modified_files_json: String = row.get(12)?;
+        let modified_files: Vec<String> = serde_json::from_str(&modified_files_json)
+            .unwrap_or_default();
+        Some(GraphRunResult {
+            conclusion_node_id: row.get(9)?,
+            conclusion_md: row.get(10)?,
+            result_kind,
+            modified_files,
+        })
+    };
     Ok(GraphRunSummary {
         id: row.get(0)?,
         plan_id: row.get(1)?,
@@ -638,6 +798,7 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphRunSummary> {
         verdict_reason: row.get(6)?,
         started_at: row.get(7)?,
         finished_at: row.get(8)?,
+        result,
     })
 }
 fn map_node_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphNodeRunRecord> {
@@ -668,7 +829,9 @@ fn map_node_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<GraphNodeRunRecord>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::graph::types::{BaseToolGroup, GraphInherits, GraphNode};
+    use crate::agent::graph::types::{
+        BaseToolGroup, GraphInherits, GraphNode, RESULT_KIND_NONE, RESULT_KIND_REVIEW,
+    };
     fn test_db() -> crate::agent::db::DispatcherDb {
         crate::agent::db::DispatcherDb::new(
             std::env::temp_dir().join(format!("aha-graph-v3-{}.sqlite3", uuid::Uuid::new_v4())),
@@ -716,6 +879,118 @@ mod tests {
         let b = store.create_run(&plan.id).unwrap();
         assert_eq!(b.attempt_no, 2);
         assert_eq!(store.get_plan(&plan.id).unwrap().unwrap().runs.len(), 2);
+    }
+
+    /// 执行结果落库回读：update_run_result 后 result 随 run 摘要（get_latest_run /
+    /// list_runs / get_run_detail / plan.runs）与列表轻量摘要带出；未组装结果的
+    /// 行（v11 前历史 run / 刚创建的 run）result 读取为 None。
+    #[test]
+    fn run_result_roundtrip_and_legacy_none() {
+        let db = test_db();
+        let store = GraphStore::new(&db);
+        let plan = create_plain_plan(&store);
+        let run = store.create_run(&plan.id).unwrap();
+        assert!(
+            store
+                .get_latest_run(&plan.id)
+                .unwrap()
+                .unwrap()
+                .result
+                .is_none(),
+            "未组装结果的 run 行 result 为 None"
+        );
+
+        store
+            .update_run_result(
+                &run.id,
+                &GraphRunResult {
+                    conclusion_node_id: Some("summary".into()),
+                    conclusion_md: Some("## 审查结论\n发现 2 个问题".into()),
+                    result_kind: RESULT_KIND_REVIEW.into(),
+                    modified_files: vec!["src/a.rs".into(), "src/b.rs".into()],
+                },
+            )
+            .unwrap();
+        let loaded = store.get_latest_run(&plan.id).unwrap().unwrap();
+        let result = loaded.result.expect("已组装结果应随行带出");
+        assert_eq!(result.conclusion_node_id.as_deref(), Some("summary"));
+        assert!(result.conclusion_md.as_deref().unwrap().contains("审查结论"));
+        assert_eq!(result.result_kind, RESULT_KIND_REVIEW);
+        assert_eq!(
+            result.modified_files,
+            vec!["src/a.rs".to_string(), "src/b.rs".to_string()]
+        );
+        // plan.runs 与 run 详情同链路带出。
+        let plan_loaded = store.get_plan(&plan.id).unwrap().unwrap();
+        assert!(plan_loaded.runs[0].result.is_some());
+        let detail = store.get_run_detail(&run.id).unwrap().unwrap();
+        assert!(detail.run.result.is_some());
+        // 列表轻量摘要的 lite 字段。
+        let summaries = store.list_plan_summaries_for_workspace("w").unwrap();
+        let latest = summaries[0].latest_run.as_ref().expect("latest run lite");
+        assert_eq!(latest.result_kind, RESULT_KIND_REVIEW);
+        assert!(latest.conclusion_preview.contains("审查结论"));
+        assert_eq!(latest.modified_file_count, 2);
+    }
+
+    /// none 哨兵往返：收尾组装但无结果（无成功节点）落 "none"，读取层必须产出
+    /// result=Some（区别于 unknown 历史行的 result=None），前端据此呈现
+    /// 「执行完成、无结果」；列表轻量摘要原样带出该值。
+    #[test]
+    fn run_result_none_kind_roundtrip() {
+        let db = test_db();
+        let store = GraphStore::new(&db);
+        let plan = create_plain_plan(&store);
+        let run = store.create_run(&plan.id).unwrap();
+        store
+            .update_run_result(
+                &run.id,
+                &GraphRunResult {
+                    conclusion_node_id: None,
+                    conclusion_md: None,
+                    result_kind: RESULT_KIND_NONE.into(),
+                    modified_files: Vec::new(),
+                },
+            )
+            .unwrap();
+        let loaded = store.get_latest_run(&plan.id).unwrap().unwrap();
+        let result = loaded.result.expect("none 哨兵必须产出 result=Some");
+        assert_eq!(result.result_kind, RESULT_KIND_NONE);
+        assert!(result.conclusion_node_id.is_none());
+        assert!(result.conclusion_md.is_none());
+        assert!(result.modified_files.is_empty());
+
+        let summaries = store.list_plan_summaries_for_workspace("w").unwrap();
+        let latest = summaries[0].latest_run.as_ref().expect("latest run lite");
+        assert_eq!(latest.result_kind, RESULT_KIND_NONE);
+        assert_eq!(latest.modified_file_count, 0);
+    }
+
+    #[test]
+    fn list_plan_summaries_orders_filters_and_joins_latest_run() {
+        let db = test_db();
+        let store = GraphStore::new(&db);
+        // 另一会话的计划不得混入。
+        create_plain_plan(&store);
+        let store_clone = store.clone();
+        let plan_id = create_plain_plan(&store).id;
+        // 触发 updated_at 变化，使该计划排到最前。
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let run = store_clone.create_run(&plan_id).unwrap();
+        store_clone.finish_run(&run.id, "completed").unwrap();
+
+        let summaries = store.list_plan_summaries_for_workspace("w").unwrap();
+        assert_eq!(summaries.len(), 2);
+        // updated_at 倒序：带运行记录的计划在最前，且 node_count 来自定义。
+        assert_eq!(summaries[0].id, plan_id);
+        assert_eq!(summaries[0].node_count, 1);
+        let latest = summaries[0].latest_run.as_ref().expect("latest_run 应关联");
+        assert_eq!(latest.id, run.id);
+        assert_eq!(latest.status, "completed");
+        // 未运行过的计划 latest_run 为 None。
+        assert!(summaries[1].latest_run.is_none());
+        // 会话隔离：其他 workspace 查询为空。
+        assert!(store.list_plan_summaries_for_workspace("other").unwrap().is_empty());
     }
 
     #[test]
@@ -971,14 +1246,29 @@ mod tests {
         definition.title = "改写标题".into();
 
         // draft 态可编辑。
-        store.update_plan_definition(&plan.id, &definition).unwrap();
+        store
+            .update_plan_definition(&plan.id, plan.updated_at, &definition)
+            .unwrap();
         assert_eq!(store.get_plan(&plan.id).unwrap().unwrap().title, "改写标题");
+
+        // updated_at 乐观锁：携带过期快照必须整体拒绝（-1 保证与最新值不同，
+        // 不依赖写入间时钟跨毫秒）。
+        definition.title = "并发覆盖".into();
+        let error = store
+            .update_plan_definition(&plan.id, plan.updated_at - 1, &definition)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("并发修改"));
+        assert_eq!(
+            store.get_plan(&plan.id).unwrap().unwrap().title,
+            "改写标题",
+            "过期快照的定义写入必须被整体拒绝"
+        );
 
         // 置为 running 后拒绝编辑（TOCTOU 门禁：条件更新 + 影响行数检查）。
         store.update_plan_status(&plan.id, "running").unwrap();
-        definition.title = "并发覆盖".into();
+        let fresh = store.get_plan(&plan.id).unwrap().unwrap().updated_at;
         let error = store
-            .update_plan_definition(&plan.id, &definition)
+            .update_plan_definition(&plan.id, fresh, &definition)
             .unwrap_err();
         assert!(format!("{error:#}").contains("状态已变更"));
         assert_eq!(
@@ -989,7 +1279,7 @@ mod tests {
 
         // 计划不存在：给出可区分的错误而非静默 0 行。
         let error = store
-            .update_plan_definition("不存在", &definition)
+            .update_plan_definition("不存在", fresh, &definition)
             .unwrap_err();
         assert!(format!("{error:#}").contains("不存在"));
     }

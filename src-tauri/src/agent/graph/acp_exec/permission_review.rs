@@ -239,7 +239,7 @@ fn build_user_prompt(
     let raw_input = fields
         .raw_input
         .clone()
-        .map(|value| redact(value))
+        .map(redact)
         .map(|value| value.to_string())
         .map(|text| truncate_chars(text.trim(), MAX_REQUEST_INPUT_CHARS, REVIEW_TRUNCATE_SUFFIX))
         .unwrap_or_else(|| "（无）".to_string());

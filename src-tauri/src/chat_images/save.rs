@@ -29,11 +29,7 @@ pub(crate) async fn save_image(
     let lease = crate::agent::ActiveRunHandle::current();
     tokio::task::spawn_blocking(move || {
         let _lease = lease;
-        let cancelled = || {
-            cancel_rx
-                .as_ref()
-                .is_some_and(|rx| *rx.borrow() || rx.has_changed().is_err())
-        };
+        let cancelled = || crate::shared::cancel::cancel_requested_or_dropped(cancel_rx.as_ref());
         if cancelled() {
             return Err(ChatImageError::Cancelled);
         }

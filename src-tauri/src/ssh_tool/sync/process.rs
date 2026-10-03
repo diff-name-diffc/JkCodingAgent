@@ -1,5 +1,5 @@
 use super::super::SshServerConfig;
-use super::{transport::Transport, SyncDirectory, SyncProgress, SyncResult};
+use super::{transport::Transport, SyncDirectory, SyncResult};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -18,7 +18,6 @@ pub(super) fn arguments(request: &SyncDirectory, source: &Path, shell: &str) -> 
         "--times",
         "--perms",
         "--protect-args",
-        "--info=progress2",
         "--stats",
         "--itemize-changes",
         // 应用配置可能携带凭据；接收端同样保留这些排除项，不使用 --delete-excluded。
@@ -64,39 +63,14 @@ impl Drop for ProcessGuard {
 #[derive(Default)]
 struct Capture {
     bytes: Vec<u8>,
-    pending: Vec<u8>,
     truncated: bool,
-    progress: Option<SyncProgress>,
 }
 impl Capture {
     fn push(&mut self, bytes: &[u8], limit: usize) {
         let count = bytes.len().min(limit.saturating_sub(self.bytes.len()));
         self.bytes.extend_from_slice(&bytes[..count]);
         self.truncated |= count < bytes.len();
-        for byte in bytes {
-            if *byte == b'\r' || *byte == b'\n' {
-                if let Some(progress) = parse_progress(&String::from_utf8_lossy(&self.pending)) {
-                    self.progress = Some(progress);
-                }
-                self.pending.clear();
-            } else if self.pending.len() < 4096 {
-                self.pending.push(*byte);
-            }
-        }
     }
-}
-
-pub(super) fn parse_progress(line: &str) -> Option<SyncProgress> {
-    let mut fields = line.split_whitespace();
-    let transferred_bytes = fields.next()?.replace(',', "").parse().ok()?;
-    let percent = fields.next()?.strip_suffix('%')?.parse::<u8>().ok()?;
-    if percent > 100 {
-        return None;
-    }
-    Some(SyncProgress {
-        transferred_bytes,
-        percent,
-    })
 }
 
 #[cfg(unix)]
@@ -127,7 +101,6 @@ fn drain(reader: &mut impl Read, capture: &mut Capture, limit: usize) -> Result<
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     server: &SshServerConfig,
     request: SyncDirectory,
@@ -135,11 +108,10 @@ pub(super) fn run(
     transport: Transport,
     cancel: Option<watch::Receiver<bool>>,
     abort: Arc<AtomicBool>,
-    progress: Arc<dyn Fn(SyncProgress) + Send + Sync>,
 ) -> Result<SyncResult, String> {
     #[cfg(not(unix))]
     {
-        let _ = (server, request, source, transport, cancel, abort, progress);
+        let _ = (server, request, source, transport, cancel, abort);
         Err("rsync 同步暂不支持此平台".into())
     }
     #[cfg(unix)]
@@ -171,18 +143,11 @@ pub(super) fn run(
         let (mut out, mut err) = (Capture::default(), Capture::default());
         let limit = server.max_output_bytes.clamp(1024, 1024 * 1024);
         let timeout = Duration::from_secs(server.default_timeout_secs.clamp(1, 300));
-        let mut last_event = Instant::now();
         let mut was_cancelled = false;
         let mut timed_out = false;
         let status = loop {
             drain(&mut stdout, &mut out, limit)?;
             drain(&mut stderr, &mut err, limit)?;
-            if last_event.elapsed() >= Duration::from_millis(250) {
-                if let Some(p) = &out.progress {
-                    progress(p.clone());
-                }
-                last_event = Instant::now();
-            }
             if let Some(status) = child.0.try_wait().map_err(|e| e.to_string())? {
                 break status;
             }
@@ -199,9 +164,6 @@ pub(super) fn run(
         };
         drain(&mut stdout, &mut out, limit)?;
         drain(&mut stderr, &mut err, limit)?;
-        if let Some(p) = &out.progress {
-            progress(p.clone());
-        }
         let mut stderr = String::from_utf8_lossy(&err.bytes).into_owned();
         let mut stdout = String::from_utf8_lossy(&out.bytes).into_owned();
         for secret in [&server.password, &server.private_key_passphrase] {
@@ -223,7 +185,6 @@ pub(super) fn run(
             stdout,
             stderr,
             truncated: out.truncated || err.truncated,
-            progress: out.progress,
             audit_error: None,
         })
     }

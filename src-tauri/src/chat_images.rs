@@ -42,15 +42,23 @@ pub enum ChatImageError {
     Join(#[from] tokio::task::JoinError),
 }
 
+impl crate::shared::io_error::PathIoError for ChatImageError {
+    fn path_io(action: &'static str, path: PathBuf, source: std::io::Error) -> Self {
+        ChatImageError::Io {
+            action,
+            path,
+            source,
+        }
+    }
+}
+
+/// io 错误闭包的类型钉住适配器：构造逻辑在 `shared::io_error`，此处固定
+/// 目标错误类型（`?` 经 From 转换的调用点无法唯一推断泛型 E）。
 fn io_error(
     action: &'static str,
     path: impl Into<PathBuf>,
 ) -> impl FnOnce(std::io::Error) -> ChatImageError {
-    move |source| ChatImageError::Io {
-        action,
-        path: path.into(),
-        source,
-    }
+    crate::shared::io_error::io_error(action, path)
 }
 
 /// URI protocol prefix for internally-referenced chat images. The UI and tool

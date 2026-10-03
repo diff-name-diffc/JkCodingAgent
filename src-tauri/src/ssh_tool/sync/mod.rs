@@ -27,13 +27,6 @@ pub(crate) struct SyncDirectory {
     pub dry_run: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SyncProgress {
-    pub transferred_bytes: u64,
-    pub percent: u8,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncResult {
@@ -49,7 +42,6 @@ pub(crate) struct SyncResult {
     pub stdout: String,
     pub stderr: String,
     pub truncated: bool,
-    pub progress: Option<SyncProgress>,
     pub audit_error: Option<String>,
 }
 
@@ -96,7 +88,6 @@ impl SshSessionManager {
         request: SyncDirectory,
         source: PathBuf,
         cancel: Option<watch::Receiver<bool>>,
-        progress: Arc<dyn Fn(SyncProgress) + Send + Sync>,
     ) -> Result<SyncResult, String> {
         request.validate()?;
         transport::validate_endpoint(&server)?;
@@ -115,7 +106,9 @@ impl SshSessionManager {
         );
         let (handle, key) = tokio::select! {
             result = connection => result.map_err(|_| "SSH 同步认证超时".to_string())??,
-            _ = wait_for_cancel(cancel.clone()) => return Err("SSH 同步认证已取消".into()),
+            _ = crate::shared::cancel::wait_for_explicit_cancel(cancel.clone()) => {
+                return Err("SSH 同步认证已取消".into())
+            }
         };
         handle
             .disconnect(russh::Disconnect::ByApplication, "rsync transport", "")
@@ -126,23 +119,9 @@ impl SshSessionManager {
         let _guard = CancelOnDrop(abort.clone());
         tokio::task::spawn_blocking(move || {
             let transport = transport::Transport::new(&server, &public_key, binaries)?;
-            process::run(&server, request, source, transport, cancel, abort, progress)
+            process::run(&server, request, source, transport, cancel, abort)
         })
         .await
         .map_err(|e| e.to_string())?
     }
-}
-
-async fn wait_for_cancel(mut cancel: Option<watch::Receiver<bool>>) {
-    if let Some(rx) = &mut cancel {
-        loop {
-            if *rx.borrow() {
-                return;
-            }
-            if rx.changed().await.is_err() {
-                break;
-            }
-        }
-    }
-    std::future::pending::<()>().await;
 }

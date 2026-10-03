@@ -80,7 +80,7 @@ async fn execute_with_settle_timeout(
     cancel: Option<watch::Receiver<bool>>,
 ) -> Result<CallToolResult, McpCallError> {
     let result = async {
-        if cancel.as_ref().is_some_and(|rx| *rx.borrow() || rx.has_changed().is_err()) {
+        if crate::shared::cancel::cancel_requested_or_dropped(cancel.as_ref()) {
             return Err(McpCallError::not_sent("MCP 调用已取消，未发送工具请求"));
         }
         // 共享预算已被初始化握手耗尽：不发注定超时的请求，按「未发送」处理
@@ -97,7 +97,7 @@ async fn execute_with_settle_timeout(
         let response = tokio::select! {
             response = &mut request.rx => Some(response),
             _ = tokio::time::sleep(timeout) => None,
-            _ = cancelled(cancel) => None,
+            _ = crate::shared::cancel::wait_for_cancel(cancel) => None,
         };
         match response {
             Some(Ok(Ok(ServerResult::CallToolResult(result)))) => Ok(result),
@@ -143,16 +143,5 @@ fn merge_settle_outcome(
         }
         (Err(error), None) => Err(error),
         (Err(error), Some(note)) => Err(error.map_message(|message| format!("{message}；{note}"))),
-    }
-}
-
-async fn cancelled(cancel: Option<tokio::sync::watch::Receiver<bool>>) {
-    let Some(mut rx) = cancel else {
-        return std::future::pending().await;
-    };
-    while !*rx.borrow() {
-        if rx.changed().await.is_err() {
-            break;
-        }
     }
 }

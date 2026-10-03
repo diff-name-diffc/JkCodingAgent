@@ -324,12 +324,9 @@ pub(super) async fn run_browser_command(
 }
 
 pub(super) fn browser_value_output(value: Value) -> Result<ToolOutput, ToolExecutionError> {
-    match serde_json::to_string_pretty(&value) {
-        Ok(text) => Ok(ToolOutput::text(text)),
-        Err(error) => Err(ToolExecutionError::other(format!(
-            "错误：浏览器结果序列化失败：{error}"
-        ))),
-    }
+    serialize_browser_result(&value)
+        .map(ToolOutput::text)
+        .map_err(ToolExecutionError::other)
 }
 
 pub(super) async fn run_browser_command_value(
@@ -366,8 +363,12 @@ fn build_visual_analysis_prompt(instruction: &str) -> String {
 }
 
 pub(super) fn format_browser_result(value: &Value) -> String {
-    match serde_json::to_string_pretty(value) {
-        Ok(text) => text,
-        Err(error) => format!("错误：浏览器结果序列化失败：{error}"),
-    }
+    serialize_browser_result(value).unwrap_or_else(|error| error)
+}
+
+/// 浏览器 JSON 结果序列化的唯一实现：`browser_value_output`（工具输出投影）
+/// 与 `format_browser_result`（文本投影）共用，序列化失败文案保持一致。
+fn serialize_browser_result(value: &Value) -> Result<String, String> {
+    serde_json::to_string_pretty(value)
+        .map_err(|error| format!("错误：浏览器结果序列化失败：{error}"))
 }

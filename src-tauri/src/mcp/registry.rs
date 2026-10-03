@@ -25,7 +25,6 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 use rmcp::model::{CallToolRequestParams, JsonObject};
-use rmcp::ServiceExt;
 use serde_json::Value;
 use tokio::sync::watch;
 
@@ -34,7 +33,8 @@ use config::{is_fresh, load_merged_config};
 
 use crate::mcp::transport::{
     build_streamable_http_transport, build_unix_socket_transport, collect_captured_stderr,
-    enrich_stdio_error, spawn_stdio_mcp_process, SpawnedStdioMcpProcess,
+    enrich_stdio_error, serve_with_timeout, spawn_stdio_mcp_process, ServeHandshakeError,
+    SpawnedStdioMcpProcess,
 };
 use crate::mcp::{McpAggregateStatus, McpScope, McpServerState, McpSnapshot, ResolvedMcpTransport};
 
@@ -58,6 +58,31 @@ impl CallBudget {
         self.deadline
             .saturating_duration_since(tokio::time::Instant::now())
     }
+}
+
+/// http / unix socket 两种传输共用的调用骨架：共享预算覆盖「初始化握手 →
+/// 工具调用」整段（各拿满一份会让最坏等待翻倍），握手超时与失败按
+/// 「未发送」类错误处理。
+async fn call_over_transport<T, E, A>(
+    transport: T,
+    startup_timeout: Duration,
+    call: CallToolRequestParams,
+    cancel: Option<watch::Receiver<bool>>,
+) -> Result<rmcp::model::CallToolResult, McpCallError>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let budget = CallBudget::start(startup_timeout);
+    let client = serve_with_timeout(transport, budget.remaining())
+        .await
+        .map_err(|error| {
+            McpCallError::not_sent(match error {
+                ServeHandshakeError::Timeout => "MCP 初始化超时".to_string(),
+                ServeHandshakeError::Failed(message) => message,
+            })
+        })?;
+    call::execute(client, call, budget.remaining(), cancel).await
 }
 
 #[derive(Clone)]
@@ -227,10 +252,15 @@ impl McpRegistry {
                 } = spawned;
 
                 let result = async {
-                    let client = tokio::time::timeout(budget.remaining(), ().serve(transport))
-                        .await
-                        .map_err(|_| McpCallError::not_sent("MCP 初始化超时"))?
-                        .map_err(|error| McpCallError::not_sent(error.to_string()))?;
+                    let client =
+                        serve_with_timeout(transport, budget.remaining())
+                            .await
+                            .map_err(|error| {
+                                McpCallError::not_sent(match error {
+                                    ServeHandshakeError::Timeout => "MCP 初始化超时".to_string(),
+                                    ServeHandshakeError::Failed(message) => message,
+                                })
+                            })?;
                     call::execute(client, call, budget.remaining(), cancel).await
                 }
                 .await;
@@ -245,34 +275,34 @@ impl McpRegistry {
                     )
                 })
             }
-            ResolvedMcpTransport::StreamableHttp { url, headers } => async {
+            ResolvedMcpTransport::StreamableHttp { url, headers } => {
                 let transport = build_streamable_http_transport(url, headers)
                     .map_err(McpCallError::not_sent)?;
-                let budget = CallBudget::start(server_config.startup_timeout);
-                let client = tokio::time::timeout(budget.remaining(), ().serve(transport))
-                    .await
-                    .map_err(|_| McpCallError::not_sent("MCP 初始化超时"))?
-                    .map_err(|error| McpCallError::not_sent(error.to_string()))?;
-                call::execute(client, call, budget.remaining(), cancel).await
+                call_over_transport(
+                    transport,
+                    server_config.startup_timeout,
+                    call,
+                    cancel,
+                )
+                .await
+                .map_err(|error| (McpServerState::ConnectionFailed, error))
             }
-            .await
-            .map_err(|error| (McpServerState::ConnectionFailed, error)),
             ResolvedMcpTransport::UnixSocketHttp {
                 socket_path,
                 url,
                 headers,
-            } => async {
+            } => {
                 let transport = build_unix_socket_transport(socket_path, url, headers)
                     .map_err(McpCallError::not_sent)?;
-                let budget = CallBudget::start(server_config.startup_timeout);
-                let client = tokio::time::timeout(budget.remaining(), ().serve(transport))
-                    .await
-                    .map_err(|_| McpCallError::not_sent("MCP 初始化超时"))?
-                    .map_err(|error| McpCallError::not_sent(error.to_string()))?;
-                call::execute(client, call, budget.remaining(), cancel).await
+                call_over_transport(
+                    transport,
+                    server_config.startup_timeout,
+                    call,
+                    cancel,
+                )
+                .await
+                .map_err(|error| (McpServerState::ConnectionFailed, error))
             }
-            .await
-            .map_err(|error| (McpServerState::ConnectionFailed, error)),
         }
         .map_err(|error| error.1)?;
 

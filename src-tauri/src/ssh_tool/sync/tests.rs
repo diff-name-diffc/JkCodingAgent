@@ -48,13 +48,7 @@ fn protects_paths_and_dry_run_delete_semantics() {
 }
 
 #[test]
-fn parses_progress_and_rejects_old_rsync() {
-    let progress = process::parse_progress(" 1,234,567  42%  10.2MB/s 0:00:03 (xfr#1)").unwrap();
-    assert_eq!(progress.transferred_bytes, 1234567);
-    assert_eq!(progress.percent, 42);
-    for line in ["file 42%", "10 101%", "Total file size: 4", ""] {
-        assert!(process::parse_progress(line).is_none());
-    }
+fn rejects_old_rsync() {
     assert!(supported_version(
         "rsync  version 3.1.0  protocol version 31"
     ));
@@ -132,14 +126,12 @@ mod unix {
             transport(&server, script),
             None,
             Arc::new(AtomicBool::new(false)),
-            Arc::new(|_| {}),
         )
         .unwrap();
         assert_eq!(result.exit_code, Some(23));
         assert_eq!(result.stderr, "problem");
         assert!(result.truncated);
         assert_eq!(result.stdout.len(), 1024);
-        assert_eq!(result.progress.unwrap().percent, 42);
     }
 
     #[test]
@@ -159,7 +151,6 @@ mod unix {
             transport(&server, script),
             None,
             Arc::new(AtomicBool::new(false)),
-            Arc::new(|_| {}),
         )
         .unwrap();
         assert!(result.timed_out);
@@ -191,7 +182,6 @@ mod unix {
             transport,
             Some(rx),
             Arc::new(AtomicBool::new(false)),
-            Arc::new(|_| {}),
         )
         .unwrap();
         trigger.join().unwrap();

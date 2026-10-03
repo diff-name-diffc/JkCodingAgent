@@ -2,6 +2,7 @@ use anyhow::Context;
 use base64::Engine;
 use std::path::Path;
 
+use super::validate_path_within;
 use crate::shared::error::{CommandResult, IntoCommandResult};
 
 type FsResult<T> = std::result::Result<T, FsError>;
@@ -35,14 +36,44 @@ pub enum FsError {
     TauriJoin(#[from] tauri::Error),
 }
 
+impl crate::shared::io_error::PathIoError for FsError {
+    fn path_io(
+        action: &'static str,
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    ) -> Self {
+        FsError::Io {
+            action,
+            path,
+            source,
+        }
+    }
+}
+
+/// io 错误闭包的类型钉住适配器：构造逻辑在 `shared::io_error`，此处固定
+/// 目标错误类型（`?` 经 From 转换的调用点无法唯一推断泛型 E）。
 fn io_error(
     action: &'static str,
     path: impl Into<std::path::PathBuf>,
 ) -> impl FnOnce(std::io::Error) -> FsError {
-    move |source| FsError::Io {
-        action,
-        path: path.into(),
-        source,
+    crate::shared::io_error::io_error(action, path)
+}
+
+impl From<super::PathValidationError> for FsError {
+    fn from(error: super::PathValidationError) -> Self {
+        match error {
+            super::PathValidationError::NotAbsolute => FsError::PathNotAbsolute,
+            super::PathValidationError::OutsideAllowed => FsError::OutsideAllowedDirectory,
+            super::PathValidationError::Io {
+                action,
+                path,
+                source,
+            } => FsError::Io {
+                action,
+                path,
+                source,
+            },
+        }
     }
 }
 
@@ -89,29 +120,6 @@ const MAX_IMAGE_PREVIEW_BYTES: u64 = 10 * 1024 * 1024;
 /// 小文件读写路径的尺寸上限：与 `read_file_content` 的 2MB 门控对齐
 ///（≥2MB 的大文件走 rope 会话虚拟化编辑，不经本命令）。
 const MAX_WRITE_FILE_BYTES: usize = 2 * 1024 * 1024;
-
-/// Validate that `target` is an absolute path within `allowed_root` (prevents directory traversal).
-fn validate_path_within(target: &str, allowed_root: &str) -> FsResult<std::path::PathBuf> {
-    let target = Path::new(target);
-    let root = Path::new(allowed_root);
-
-    if !target.is_absolute() {
-        return Err(FsError::PathNotAbsolute);
-    }
-
-    let canonical_target = target
-        .canonicalize()
-        .map_err(io_error("解析目标路径", target))?;
-    let canonical_root = root
-        .canonicalize()
-        .map_err(io_error("解析项目根目录", root))?;
-
-    if !canonical_target.starts_with(&canonical_root) {
-        return Err(FsError::OutsideAllowedDirectory);
-    }
-
-    Ok(canonical_target)
-}
 
 fn validate_new_path_within(target: &str, allowed_root: &str) -> FsResult<std::path::PathBuf> {
     let target = Path::new(target);
@@ -322,7 +330,7 @@ async fn write_file_content_impl(path: &str, content: String, project_path: &str
     }
 
     // 原子写（临时文件 + rename）：编辑器防抖保存中途崩溃/掉电不会留下
-    // 半截文件；与 rope_save / project::storage 的写入策略一致。
+    // 半截文件；与 rope_save（大文件路径）及 project::storage 的写入策略一致。
     tauri::async_runtime::spawn_blocking(move || -> FsResult<()> {
         crate::project::storage::atomic_write(&validated_path, &content).map_err(|error| {
             FsError::Io {

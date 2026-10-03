@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use rmcp::model::Tool;
-use rmcp::ServiceExt;
+use rmcp::transport::IntoTransport;
+use rmcp::{RoleClient, ServiceExt};
 
 use super::resolve::{resolve_mcp_tool, resolve_server_config, resolve_transport_kind};
 use crate::mcp::project_file::server_enabled;
@@ -119,6 +120,36 @@ pub(super) async fn check_server(
     }
 }
 
+/// http / unix socket 两种传输共用的「serve → 列举工具 → 收敛」骨架。
+/// 超时必须覆盖整段（握手 + list_all_tools + cancel），不能只包握手——
+/// 挂死在列举阶段的 server 同样不得永久挂住刷新管线。
+async fn list_tools_over<T, E, A>(
+    transport: T,
+    startup_timeout: std::time::Duration,
+) -> Result<Vec<Tool>, (McpServerState, String)>
+where
+    T: IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    timeout_server_check(
+        startup_timeout,
+        async move {
+            let client = ()
+                .serve(transport)
+                .await
+                .map_err(|error| (McpServerState::ConnectionFailed, error.to_string()))?;
+            let result = client
+                .list_all_tools()
+                .await
+                .map_err(|error| (McpServerState::ConnectionFailed, error.to_string()))?;
+            let _ = client.cancel().await;
+            Ok(result)
+        },
+        build_timeout_error("MCP 连接或握手", startup_timeout),
+    )
+    .await
+}
+
 async fn list_server_tools(
     server: &ResolvedMcpServerConfig,
 ) -> Result<Vec<Tool>, (McpServerState, String)> {
@@ -165,50 +196,18 @@ async fn list_server_tools(
             }
         }
         ResolvedMcpTransport::StreamableHttp { url, headers } => {
-            timeout_server_check(
-                server.startup_timeout,
-                async {
-                    let transport = build_streamable_http_transport(url, headers)
-                        .map_err(|error| (McpServerState::InvalidConfig, error))?;
-                    let client = ()
-                        .serve(transport)
-                        .await
-                        .map_err(|error| (McpServerState::ConnectionFailed, error.to_string()))?;
-                    let result = client
-                        .list_all_tools()
-                        .await
-                        .map_err(|error| (McpServerState::ConnectionFailed, error.to_string()));
-                    let _ = client.cancel().await;
-                    result
-                },
-                build_timeout_error("MCP 连接或握手", server.startup_timeout),
-            )
-            .await
+            let transport = build_streamable_http_transport(url, headers)
+                .map_err(|error| (McpServerState::InvalidConfig, error))?;
+            list_tools_over(transport, server.startup_timeout).await
         }
         ResolvedMcpTransport::UnixSocketHttp {
             socket_path,
             url,
             headers,
         } => {
-            timeout_server_check(
-                server.startup_timeout,
-                async {
-                    let transport = build_unix_socket_transport(socket_path, url, headers)
-                        .map_err(|error| (McpServerState::InvalidConfig, error))?;
-                    let client = ()
-                        .serve(transport)
-                        .await
-                        .map_err(|error| (McpServerState::ConnectionFailed, error.to_string()))?;
-                    let result = client
-                        .list_all_tools()
-                        .await
-                        .map_err(|error| (McpServerState::ConnectionFailed, error.to_string()));
-                    let _ = client.cancel().await;
-                    result
-                },
-                build_timeout_error("MCP 连接或握手", server.startup_timeout),
-            )
-            .await
+            let transport = build_unix_socket_transport(socket_path, url, headers)
+                .map_err(|error| (McpServerState::InvalidConfig, error))?;
+            list_tools_over(transport, server.startup_timeout).await
         }
     }
 }

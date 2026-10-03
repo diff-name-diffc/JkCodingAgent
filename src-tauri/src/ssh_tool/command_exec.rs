@@ -255,7 +255,9 @@ async fn drain_channel(
             .min(deadline.saturating_duration_since(now));
         let next = tokio::select! {
             message = tokio::time::timeout(wait_for, channel.wait()) => message,
-            _ = wait_for_cancel(cancel.clone()) => break DrainOutcome::Cancelled,
+            _ = crate::shared::cancel::wait_for_cancel(cancel.clone()) => {
+                break DrainOutcome::Cancelled
+            }
         };
         match next {
             Ok(Some(ChannelMsg::Data { data })) => {
@@ -376,20 +378,5 @@ mod tests {
         assert_eq!(idle_thresholds(120), (8, 30));
         assert_eq!(idle_thresholds(300), (8, 60));
         assert_eq!(idle_thresholds(600), (8, 60));
-    }
-}
-
-async fn wait_for_cancel(cancel: Option<tokio::sync::watch::Receiver<bool>>) {
-    let Some(mut cancel) = cancel else {
-        std::future::pending::<()>().await;
-        return;
-    };
-    loop {
-        if *cancel.borrow() || cancel.has_changed().is_err() {
-            return;
-        }
-        if cancel.changed().await.is_err() {
-            return;
-        }
     }
 }

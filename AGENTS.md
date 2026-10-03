@@ -104,7 +104,7 @@ App
   - 子智能体：同层 `compact_history_offline` 规则兜底折叠，不消耗摘要模型，保护头部 2 条（system + 首轮任务）。
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
-- 当前 **v11 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）；`init()` 支持全新建库 / 同版本直开 / 低版本逐级前向迁移（v1→v11 迁移块明细见 `schema.rs`）。
+- 当前 **v14 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）；`init()` 支持全新建库 / 同版本直开 / 低版本逐级前向迁移（v1→v14 迁移块明细见 `schema.rs`）。
 - 每次 schema 变更必须同时：① 更新基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 事务块（DDL/回填与 `user_version` 同事务、幂等可重试）。**禁止改写或删除历史迁移块**——已发布版本用户升级的唯一路径。
 - 破坏性迁移（DROP/清空数据）前必须整库快照（`VACUUM INTO`），保留「备份失败留痕」兜底。
 - 领域自管表（sub_agent / ssh / projects / mcp_servers / app_config）DDL 放在各领域 `ensure_*_tx` 助手，由 `create_baseline` 统一调用，单一出处。

@@ -1195,16 +1195,6 @@
 }
 
 /* ── Python inline run output ─────────────────────────────────── */
-.markdown-code-block--has-run {
-  border-color: var(--markdown-code-border-strong);
-}
-.markdown-code-block--has-run::before {
-  background: linear-gradient(
-    180deg,
-    var(--markdown-code-border-strong),
-    color-mix(in srgb, var(--success) 55%, var(--markdown-code-border-strong))
-  );
-}
 /* python-inline-badge 族已删除（UI-20）：Python 状态视觉统一走
    detail/StatusPill（domain="python"，.ai-status-pill 类族） */
 .python-inline-output {

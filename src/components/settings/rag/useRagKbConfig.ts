@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   RagIngestJobStartResult,
   RagIngestJobStatus,
@@ -10,7 +10,38 @@ import type {
 } from "../../../types";
 import { RAG_FILE_EXTENSIONS, normalizeSparseConfig } from "./rag-config";
 import { toast } from "../../Toast";
-import { useMountedDelay } from "./useMountedDelay";
+
+/** 可取消延时与挂载状态；卸载时清理 timer，并唤醒等待者退出异步循环。 */
+function useMountedDelay() {
+  const mountedRef = useRef(true);
+  const pendingDelaysRef = useRef(new Map<number, (mounted: boolean) => void>());
+
+  const isMounted = useCallback(() => mountedRef.current, []);
+  const waitWhileMounted = useCallback((delayMs: number) => {
+    return new Promise<boolean>((resolve) => {
+      const timeoutId = window.setTimeout(() => {
+        pendingDelaysRef.current.delete(timeoutId);
+        resolve(mountedRef.current);
+      }, delayMs);
+      pendingDelaysRef.current.set(timeoutId, resolve);
+    });
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const pendingDelays = pendingDelaysRef.current;
+    return () => {
+      mountedRef.current = false;
+      for (const [timeoutId, resolve] of pendingDelays) {
+        window.clearTimeout(timeoutId);
+        resolve(false);
+      }
+      pendingDelays.clear();
+    };
+  }, []);
+
+  return { isMounted, waitWhileMounted };
+}
 
 type RagConfigSectionKey = "qdrant" | "embedding" | "sparseEmbedding" | "chunking" | "ocr";
 

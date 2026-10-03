@@ -13,8 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../ui/select";
-import { useAhaSettings } from "../../settings/use-aha-settings";
-import { entryLabel } from "../../settings/providers/model-library";
+import { useAhaSettings } from "../use-aha-settings";
+import { entryLabel } from "../providers/model-library";
 import {
   findMatchedLibraryEntry,
   pickableCategoryOptions,

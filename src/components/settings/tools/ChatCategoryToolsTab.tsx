@@ -1,8 +1,8 @@
 import { RefreshCw, RotateCcw } from "lucide-react";
 import type { ChatCategoryAgentConfig } from "../../../types";
-import { ToolsTab } from "./tools-tab";
-import { SubAgentPicker } from "./sub-agent-picker";
-import { DEFAULT_CHAT_CATEGORY_SYSTEM_PROMPT } from "../../settings/use-aha-settings";
+import { ToolsTab } from "./ToolsTab";
+import { SubAgentPicker } from "../sub-agents/SubAgentPicker";
+import { DEFAULT_CHAT_CATEGORY_SYSTEM_PROMPT } from "../use-aha-settings";
 
 export function ChatCategoryToolsTab({
   configs,

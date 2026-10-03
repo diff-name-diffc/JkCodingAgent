@@ -4,6 +4,7 @@ import type { AhaSettingsV2, ChatCategoryAgentConfig, SubAgentRecord } from "../
 import { queryClient } from "../../lib/query-client";
 import { CHAT_MODELS_QUERY_KEY } from "../../hooks/use-chat-queries";
 import { toast } from "../Toast";
+import { AUTOSAVE_DELAY_MS } from "./use-auto-save-source";
 
 export type SaveError = { fieldId?: string; message: string } | null;
 
@@ -36,8 +37,6 @@ export function useAhaSettings(): AhaSettingsStore {
 }
 
 export const AhaSettingsProvider = AhaSettingsContext.Provider;
-
-const AUTOSAVE_DELAY_MS = 400;
 
 /**
  * 聊天分类系统提示词的默认值，与 Rust 侧 DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT

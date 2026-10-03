@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useAhaSettings } from "./use-aha-settings";
 import { Section } from "./Section";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
-import { ToolsTab } from "../app-settings/aha/tools-tab";
-import { ChatCategoryToolsTab } from "../app-settings/aha/chat-category-tools";
+import { ToolsTab } from "./tools/ToolsTab";
+import { ChatCategoryToolsTab } from "./tools/ChatCategoryToolsTab";
 
 type ToolsPageTab = "project" | "chat";
 

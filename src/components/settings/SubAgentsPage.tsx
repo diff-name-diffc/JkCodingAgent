@@ -1,7 +1,7 @@
 import { useAhaSettings } from "./use-aha-settings";
 import { Section } from "./Section";
-import { SubAgentManagePanel } from "../app-settings/sub-agents/SubAgentManagePanel";
-import { SubAgentPicker } from "../app-settings/aha/sub-agent-picker";
+import { SubAgentManagePanel } from "./sub-agents/SubAgentManagePanel";
+import { SubAgentPicker } from "./sub-agents/SubAgentPicker";
 
 /** 「子智能体」页：子智能体管理 + 全局启用列表（勾选走自动保存管线）。 */
 export function SubAgentsPage() {

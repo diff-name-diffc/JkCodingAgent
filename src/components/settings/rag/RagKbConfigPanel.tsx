@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { publishSaveSource, registerSaveSource } from "../../settings/save-sources";
+import { publishSaveSource, registerSaveSource } from "../save-sources";
 import { RagProcessingSections } from "./RagProcessingSections";
 import { RagRuntimeAndImportSections } from "./RagRuntimeAndImportSections";
 import { RagVectorSections } from "./RagVectorSections";

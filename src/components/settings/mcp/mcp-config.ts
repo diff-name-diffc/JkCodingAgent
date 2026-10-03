@@ -6,8 +6,6 @@ import type { McpConfig, McpServerConfig } from "../../../types";
  * 供页面组件与服务器卡片共享，并独立单测。
  */
 
-export const AUTOSAVE_DELAY_MS = 400;
-
 export type TransportKind = "stdio" | "streamable_http" | "unix_socket_http";
 
 export const TRANSPORT_LABELS: Record<TransportKind, string> = {

@@ -71,15 +71,6 @@ impl ToolAccess {
         mutates_external_state: false,
     };
 
-    /// 可写但限定工作区内（write_file / edit_file）。
-    pub const MUTATES_WORKSPACE: Self = Self {
-        readonly: false,
-        workspace_bound: true,
-        requires_network: false,
-        mutates_filesystem: true,
-        mutates_external_state: false,
-    };
-
     /// 外部效应：访问网络、可变更外部状态（browser 交互 / image / ssh 等）。
     pub const EXTERNAL_EFFECTS: Self = Self {
         readonly: false,
@@ -279,10 +270,33 @@ const SELF_REVIEWED_TOOLS: &[&str] = &["local_zsh", "ssh_exec", "sync_directory"
 /// 未注册/未知工具名的兜底统一超时（秒）。
 const DEFAULT_UNKNOWN_TIMEOUT_SECS: u64 = 60;
 
+/// 调度器资源声明类型（`TOOL_POLICY_TABLE` 每行一列）：声明工具在并行调度下
+/// 占用的宿主资源域。调度器的 claims 层据此构造 `Claim`，不再按工具名前缀
+/// 推断——资源域映射与策略表其余字段同处一行维护，新增工具必须显式选择。
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ClaimResource {
+    /// 文件路径域：按调用参数逐路径声明只读锁，路径解析不确定时退化为
+    /// 工作区域级。仅允许只读工具声明（`policy_table_rows_are_unique_and_consistent`
+    /// 守护）——claims 层对 per-file 声明固定只读，出现可写路径工具时必须用
+    /// Workspace，否则同文件并行写不会被互斥。
+    FilePath,
+    /// 工作区域级文件域（同一或嵌套工作区内互斥，读写方向按 access 声明）。
+    Workspace,
+    /// 会话级共享资源（浏览器共享会话等：同一宿主会话内串行，一律写锁）。
+    Session,
+    /// SSH 服务器级（按调用的 server_id / ssh_profile 参数，缺参按 unknown 保守）。
+    SshServer,
+    /// SSH 服务器 + 本地工作区双域（sync_directory：远端目录与本地文件树
+    /// 都会被改写，两侧都按写锁声明）。
+    SshServerAndWorkspace,
+    /// 外部全局（最保守互斥，一律写锁）。
+    External,
+}
+
 /// 工具策略表条目：一行声明式定义一个工具的全部策略字段
-/// （category / access / safety / timeout / compress / parallel / self-managed）。
-/// 新增工具只需在此表补一行；未收录的工具名一律走 fail-closed 兜底
-/// （见 `ToolProfile::fail_closed`），不再静默回退到宽松默认。
+/// （category / access / safety / timeout / compress / parallel / self-managed /
+/// resource）。新增工具只需在此表补一行；未收录的工具名一律走 fail-closed
+/// 兜底（见 `ToolProfile::fail_closed`），不再静默回退到宽松默认。
 struct ToolPolicyRow {
     name: &'static str,
     category: ToolCategory,
@@ -293,6 +307,7 @@ struct ToolPolicyRow {
     force_compress_after_chars: usize,
     parallel_readonly: bool,
     self_managed_timeout: bool,
+    resource: ClaimResource,
 }
 
 struct ToolPolicyOptions {
@@ -346,6 +361,7 @@ const fn policy_row(
     safety: ToolSafety,
     timeout_secs: u64,
     options: ToolPolicyOptions,
+    resource: ClaimResource,
 ) -> ToolPolicyRow {
     ToolPolicyRow {
         name,
@@ -357,12 +373,15 @@ const fn policy_row(
         force_compress_after_chars: options.force_compress_after_chars,
         parallel_readonly: options.parallel_readonly,
         self_managed_timeout: options.self_managed_timeout,
+        resource,
     }
 }
 
 /// 已知工具策略表（唯一事实来源）。
 ///
 /// 约定：
+/// - resource 列是调度器资源声明的唯一来源（见 `ClaimResource`），claims 层
+///   不再按工具名前缀推断资源域；
 /// - 浏览器共用同一会话，browser_* 一律不参与并行调度（含只读读取类）；
 /// - exec / local_zsh / ssh_exec 是命令执行类工具：ReviewRequired 且 access 按
 ///   最坏能力声明；安全审查由工具内部自管（见 SELF_REVIEWED_TOOLS）；
@@ -377,22 +396,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         30,
         ToolPolicyOptions::PARALLEL_READONLY,
-    ),
-    policy_row(
-        "write_file",
-        ToolCategory::Filesystem,
-        ToolAccess::MUTATES_WORKSPACE,
-        ToolSafety::Safe,
-        30,
-        ToolPolicyOptions::SERIAL,
-    ),
-    policy_row(
-        "edit_file",
-        ToolCategory::Filesystem,
-        ToolAccess::MUTATES_WORKSPACE,
-        ToolSafety::Safe,
-        30,
-        ToolPolicyOptions::SERIAL,
+        ClaimResource::FilePath,
     ),
     policy_row(
         "list_dir",
@@ -401,6 +405,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         30,
         ToolPolicyOptions::PARALLEL_READONLY,
+        ClaimResource::FilePath,
     ),
     // ── 搜索 ──
     policy_row(
@@ -410,6 +415,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::PARALLEL_READONLY,
+        ClaimResource::FilePath,
     ),
     policy_row(
         "grep",
@@ -418,6 +424,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::PARALLEL_READONLY,
+        ClaimResource::FilePath,
     ),
     // ── 命令执行（能力边界按最坏情况声明，强制审查）──
     policy_row(
@@ -427,6 +434,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         60,
         ToolPolicyOptions::COMPRESSED_SELF_MANAGED,
+        ClaimResource::Workspace,
     ),
     // message 是面向用户的最终消息通知工具（映射为 ToolAction::FinalMessage），
     // 并非 shell 命令，不归入 Shell 类。
@@ -437,6 +445,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     // ── 浏览器（共享会话：统一 requires_network、禁止并行）──
     policy_row(
@@ -446,6 +455,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     policy_row(
         "browser_click",
@@ -454,6 +464,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     policy_row(
         "browser_type",
@@ -462,6 +473,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     policy_row(
         "browser_press",
@@ -470,6 +482,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     policy_row(
         "browser_wait_for",
@@ -478,6 +491,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     policy_row(
         "browser_close",
@@ -486,6 +500,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     // 只读读取类同样驱动浏览器会话：requires_network=true、不参与并行。
     policy_row(
@@ -501,6 +516,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     policy_row(
         "browser_visual_analyze",
@@ -515,6 +531,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
     // ── 图像生成 ──
     policy_row(
@@ -524,6 +541,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     policy_row(
         "edit_image",
@@ -532,6 +550,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     // ── 图像分析 ──
     // 只读外部网络工具：读取本地/远端图片并调用视觉模型，不变更任何外部
@@ -551,6 +570,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         1500,
         ToolPolicyOptions::SELF_MANAGED,
+        ClaimResource::External,
     ),
     // ── 图片下载 ──
     // fetch_image 按给定 URL 下载图片入库：网络侧只读，落盘走应用自管的
@@ -569,6 +589,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     // ── SSH ──
     // ssh_list_servers 只做本地配置的只读投影（不含凭据），安全声明为只读；
@@ -583,6 +604,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::PARALLEL_READONLY,
+        ClaimResource::SshServer,
     ),
     policy_row(
         "ssh_exec",
@@ -591,6 +613,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         300,
         ToolPolicyOptions::UNCOMPRESSED_SELF_MANAGED,
+        ClaimResource::SshServer,
     ),
     policy_row(
         "sync_directory",
@@ -599,6 +622,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         300,
         ToolPolicyOptions::UNCOMPRESSED_SELF_MANAGED,
+        ClaimResource::SshServerAndWorkspace,
     ),
     // ── SSH 运维备忘录 ──
     // 备忘录工具的读写集固定在应用自管的备忘录目录
@@ -615,6 +639,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         30,
         ToolPolicyOptions::PARALLEL_READONLY,
+        ClaimResource::SshServer,
     ),
     policy_row(
         "ssh_memo_upsert",
@@ -623,6 +648,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::SshServer,
     ),
     policy_row(
         "ssh_memo_delete",
@@ -631,6 +657,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         30,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::SshServer,
     ),
     // ── 子智能体 ──
     policy_row(
@@ -640,6 +667,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         600,
         ToolPolicyOptions::SELF_MANAGED,
+        ClaimResource::External,
     ),
     policy_row(
         "list_sub_agents",
@@ -648,6 +676,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     policy_row(
         "notify_user_progress",
@@ -656,6 +685,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     // ── 图编排协议壳 ──
     // 外层运行时只看到这一次程序调用。子步骤是程序里的绑定调用：
@@ -668,6 +698,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         120,
         ToolPolicyOptions::SELF_MANAGED,
+        ClaimResource::External,
     ),
     policy_row(
         "submit_graph",
@@ -676,6 +707,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     policy_row(
         "graph_plan_report",
@@ -684,6 +716,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     // graph_result_read：宿主拦截的执行结果回读（结论 md 全文 + 修改文件
     // 清单）。不声明 compress——LLM 压缩会把问题清单摘要掉，违背工具目的；
@@ -695,6 +728,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     // graph_get / graph_node_{update,add,delete}：宿主拦截的读感知与 draft 图
     // 节点级 CRUD，效果由协议处理器托管（同上 SUBSYSTEM_MANAGED 语义），
@@ -706,6 +740,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     policy_row(
         "graph_node_update",
@@ -714,6 +749,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     policy_row(
         "graph_node_add",
@@ -722,6 +758,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     policy_row(
         "graph_node_delete",
@@ -730,12 +767,14 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         60,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::External,
     ),
     // ── 架构画布 ──
     // architecture_run 的真实效应由前端画布解释器托管（同 SUBSYSTEM_MANAGED
     // 语义）；SERIAL 即 default_compress=false——执行报告里的 `chat-image://`
     // 截图引用必须原样保留给下一轮 attach_turn_tool_images，绝不走摘要压缩。
     // 超时 40s > 工具内部 20s 画布等待上限，留出事件/回传余量。
+    // 资源域是会话级（画布与聊天同属一个宿主会话）。
     policy_row(
         "architecture_run",
         ToolCategory::Other,
@@ -743,6 +782,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::Safe,
         40,
         ToolPolicyOptions::SERIAL,
+        ClaimResource::Session,
     ),
 ];
 
@@ -754,6 +794,12 @@ fn lookup_policy(name: &str) -> Option<&'static ToolPolicyRow> {
 /// `run_tool_program` 的调度器用它分类绑定调用，不在程序源码里拒绝。
 pub(crate) fn supports_parallel_readonly(name: &str) -> bool {
     lookup_policy(name).is_some_and(|row| row.parallel_readonly)
+}
+
+/// 工具的调度器资源声明类型。未登记的名字 fail-closed 按 External 处理
+///（claims 层对未登记名字已提前按 External 写锁兜底，此返回值仅供防御）。
+pub(crate) fn claim_resource(name: &str) -> ClaimResource {
+    lookup_policy(name).map_or(ClaimResource::External, |row| row.resource)
 }
 
 /// 该工具名是否在策略表中登记（rig 运行时的台账审计用：
@@ -845,7 +891,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{ToolCategory, ToolSafety, ToolSpec, TOOL_POLICY_TABLE};
+    use super::{claim_resource, ClaimResource, ToolCategory, ToolSafety, ToolSpec, TOOL_POLICY_TABLE};
 
     fn spec_for(name: &str) -> ToolSpec {
         ToolSpec::new(
@@ -1091,21 +1137,6 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_write_tools_stay_workspace_bound() {
-        for name in ["write_file", "edit_file"] {
-            let spec = spec_for(name);
-
-            assert_eq!(spec.category, ToolCategory::Filesystem);
-            assert!(!spec.access.readonly);
-            assert!(spec.access.workspace_bound);
-            assert!(spec.access.mutates_filesystem);
-            assert!(!spec.access.requires_network);
-            assert_eq!(spec.safety, ToolSafety::Safe);
-            assert!(!spec.execution.parallelizable);
-        }
-    }
-
-    #[test]
     fn policy_table_rows_are_unique_and_consistent() {
         let mut seen = HashSet::new();
         for row in TOOL_POLICY_TABLE {
@@ -1130,7 +1161,37 @@ mod tests {
                     row.name
                 );
             }
+            // FilePath 资源域只允许只读工具：claims 层对 per-file 声明固定只读锁，
+            // 可写路径工具必须用 Workspace（否则同文件并行写不会被互斥）。
+            if row.resource == ClaimResource::FilePath {
+                assert!(
+                    row.access.readonly,
+                    "{} 声明 FilePath 资源域但非只读，应改用 Workspace",
+                    row.name
+                );
+            }
         }
+    }
+
+    /// 资源列与旧 claims 前缀推断语义的抽样锚定：浏览器/画布=会话级，
+    /// SSH 族=服务器级（sync_directory 双域），文件/搜索=路径域，命令=工作区域，
+    /// 其余=外部全局。
+    #[test]
+    fn resource_column_matches_domain_expectations() {
+        assert_eq!(claim_resource("read_file"), ClaimResource::FilePath);
+        assert_eq!(claim_resource("grep"), ClaimResource::FilePath);
+        assert_eq!(claim_resource("local_zsh"), ClaimResource::Workspace);
+        assert_eq!(claim_resource("browser_read_text"), ClaimResource::Session);
+        assert_eq!(claim_resource("architecture_run"), ClaimResource::Session);
+        assert_eq!(claim_resource("ssh_list_servers"), ClaimResource::SshServer);
+        assert_eq!(
+            claim_resource("sync_directory"),
+            ClaimResource::SshServerAndWorkspace
+        );
+        assert_eq!(claim_resource("message"), ClaimResource::External);
+        assert_eq!(claim_resource("graph_get"), ClaimResource::External);
+        // 未登记名字 fail-closed。
+        assert_eq!(claim_resource("write_file"), ClaimResource::External);
     }
 
     /// 自管工具的兜底上限（策略层的最后防线）必须在策略表里显式登记：

@@ -9,11 +9,12 @@
 use anyhow::Result;
 use serde_json::Value;
 
+use super::plan_access::{latest_run_of, resolve_session_plan};
 use crate::agent::db::DispatcherDb;
 use crate::agent::graph::types::{
-    GraphNodeRunRecord, GraphPlanRecord, GraphRunResult, GraphRunSummary, NODE_FAILED,
-    NODE_PHASE_CACHED, NODE_SUCCEEDED, PLAN_RUNNING, RESULT_KIND_EDIT, RESULT_KIND_REVIEW,
-    RUN_MODE_FULL, RUN_MODE_RESUME, VERDICT_FAIL, VERDICT_PARTIAL, VERDICT_PASS,
+    GraphNodeRunRecord, GraphRunResult, NODE_FAILED, NODE_PHASE_CACHED, NODE_SUCCEEDED,
+    PLAN_RUNNING, RESULT_KIND_EDIT, RESULT_KIND_REVIEW, RUN_MODE_FULL, RUN_MODE_RESUME,
+    VERDICT_FAIL, VERDICT_PARTIAL, VERDICT_PASS,
 };
 use crate::agent::graph::GraphStore;
 
@@ -26,56 +27,6 @@ const ERROR_PREVIEW_CHARS: usize = 300;
 const CONCLUSION_MAX_CHARS: usize = 20_000;
 /// 修改文件清单的列出上限（与运行回执 receipt 的 40 个口径一致）。
 const MODIFIED_FILES_LIMIT: usize = 40;
-
-/// 解析 planId 参数并校验归属：可选 planId（缺省取会话最近图计划），
-/// Err 为面向模型的引导文本（无计划 / planId 不存在 / 跨会话误用）。
-async fn resolve_session_plan(
-    store: &GraphStore,
-    workspace_id: &str,
-    arguments: &Value,
-) -> Result<std::result::Result<GraphPlanRecord, String>> {
-    let plan_id_arg = arguments
-        .get("planId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string);
-    let explicit_plan_id = plan_id_arg.is_some();
-    let plan = match plan_id_arg {
-        Some(plan_id) => store.get_plan_async(&plan_id).await?,
-        None => store.latest_plan_for_workspace_async(workspace_id).await?,
-    };
-    let Some(plan) = plan else {
-        // 显式给了 planId 却查不到（拼写错误/已清理）时，返回「错误：」前缀
-        // 的明确提示引导模型纠正 planId；「从未出图」的说明性文本只适用于
-        // 未传 planId 的场景（审查项 G8-17）。
-        return Ok(Err(if explicit_plan_id {
-            "错误：指定的 plan_id 不存在或已被清理，请重新确认后查询。".to_string()
-        } else {
-            "当前会话还没有提交过执行图。若任务复杂，请先探索项目后用 submit_graph 出图。"
-                .to_string()
-        }));
-    };
-    // workspace 校验只对显式传 planId 的路径有意义：未传 planId 时
-    // latest_plan_for_workspace_async 本身已按 workspace_id 过滤。
-    if plan.workspace_id != workspace_id {
-        return Ok(Err("错误：指定的 plan_id 不属于当前会话。".to_string()));
-    }
-    Ok(Ok(plan))
-}
-
-/// 报告/结果头运行选择：优先与 latest_run_id 一致的 run，找不到再退回
-/// runs.first()（attempt_no DESC）。
-fn latest_run_of(plan: &GraphPlanRecord) -> Option<&GraphRunSummary> {
-    match plan.latest_run_id.as_deref() {
-        Some(run_id) => plan
-            .runs
-            .iter()
-            .find(|run| run.id == run_id)
-            .or_else(|| plan.runs.first()),
-        None => plan.runs.first(),
-    }
-}
 
 /// 验收结论文案。「尚未验收」（运行中）与「未能验收」（unknown/空串）区分开；
 /// 空串与 unknown 语义等价（读取层已归一为 unknown），一并兜底防御。

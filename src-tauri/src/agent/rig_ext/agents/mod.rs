@@ -8,6 +8,7 @@ pub(crate) mod architecture;
 pub(crate) mod architecture_agent;
 pub(crate) mod plain_chat;
 
+pub(crate) mod plan_access;
 pub(crate) mod project;
 pub(crate) mod project_graph_ops;
 pub(crate) mod project_prompt;

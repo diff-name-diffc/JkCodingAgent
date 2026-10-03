@@ -206,9 +206,16 @@ pub(crate) fn render_graph_harness_catalog(
             model.id, model.label, model.model, stat_note
         ));
     }
-    lines.push("\n## 基础工具组（映射执行器的权限模式）".to_string());
-    lines.push("- `read_only`: plan 模式——只读规划，不允许修改文件或执行写操作".to_string());
-    lines.push("- `coding`: acceptEdits 模式——编码执行，自动接受文件编辑".to_string());
+    lines.push("\n## 基础工具组（节点的执行纪律，与权限模式正交）".to_string());
+    lines.push(
+        "- `read_only`: 只读纪律——不得创建、修改、删除文件或执行有副作用的命令，产出分析/审查结论；纪律经节点输入的「运行约束」软提示承载，会话权限模式不受影响"
+            .to_string(),
+    );
+    lines.push("- `coding`: 编码执行——允许文件编辑与副作用操作。".to_string());
+    lines.push(
+        "权限模式由节点级 usePlanMode 决定（true=plan 先计划，缺省/false=bypassPermissions 直接执行），与基础工具组无关。"
+            .to_string(),
+    );
     if !catalog.diagnostics.is_empty() {
         lines.push(format!(
             "\n## 发现诊断\n- {}",

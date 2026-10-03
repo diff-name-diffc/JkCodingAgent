@@ -397,15 +397,12 @@ pub async fn graph_run_reverify(
     let agent_config = state.agent_config();
 
     // 需求与运行收尾同源：以提交时快照为准，快照为空的旧数据兜底取最新消息。
-    let mut requirement = plan.requirement.trim().to_string();
-    if requirement.is_empty() {
-        requirement = db
-            .get_latest_user_message_content_async(&plan.workspace_id)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-    }
+    let requirement = crate::agent::rig_ext::agents::plan_access::resolve_user_requirement(
+        &db,
+        &plan.workspace_id,
+        &plan.requirement,
+    )
+    .await;
 
     let started = std::time::Instant::now();
     let verdict = super::verifier::verify_run(

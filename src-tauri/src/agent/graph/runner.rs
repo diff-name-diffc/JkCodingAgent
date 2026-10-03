@@ -270,16 +270,13 @@ async fn run_graph(
     );
 
     // v3：需求以提交时快照为准；快照为空时兜底取最新消息（防御旧数据）。
-    let mut user_requirement = plan.requirement.trim().to_string();
-    if user_requirement.is_empty() {
-        user_requirement = services
-            .db
-            .get_latest_user_message_content_async(&workspace_id)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-    }
+    let user_requirement =
+        crate::agent::rig_ext::agents::plan_access::resolve_user_requirement(
+            &services.db,
+            &workspace_id,
+            &plan.requirement,
+        )
+        .await;
     // 全局权限审查材料：图摘要与审查模型配置每个 run 构建一次（Arc 共享），
     // 节点级快照在派发点按节点生成。
     let review_shared = Arc::new(GraphReviewShared {

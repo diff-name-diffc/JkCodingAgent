@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
+use super::plan_access::{latest_run_of, resolve_session_plan};
 use crate::agent::db::DispatcherDb;
 use crate::agent::graph::commands::apply_draft_definition_update;
 use crate::agent::graph::types::{
@@ -37,45 +38,6 @@ pub(crate) enum GraphNodeMutationOutcome {
     Rejected { error: String },
 }
 
-/// 编排器侧图计划取数与口径（graph_get / graph_node_update 共用）：缺省取会话
-/// 最近计划；显式 planId 校验存在与归属。错误即面向模型的反馈文本。
-async fn resolve_plan(
-    store: &GraphStore,
-    workspace_id: &str,
-    arguments: &Value,
-) -> std::result::Result<GraphPlanRecord, String> {
-    let plan_id_arg = arguments
-        .get("planId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string);
-    let explicit_plan_id = plan_id_arg.is_some();
-    let plan = match plan_id_arg {
-        Some(plan_id) => store
-            .get_plan_async(&plan_id)
-            .await
-            .map_err(|error| format!("错误：读取图计划失败：{error:#}"))?,
-        None => store
-            .latest_plan_for_workspace_async(workspace_id)
-            .await
-            .map_err(|error| format!("错误：读取会话最近图计划失败：{error:#}"))?,
-    };
-    let Some(plan) = plan else {
-        // 「错误：」前缀仅用于显式 planId 拼错的场景（与 graph_plan_report 的
-        // 口径一致，审查项 G8-17）；「从未出图」是说明性文本，不是错误。
-        return Err(if explicit_plan_id {
-            "错误：指定的 planId 不存在或已被清理；可不带 planId 取会话最近的图计划，或修正 planId 后重试。".to_string()
-        } else {
-            "当前会话还没有执行图。若任务复杂，请先探索项目后用 submit_graph 出图。".to_string()
-        });
-    };
-    if plan.workspace_id != workspace_id {
-        return Err("错误：指定的 planId 不属于当前会话。".to_string());
-    }
-    Ok(plan)
-}
-
 /// `graph_get` 协议拦截：返回图计划感知载荷（JSON 文本，不收口）。
 /// definition 全文返回（task 是感知核心）；state 只给键 + 截断值防上下文膨胀。
 pub(crate) async fn build_graph_get(
@@ -86,7 +48,7 @@ pub(crate) async fn build_graph_get(
     let store = GraphStore::new(db);
     // 取数失败（无图/planId 拼错/跨会话）是面向模型的反馈而非内部错误：
     // 与 graph_plan_report 同口径，作为正常工具结果返回让模型自行决策。
-    let plan = match resolve_plan(&store, workspace_id, arguments).await {
+    let plan = match resolve_session_plan(&store, workspace_id, arguments).await? {
         Ok(plan) => plan,
         Err(feedback) => return Ok(feedback),
     };
@@ -129,13 +91,8 @@ pub(crate) async fn build_graph_get(
         }
     };
 
-    // 最近运行摘要：优先与 latest_run_id 一致的 run，找不到退回 runs.first()
-    //（attempt_no DESC），与 graph_plan_report 的防御口径一致（G8-18）。
-    let latest_run = plan
-        .latest_run_id
-        .as_deref()
-        .and_then(|run_id| plan.runs.iter().find(|run| run.id == run_id))
-        .or_else(|| plan.runs.first())
+    // 最近运行摘要：与 graph_plan_report 的选择口径同源（G8-18，见 plan_access）。
+    let latest_run = latest_run_of(&plan)
         .map(|run| {
             json!({
                 "runId": run.id,
@@ -161,20 +118,23 @@ pub(crate) async fn build_graph_get(
     Ok(payload.to_string())
 }
 
-/// 节点级变更的共用前置：取数 + draft 门禁。Err 即面向模型的拒绝文本。
+/// 节点级变更的共用前置：取数 + draft 门禁。内层 Err 即面向模型的拒绝文本。
 async fn resolve_draft_plan(
     store: &GraphStore,
     workspace_id: &str,
     arguments: &Value,
-) -> std::result::Result<GraphPlanRecord, String> {
-    let plan = resolve_plan(store, workspace_id, arguments).await?;
+) -> Result<std::result::Result<GraphPlanRecord, String>> {
+    let plan = match resolve_session_plan(store, workspace_id, arguments).await? {
+        Ok(plan) => plan,
+        Err(guidance) => return Ok(Err(guidance)),
+    };
     if plan.status != PLAN_DRAFT {
-        return Err(format!(
+        return Ok(Err(format!(
             "错误：图计划当前状态为 {}，仅待确认（draft）的图可修改节点；已运行的图请读取 graph_plan_report 后用 submit_graph + inheritsFrom 提交修复图。",
             plan.status
-        ));
+        )));
     }
-    Ok(plan)
+    Ok(Ok(plan))
 }
 
 /// `graph_node_update` 协议拦截：定位 draft 图目标节点 → 应用 patch（提供即
@@ -188,8 +148,9 @@ pub(crate) async fn intercept_graph_node_update(
 ) -> Result<GraphNodeMutationOutcome> {
     let store = GraphStore::new(db);
     let plan = match resolve_draft_plan(&store, workspace_id, arguments).await {
-        Ok(plan) => plan,
-        Err(error) => return Ok(GraphNodeMutationOutcome::Rejected { error }),
+        Ok(Ok(plan)) => plan,
+        Ok(Err(error)) => return Ok(GraphNodeMutationOutcome::Rejected { error }),
+        Err(error) => return Err(error),
     };
 
     let node_id = arguments
@@ -260,8 +221,9 @@ pub(crate) async fn intercept_graph_node_add(
 ) -> Result<GraphNodeMutationOutcome> {
     let store = GraphStore::new(db);
     let plan = match resolve_draft_plan(&store, workspace_id, arguments).await {
-        Ok(plan) => plan,
-        Err(error) => return Ok(GraphNodeMutationOutcome::Rejected { error }),
+        Ok(Ok(plan)) => plan,
+        Ok(Err(error)) => return Ok(GraphNodeMutationOutcome::Rejected { error }),
+        Err(error) => return Err(error),
     };
 
     let Some(node_value) = arguments.get("node") else {
@@ -388,8 +350,9 @@ pub(crate) async fn intercept_graph_node_delete(
 ) -> Result<GraphNodeMutationOutcome> {
     let store = GraphStore::new(db);
     let plan = match resolve_draft_plan(&store, workspace_id, arguments).await {
-        Ok(plan) => plan,
-        Err(error) => return Ok(GraphNodeMutationOutcome::Rejected { error }),
+        Ok(Ok(plan)) => plan,
+        Ok(Err(error)) => return Ok(GraphNodeMutationOutcome::Rejected { error }),
+        Err(error) => return Err(error),
     };
 
     let node_id = arguments

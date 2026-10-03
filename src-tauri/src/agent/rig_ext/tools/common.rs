@@ -9,8 +9,9 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{json, Value};
 
 pub(crate) use super::super::tool_result::DEFAULT_FORCE_COMPRESS_AFTER_CHARS;
-/// 命令执行类工具的压缩触发阈值（高于 8000 内联截断线，截断兜不住才摘要）。
-pub(crate) const COMMAND_FORCE_COMPRESS_AFTER_CHARS: usize = 12_000;
+// 命令类压缩阈值的单一出处是策略表（spec.rs，随 ToolPolicyOptions 声明）；
+// 此处按 exec 组工具的既有导入路径 re-export，避免双定义漂移。
+pub(crate) use super::spec::COMMAND_FORCE_COMPRESS_AFTER_CHARS;
 
 const NOISE: &[&str] = &[
     ".git",

@@ -1,5 +1,6 @@
 //! 宿主资源声明；路径规范化只在 blocking 线程执行。
 use super::*;
+use crate::agent::rig_ext::tools::spec::ClaimResource;
 
 /// 无宿主工作区时的兜底资源域（整机）：仅测试策略会走到，取最保守的独占范围。
 const UNSCOPED_WORKSPACE: &str = "/";
@@ -9,6 +10,14 @@ const UNSCOPED_WORKSPACE: &str = "/";
 fn workspace_scope(root: &std::path::Path) -> std::path::PathBuf {
     crate::agent::rig_ext::tools::common::canonicalize_existing_prefix(root)
         .unwrap_or_else(|_| crate::agent::rig_ext::tools::common::lexical_normalize(root))
+}
+
+/// 工作区域级声明（带作用域：只在同一或嵌套工作区内互斥，跨项目会话不互相排队）。
+fn workspace_claim(scope: &std::path::Path, write: bool) -> Claim {
+    Claim {
+        resource: Resource::LocalFilesystem(scope.to_path_buf()),
+        write,
+    }
 }
 
 pub(super) fn claims(
@@ -24,14 +33,15 @@ pub(super) fn claims(
             write: true,
         }];
     }
-    let spec = ToolSpec::new(name, "", tool.definition().parameters);
+    // 资源域类型查策略表（唯一事实来源），不按名称前缀推断。
+    let resource_kind = crate::agent::rig_ext::tools::spec::claim_resource(name);
     let scope = root
         .map(workspace_scope)
         .unwrap_or_else(|| std::path::PathBuf::from(UNSCOPED_WORKSPACE));
-    if matches!(
-        name,
-        "read_file" | "write_file" | "edit_file" | "list_dir" | "glob" | "grep"
-    ) {
+    // 文件路径域（read_file / list_dir / glob / grep）：按调用参数逐路径声明
+    // 只读锁（FilePath 行必须为只读工具，由策略表一致性测试守护）。行范围
+    // 语法或路径解析不确定时保守退化为工作区域级只读声明，不猜测可并行性。
+    if resource_kind == ClaimResource::FilePath {
         if let Some(root) = root {
             let args = &call.function.arguments;
             let paths = args
@@ -49,7 +59,6 @@ pub(super) fn claims(
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or(".")]
                 });
-            // 行范围语法或路径解析不确定时保守占整个文件域，不猜测可并行性。
             let resolved = paths
                 .iter()
                 .map(|raw| {
@@ -69,7 +78,6 @@ pub(super) fn claims(
                 })
                 .collect::<Option<Vec<_>>>();
             if let Some(paths) = resolved.filter(|paths| !paths.is_empty()) {
-                let write = !spec.access.readonly;
                 let mut leaves = Vec::with_capacity(paths.len());
                 let mut out_of_scope = false;
                 for path in paths {
@@ -78,28 +86,25 @@ pub(super) fn claims(
                     if path.starts_with(&scope) {
                         leaves.push(Claim {
                             resource: Resource::File(path),
-                            write,
+                            write: false,
                         });
                     } else {
                         out_of_scope = true;
                     }
                 }
                 if out_of_scope {
-                    leaves.push(Claim {
-                        resource: Resource::LocalFilesystem(scope.clone()),
-                        write,
-                    });
+                    leaves.push(workspace_claim(&scope, false));
                 }
                 if !leaves.is_empty() {
                     return leaves;
                 }
             }
         }
+        return vec![workspace_claim(&scope, false)];
     }
-    let resource = if name.starts_with("browser_") || name == "architecture_run" {
-        Resource::Session(workspace.into())
-    } else if name.starts_with("ssh_") || name == "sync_directory" {
-        Resource::Ssh(
+    let resource = match resource_kind {
+        ClaimResource::Session => Resource::Session(workspace.into()),
+        ClaimResource::SshServer | ClaimResource::SshServerAndWorkspace => Resource::Ssh(
             call.function
                 .arguments
                 .get("server_id")
@@ -107,24 +112,19 @@ pub(super) fn claims(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("unknown")
                 .into(),
-        )
-    } else if spec.access.workspace_bound || name == "local_zsh" {
-        // 工作区域级声明带作用域：只在同一或嵌套工作区内互斥，跨项目会话不再互相排队。
-        Resource::LocalFilesystem(scope.clone())
-    } else {
-        Resource::External
+        ),
+        ClaimResource::Workspace => Resource::LocalFilesystem(scope.clone()),
+        ClaimResource::External | ClaimResource::FilePath => Resource::External,
     };
-    let write = !spec.access.readonly
-        || matches!(
-            resource,
-            Resource::Session(_) | Resource::Ssh(_) | Resource::External
-        );
+    // Session / Ssh / External 即使工具只读也按写锁声明（共享会话、远端服务器与
+    // 外部世界的观察与变更无法在声明层区分，保守串行）；Workspace 域按访问
+    // 声明读写方向。
+    let spec = ToolSpec::new(name, "", tool.definition().parameters);
+    let write = !spec.access.readonly || resource_kind != ClaimResource::Workspace;
     let mut claims = vec![Claim { resource, write }];
-    if name == "sync_directory" {
-        claims.push(Claim {
-            resource: Resource::LocalFilesystem(scope),
-            write: true,
-        });
+    if resource_kind == ClaimResource::SshServerAndWorkspace {
+        // sync_directory 同时改写远端目录与本地工作区文件树：双域都按写锁声明。
+        claims.push(workspace_claim(&scope, true));
     }
     claims
 }
@@ -189,27 +189,37 @@ mod tests {
     }
 
     #[test]
-    fn in_workspace_paths_keep_precise_file_claims() {
+    fn in_workspace_paths_keep_precise_readonly_file_claims() {
+        let workspace = Workspace::new();
+        for name in ["read_file", "list_dir"] {
+            let claims = declared(
+                name,
+                serde_json::json!({ "path": "a.txt" }),
+                &workspace.root,
+            );
+            assert!(
+                matches!(
+                    &claims[..],
+                    [Claim { resource: Resource::File(path), write: false }]
+                        if path == &workspace.inner()
+                ),
+                "{name} 应声明工作区内单文件只读锁"
+            );
+        }
+    }
+
+    #[test]
+    fn read_file_line_range_syntax_degrades_to_workspace_scope() {
         let workspace = Workspace::new();
         let claims = declared(
-            "write_file",
-            serde_json::json!({ "path": "a.txt" }),
+            "read_file",
+            serde_json::json!({ "path": "a.txt:10-20" }),
             &workspace.root,
         );
         assert!(matches!(
             &claims[..],
-            [Claim { resource: Resource::File(path), write: true }]
-                if path == &workspace.inner()
-        ));
-        let claims = declared(
-            "list_dir",
-            serde_json::json!({ "path": "a.txt" }),
-            &workspace.root,
-        );
-        assert!(matches!(
-            &claims[..],
-            [Claim { resource: Resource::File(path), write: false }]
-                if path == &workspace.inner()
+            [Claim { resource: Resource::LocalFilesystem(scope), write: false }]
+                if scope == &workspace.root
         ));
     }
 
@@ -218,14 +228,81 @@ mod tests {
         let workspace = Workspace::new();
         let outside = workspace.outside().to_str().expect("utf8 path").to_string();
         let claims = declared(
-            "write_file",
+            "list_dir",
             serde_json::json!({ "path": outside }),
             &workspace.root,
         );
         assert!(matches!(
             &claims[..],
-            [Claim { resource: Resource::LocalFilesystem(scope), write: true }]
+            [Claim { resource: Resource::LocalFilesystem(scope), write: false }]
                 if scope == &workspace.root
+        ));
+    }
+
+    #[test]
+    fn browser_and_canvas_tools_claim_session_write_lock() {
+        let workspace = Workspace::new();
+        for name in ["browser_click", "browser_read_text", "architecture_run"] {
+            let claims = declared(name, serde_json::json!({}), &workspace.root);
+            assert!(
+                matches!(
+                    &claims[..],
+                    [Claim { resource: Resource::Session(session), write: true }]
+                        if session == "session-1"
+                ),
+                "{name} 应声明会话级写锁"
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_tools_claim_server_scoped_write_lock() {
+        let workspace = Workspace::new();
+        let claims = declared(
+            "ssh_exec",
+            serde_json::json!({ "server_id": "srv-1", "command": "ls" }),
+            &workspace.root,
+        );
+        assert!(matches!(
+            &claims[..],
+            [Claim { resource: Resource::Ssh(server), write: true }] if server == "srv-1"
+        ));
+        // 无 server_id 参数的枚举类按 unknown 服务器保守声明（与旧前缀推断一致）。
+        let claims = declared("ssh_list_servers", serde_json::json!({}), &workspace.root);
+        assert!(matches!(
+            &claims[..],
+            [Claim { resource: Resource::Ssh(server), write: true }] if server == "unknown"
+        ));
+    }
+
+    #[test]
+    fn sync_directory_claims_both_ssh_and_workspace_domains() {
+        let workspace = Workspace::new();
+        let claims = declared(
+            "sync_directory",
+            serde_json::json!({ "server_id": "srv-1" }),
+            &workspace.root,
+        );
+        assert!(matches!(
+            &claims[..],
+            [Claim { resource: Resource::Ssh(server), write: true },
+             Claim { resource: Resource::LocalFilesystem(scope), write: true }]
+                if server == "srv-1" && scope == &workspace.root
+        ));
+    }
+
+    #[test]
+    fn unregistered_tools_fail_closed_to_external_write_lock() {
+        let workspace = Workspace::new();
+        // write_file 已随旧工具层删除：作为未登记名字必须走 External 写锁兜底。
+        let claims = declared(
+            "write_file",
+            serde_json::json!({ "path": "a.txt" }),
+            &workspace.root,
+        );
+        assert!(matches!(
+            &claims[..],
+            [Claim { resource: Resource::External, write: true }]
         ));
     }
 

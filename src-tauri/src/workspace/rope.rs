@@ -2,14 +2,11 @@ use anyhow::Context;
 use parking_lot::Mutex;
 use ropey::Rope;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::validate_path_within;
-use std::io::Write;
 
 use crate::shared::error::{CommandResult, IntoCommandResult};
-
-const MAX_UNDO_STACK: usize = 10;
 
 type RopeResult<T> = std::result::Result<T, RopeError>;
 
@@ -21,12 +18,6 @@ pub enum RopeError {
     OutsideAllowedDirectory,
     #[error("Rope session 不存在：{0}")]
     SessionNotFound(String),
-    #[error("行号越界：{line}，文件总行数：{total_lines}")]
-    LineOutOfRange { line: u64, total_lines: usize },
-    #[error("没有可撤销的编辑")]
-    NothingToUndo,
-    #[error("没有可重做的编辑")]
-    NothingToRedo,
     #[error("{action} 失败（{path}）：{source}")]
     Io {
         action: &'static str,
@@ -89,29 +80,15 @@ fn strip_trailing_newline(s: &mut String) {
     }
 }
 
-/// Manages in-memory Rope edit sessions keyed by file-viewer tabs.
+/// Manages in-memory Rope read-only sessions keyed by file-viewer tabs.
 pub struct RopeManager {
     sessions: Mutex<HashMap<String, RopeSession>>,
 }
 
+/// 只读会话：大文件查看器降级只读后仅承载切片读取，不再有编辑/撤销/保存状态。
 struct RopeSession {
     path: PathBuf,
     rope: Rope,
-    /// True if the rope has been modified since the last save.
-    dirty: bool,
-    /// Monotonic revision number for edit history bookkeeping.
-    revision: u64,
-    /// Revision number at the last successful save.
-    saved_revision: u64,
-    /// Undo stack: snapshots of the Rope before each committed edit.
-    undo_stack: Vec<RopeSnapshot>,
-    /// Redo stack: snapshots popped from undo that can be reapplied.
-    redo_stack: Vec<RopeSnapshot>,
-}
-
-struct RopeSnapshot {
-    rope: Rope,
-    revision: u64,
 }
 
 impl RopeSession {
@@ -121,19 +98,7 @@ impl RopeSession {
             char_count: self.rope.len_chars() as u64,
             byte_len: self.rope.len_bytes() as u64,
         }
-    }
-
-    fn push_undo_snapshot(&mut self) {
-        if self.undo_stack.len() >= MAX_UNDO_STACK {
-            self.undo_stack.remove(0);
-        }
-        self.undo_stack.push(RopeSnapshot {
-            rope: self.rope.clone(),
-            revision: self.revision,
-        });
-        self.redo_stack.clear();
-    }
-}
+    }}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,34 +108,12 @@ pub struct RopeMeta {
     pub byte_len: u64,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RopeEditResult {
-    /// Total line count after the edit.
-    pub line_count: u64,
-    /// Lines that changed — frontend should re-fetch these.
-    pub affected_start_line: u64,
-    pub affected_end_line: u64,
-}
-
 impl RopeManager {
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
         }
     }
-}
-
-fn ensure_session_in_project(session_path: &Path, project_path: &str) -> RopeResult<()> {
-    let canonical_root = Path::new(project_path)
-        .canonicalize()
-        .map_err(io_error("解析项目根目录", project_path))?;
-
-    if !session_path.starts_with(&canonical_root) {
-        return Err(RopeError::OutsideAllowedDirectory);
-    }
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -215,12 +158,7 @@ async fn rope_open_impl(
 
     let session = RopeSession {
         path: validated_path,
-        dirty: false,
-        revision: 0,
-        saved_revision: 0,
         rope,
-        undo_stack: Vec::new(),
-        redo_stack: Vec::new(),
     };
     let meta = session.meta();
 
@@ -268,351 +206,6 @@ fn rope_read_lines_impl(
 }
 
 #[tauri::command]
-pub fn rope_edit(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-    line: u64,
-    col: u64,
-    delete_count: u64,
-    insert_text: String,
-) -> CommandResult<RopeEditResult> {
-    rope_edit_impl(state, session_id, line, col, delete_count, insert_text)
-        .context("编辑 Rope 内容失败")
-        .into_command_result()
-}
-
-fn rope_edit_impl(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-    line: u64,
-    col: u64,
-    delete_count: u64,
-    insert_text: String,
-) -> RopeResult<RopeEditResult> {
-    let mut sessions = state.sessions.lock();
-    let session = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
-
-    let total_lines = session.rope.len_lines();
-    let line_idx = (line as usize).min(total_lines.saturating_sub(1));
-    let line_start_char = session.rope.line_to_char(line_idx);
-    let line_len = session.rope.line(line_idx).len_chars();
-    let col_clamped = (col as usize).min(line_len);
-    let char_offset = line_start_char + col_clamped;
-    let delete_end = (char_offset + delete_count as usize).min(session.rope.len_chars());
-    let has_delete_effect = delete_end > char_offset;
-
-    if !has_delete_effect && insert_text.is_empty() {
-        let meta = session.meta();
-        return Ok(RopeEditResult {
-            line_count: meta.line_count,
-            affected_start_line: line,
-            affected_end_line: (line + 1).min(meta.line_count),
-        });
-    }
-
-    session.push_undo_snapshot();
-
-    if delete_count > 0 && delete_end > char_offset {
-        session.rope.remove(char_offset..delete_end);
-    }
-
-    if !insert_text.is_empty() {
-        let insert_at = char_offset.min(session.rope.len_chars());
-        session.rope.insert(insert_at, &insert_text);
-    }
-
-    session.revision += 1;
-    session.dirty = session.revision != session.saved_revision;
-
-    let new_total = session.rope.len_lines() as u64;
-    let newline_count = insert_text.chars().filter(|&ch| ch == '\n').count() as u64;
-
-    Ok(RopeEditResult {
-        line_count: new_total,
-        affected_start_line: line,
-        affected_end_line: (line + 1 + newline_count).min(new_total),
-    })
-}
-
-#[tauri::command]
-pub fn rope_replace_line(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-    line: u64,
-    new_content: String,
-) -> CommandResult<RopeEditResult> {
-    rope_replace_line_impl(state, session_id, line, new_content)
-        .context("替换 Rope 行失败")
-        .into_command_result()
-}
-
-fn rope_replace_line_impl(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-    line: u64,
-    new_content: String,
-) -> RopeResult<RopeEditResult> {
-    let mut sessions = state.sessions.lock();
-    let session = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
-
-    let total_lines = session.rope.len_lines();
-    let line_idx = line as usize;
-    if line_idx >= total_lines {
-        return Err(RopeError::LineOutOfRange { line, total_lines });
-    }
-
-    let line_start = session.rope.line_to_char(line_idx);
-    let old_line = session.rope.line(line_idx);
-    let old_len = old_line.len_chars();
-    let old_line_text = old_line
-        .to_string()
-        .trim_end_matches('\n')
-        .trim_end_matches('\r')
-        .to_string();
-
-    if old_line_text == new_content {
-        return Ok(RopeEditResult {
-            line_count: total_lines as u64,
-            affected_start_line: line,
-            affected_end_line: (line + 1).min(total_lines as u64),
-        });
-    }
-
-    let has_newline = old_len > 0 && {
-        let last_char_idx = line_start + old_len - 1;
-        session.rope.char(last_char_idx) == '\n'
-    };
-
-    session.push_undo_snapshot();
-
-    let remove_end = if has_newline {
-        line_start + old_len - 1
-    } else {
-        line_start + old_len
-    };
-
-    if remove_end > line_start {
-        session.rope.remove(line_start..remove_end);
-    }
-
-    if !new_content.is_empty() {
-        session.rope.insert(line_start, &new_content);
-    }
-
-    session.revision += 1;
-    session.dirty = session.revision != session.saved_revision;
-
-    let new_total = session.rope.len_lines() as u64;
-    let newline_count = new_content.chars().filter(|&ch| ch == '\n').count() as u64;
-
-    Ok(RopeEditResult {
-        line_count: new_total,
-        affected_start_line: line,
-        affected_end_line: (line + 1 + newline_count).min(new_total),
-    })
-}
-
-/// Rope 会话原子落盘：先写同目录唯一临时文件（流式写出，避免整文件内容在
-/// 内存翻倍驻留），失败即清理；成功后同步目标已有权限位并 rename 替换。
-/// 写一半崩溃/掉电只留下临时文件残骸，不会截断原文件——与
-/// `project::storage::atomic_write` 及 `fs::write_file_content` 策略一致。
-fn atomic_rope_save(path: &Path, rope: &Rope) -> RopeResult<()> {
-    let uid = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("file");
-    let tmp = path.with_file_name(format!(".{file_name}.{uid}.tmp"));
-    let write = |target: &Path| -> RopeResult<()> {
-        let file = std::fs::File::create(target).map_err(io_error("创建 Rope 临时文件", target))?;
-        let mut writer = std::io::BufWriter::with_capacity(256 * 1024, file);
-        rope.write_to(&mut writer)
-            .map_err(io_error("写入 Rope 文件", target))?;
-        writer.flush().map_err(io_error("落盘 Rope 文件", target))
-    };
-    if let Err(error) = write(&tmp) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(error);
-    }
-    // 覆盖已有文件时保留其权限位：临时文件按默认权限（受 umask 影响）创建，
-    // rename 直接替换目录项，不恢复会丢失既有文件的可执行位等特殊权限。
-    if let Ok(metadata) = std::fs::metadata(path) {
-        std::fs::set_permissions(&tmp, metadata.permissions())
-            .map_err(io_error("恢复文件权限", &tmp))?;
-    }
-    std::fs::rename(&tmp, path).map_err(io_error("替换目标文件", path))
-}
-
-#[tauri::command]
-pub async fn rope_save(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-    project_path: String,
-) -> CommandResult<()> {
-    rope_save_impl(state, session_id, project_path)
-        .await
-        .context("保存 Rope 会话失败")
-        .into_command_result()
-}
-
-async fn rope_save_impl(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-    project_path: String,
-) -> RopeResult<()> {
-    let (path, rope_clone) = {
-        let sessions = state.sessions.lock();
-        let session = sessions
-            .get(&session_id)
-            .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
-        ensure_session_in_project(&session.path, &project_path)?;
-        (session.path.clone(), session.rope.clone())
-    };
-
-    tauri::async_runtime::spawn_blocking(move || -> RopeResult<()> {
-        atomic_rope_save(&path, &rope_clone)
-    })
-    .await??;
-
-    if let Some(session) = state.sessions.lock().get_mut(&session_id) {
-        session.saved_revision = session.revision;
-        session.dirty = false;
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
 pub fn rope_close(state: tauri::State<'_, RopeManager>, session_id: String) {
     state.sessions.lock().remove(&session_id);
-}
-
-#[tauri::command]
-pub fn rope_undo(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-) -> CommandResult<RopeMeta> {
-    rope_undo_impl(state, session_id)
-        .context("撤销 Rope 编辑失败")
-        .into_command_result()
-}
-
-fn rope_undo_impl(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-) -> RopeResult<RopeMeta> {
-    let mut sessions = state.sessions.lock();
-    let session = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
-
-    let snapshot = session.undo_stack.pop().ok_or(RopeError::NothingToUndo)?;
-
-    session.redo_stack.push(RopeSnapshot {
-        rope: session.rope.clone(),
-        revision: session.revision,
-    });
-    session.rope = snapshot.rope;
-    session.revision = snapshot.revision;
-    session.dirty = session.revision != session.saved_revision;
-
-    Ok(session.meta())
-}
-
-#[tauri::command]
-pub fn rope_redo(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-) -> CommandResult<RopeMeta> {
-    rope_redo_impl(state, session_id)
-        .context("重做 Rope 编辑失败")
-        .into_command_result()
-}
-
-fn rope_redo_impl(
-    state: tauri::State<'_, RopeManager>,
-    session_id: String,
-) -> RopeResult<RopeMeta> {
-    let mut sessions = state.sessions.lock();
-    let session = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| RopeError::SessionNotFound(session_id.clone()))?;
-
-    let snapshot = session.redo_stack.pop().ok_or(RopeError::NothingToRedo)?;
-
-    if session.undo_stack.len() >= MAX_UNDO_STACK {
-        session.undo_stack.remove(0);
-    }
-    session.undo_stack.push(RopeSnapshot {
-        rope: session.rope.clone(),
-        revision: session.revision,
-    });
-    session.rope = snapshot.rope;
-    session.revision = snapshot.revision;
-    session.dirty = session.revision != session.saved_revision;
-
-    Ok(session.meta())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Temp(PathBuf);
-    impl Temp {
-        fn new() -> Self {
-            let path =
-                std::env::temp_dir().join(format!("rope-save-test-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn atomic_save_replaces_content_preserves_permissions_no_tmp_left() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = Temp::new();
-        let path = tmp.0.join("big.txt");
-        std::fs::write(&path, "old\ncontent\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        let rope = Rope::from_str("new\n\u{4e2d}\u{6587} multiline\ncontent\n");
-        atomic_rope_save(&path, &rope).unwrap();
-
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), rope.to_string());
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "已有文件权限位应保留");
-        let leftovers: Vec<String> = std::fs::read_dir(&tmp.0)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(leftovers, vec!["big.txt".to_string()], "不应残留临时文件");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn atomic_save_on_missing_target_creates_file() {
-        let tmp = Temp::new();
-        let path = tmp.0.join("fresh.txt");
-        let rope = Rope::from_str("hello\n");
-        atomic_rope_save(&path, &rope).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\n");
-    }
 }

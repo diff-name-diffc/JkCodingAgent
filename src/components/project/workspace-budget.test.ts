@@ -101,7 +101,7 @@ describe("resolveWorkspaceBudget 降级树", () => {
     expect(b.degradations.map((d) => d.kind)).toContain("terminal-height-clamped");
   });
 
-  it("默认外壳是 rail 52、无右工具栏：1320px 可以并排会话和执行图", () => {
+  it("默认外壳是 rail 52、无右工具栏：1320px 可以并排会话和工作流", () => {
     expect(DEFAULT_CHROME.railWidth).toBe(52);
     expect(DEFAULT_CHROME.toolbarWidth).toBe(0);
     expect(
@@ -115,7 +115,7 @@ describe("resolveWorkspaceBudget 降级树", () => {
     ).toBe(true);
   });
 
-  it("主区不够双栏最低宽度时，打开执行图必须独占编辑区", () => {
+  it("主区不够双栏最低宽度时，打开工作流必须独占编辑区", () => {
     expect(
       editorFitsBesideSession(
         base({

@@ -35,14 +35,14 @@ describe("resolveChatEmptyState", () => {
     }
   });
 
-  it("项目文案贴合项目语境（文件 / Git / 执行图），普通文案不绑定项目", () => {
+  it("项目文案贴合项目语境（文件 / Git / 工作流），普通文案不绑定项目", () => {
     const projectPrompts = (PROJECT_CHAT_EMPTY_STATE.prompts ?? []).join(" ");
     expect(projectPrompts).toContain("项目");
     expect(projectPrompts).toContain("Git");
-    expect(projectPrompts).toContain("执行图");
+    expect(projectPrompts).toContain("工作流");
 
     const plainPrompts = (PLAIN_CHAT_EMPTY_STATE.prompts ?? []).join(" ");
-    expect(plainPrompts).not.toContain("执行图");
+    expect(plainPrompts).not.toContain("工作流");
     expect(PLAIN_CHAT_EMPTY_STATE.copy).toContain("不绑定项目");
   });
 });

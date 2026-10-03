@@ -170,13 +170,13 @@ impl ActiveRunStore {
     }
 }
 
-/// 图运行注册表：同一 plan 禁止重入；cancel 通过 watch 通知运行器。
+/// 工作流运行注册表：同一 plan 禁止重入；cancel 通过 watch 通知运行器。
 ///
-/// 与 `ActiveRunStore` 同构但按 plan_id 索引——图执行独立于会话 run
-/// （用户在图运行期间仍可与会话对话）。
+/// 与 `ActiveRunStore` 同构但按 plan_id 索引——工作流执行独立于会话 run
+/// （用户在工作流运行期间仍可与会话对话）。
 ///
-/// 生命周期清理（G11-09）：图运行句柄的 cancel/resume 接收端会被运行器
-/// （graph/runner.rs）按字段消费，句柄本体无法实现 Drop 清理（部分移入
+/// 生命周期清理（G11-09）：工作流运行句柄的 cancel/resume 接收端会被运行器
+/// （workflow/runner.rs）按字段消费，句柄本体无法实现 Drop 清理（部分移入
 /// 类型的剩余字段不会被 drop），因此这里用「begin 时按接收端存活回收」
 /// 达成等价的无残留保证：运行器消失（panic/abort/正常结束）后接收端归零，
 /// 下一次 begin 回收槽位，同一 plan 可再次启动。
@@ -184,55 +184,55 @@ impl ActiveRunStore {
 /// resume 通道（G11-12）：容量 1 的有界 mpsc + try_send 去重——
 /// 「检查点暂停前到达的 resume 不丢失」仍满足，但陈旧/重复信号不再堆积，
 /// 无法让后续新的确认暂停被旧信号直接跳过。
-struct GraphRunEntry {
+struct WorkflowRunEntry {
     cancel_tx: watch::Sender<bool>,
     resume_tx: mpsc::Sender<()>,
 }
 
-/// 运行器持有的图运行句柄：取消信号 + 恢复信号接收端。
-pub(crate) struct GraphRunHandle {
+/// 运行器持有的工作流运行句柄：取消信号 + 恢复信号接收端。
+pub(crate) struct WorkflowRunHandle {
     pub(crate) cancel_rx: watch::Receiver<bool>,
     pub(crate) resume_rx: mpsc::Receiver<()>,
 }
 
-pub(super) struct GraphRunRegistry {
-    data: Mutex<GraphRegistryData>,
+pub(super) struct WorkflowRunRegistry {
+    data: Mutex<WorkflowRegistryData>,
 }
 
-struct GraphRegistryData {
-    entries: HashMap<String, GraphRunEntry>,
+struct WorkflowRegistryData {
+    entries: HashMap<String, WorkflowRunEntry>,
 }
 
-impl Default for GraphRunRegistry {
+impl Default for WorkflowRunRegistry {
     fn default() -> Self {
         Self {
-            data: Mutex::new(GraphRegistryData {
+            data: Mutex::new(WorkflowRegistryData {
                 entries: HashMap::new(),
             }),
         }
     }
 }
 
-impl GraphRunRegistry {
-    pub(super) fn begin(&self, plan_id: &str) -> std::result::Result<GraphRunHandle, String> {
+impl WorkflowRunRegistry {
+    pub(super) fn begin(&self, plan_id: &str) -> std::result::Result<WorkflowRunHandle, String> {
         let mut data = self.data.lock();
         // 兜底清理（G11-09）：取消接收端归零说明运行器已消失——panic/abort/
         // 正常结束但 finish 未到——残留条目在此回收，槽位不会永久卡死。
         data.entries
             .retain(|_, entry| entry.cancel_tx.receiver_count() > 0);
         if data.entries.contains_key(plan_id) {
-            return Err("该图正在运行中，请勿重复启动".to_string());
+            return Err("该工作流正在运行中，请勿重复启动".to_string());
         }
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let (resume_tx, resume_rx) = mpsc::channel(1);
         data.entries.insert(
             plan_id.to_string(),
-            GraphRunEntry {
+            WorkflowRunEntry {
                 cancel_tx,
                 resume_tx,
             },
         );
-        Ok(GraphRunHandle {
+        Ok(WorkflowRunHandle {
             cancel_rx,
             resume_rx,
         })
@@ -253,7 +253,7 @@ impl GraphRunRegistry {
         }
     }
 
-    /// 请求取消：向 watch channel 发送 true，图运行器轮询到后执行取消语义。
+    /// 请求取消：向 watch channel 发送 true，工作流运行器轮询到后执行取消语义。
     pub(super) fn cancel(&self, plan_id: &str) -> bool {
         self.data
             .lock()
@@ -262,7 +262,7 @@ impl GraphRunRegistry {
             .is_some_and(|entry| entry.cancel_tx.send(true).is_ok())
     }
 
-    /// 恢复暂停中的图运行（高危写检查点）。
+    /// 恢复暂停中的工作流运行（高危写检查点）。
     ///
     /// G11-11：恢复前先复查取消状态——cancel 已置位时拒绝 resume，
     /// 避免「cancel 就绪但 resume 后到」时陈旧恢复信号放行已取消的运行。
@@ -316,7 +316,7 @@ impl ArchRunRegistry {
         let (tx, rx) = oneshot::channel();
         let mut entries = self.entries.lock();
         // 兜底回收：工具 future 被整体丢弃（abort/panic）时无人调 remove，
-        // 借登记之机清掉接收端已关闭的死条目（与 GraphRunRegistry 同思路）。
+        // 借登记之机清掉接收端已关闭的死条目（与 WorkflowRunRegistry 同思路）。
         entries.retain(|_, entry| !entry.sender.is_closed());
         entries.insert(
             run_id.clone(),

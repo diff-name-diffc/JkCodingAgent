@@ -18,8 +18,8 @@ import { shikiCacheKey, shikiHighlightCache } from "../../utils/shiki-cache";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 import { Button } from "../ui/button";
 import { StatusPill } from "../detail/StatusPill";
-import { GraphPlanCard } from "../graph/GraphPlanCard";
-import { parseGraphPlanId } from "../graph/graph-utils";
+import { WorkflowPlanCard } from "../workflow/WorkflowPlanCard";
+import { parseWorkflowPlanId } from "../workflow/workflow-utils";
 import { usePersistedToggle } from "./row-ui-state";
 import { ToolRunTrace } from "./tool-run-trace";
 import { BrowserActivityFeed, BrowserTraceView } from "../browser/BrowserTraceView";
@@ -51,10 +51,10 @@ function ToolCallCard({
   // UI-24b-1：窗口化行卸载后展开态经行级 store 恢复（key 用工具调用 id，
   // 全局唯一）；无 Provider/key 时退化为普通 useState，语义不变。
   const [expanded, setExpanded] = usePersistedToggle(`card:${item.id}`, defaultExpanded);
-  // submit_graph 收口工具：从输出文本解析 plan_id，卡片下方内联图计划卡。
-  const graphPlanId =
-    item.name === "submit_graph" && typeof item.output === "string"
-      ? parseGraphPlanId(item.output)
+  // submit_workflow 收口工具：从输出文本解析 plan_id，卡片下方内联工作流计划卡。
+  const workflowPlanId =
+    item.name === "submit_workflow" && typeof item.output === "string"
+      ? parseWorkflowPlanId(item.output)
       : null;
   // 浏览器工具（无头化改造）：执行中滚动展示浏览器动态；展开后内嵌实时画面。
   const isBrowserTool = item.name.startsWith("browser_");
@@ -97,7 +97,7 @@ function ToolCallCard({
         />
       </button>
 
-      {graphPlanId && <GraphPlanCard planId={graphPlanId} sessionId={item.workspaceId} />}
+      {workflowPlanId && <WorkflowPlanCard planId={workflowPlanId} sessionId={item.workspaceId} />}
 
       {hasBrowserActivity && (
         <div className="px-3 pb-2">
@@ -353,16 +353,16 @@ export function ToolCallList({
 
   // UI-12：聚合收起时，失败/运行中/等待卡固定露出在摘要行下方——
   // 「折叠不隐藏错误」「失败与待处理状态无需展开即可看见」。
-  // 成功的 submit_graph 也要钉住：探索工具凑满 3 个后整组收起，
-  // 执行图卡片会一起被折进摘要，点消息区就像没有入口。
+  // 成功的 submit_workflow 也要钉住：探索工具凑满 3 个后整组收起，
+  // 工作流卡片会一起被折进摘要，点消息区就像没有入口。
   const pinnedItems =
     aggregated && !expanded
       ? items.filter(
           (item) =>
             item.status !== "success" ||
-            (item.name === "submit_graph" &&
+            (item.name === "submit_workflow" &&
               typeof item.output === "string" &&
-              parseGraphPlanId(item.output) !== null),
+              parseWorkflowPlanId(item.output) !== null),
         )
       : [];
   const allSettled = summary.failed === 0 && summary.running === 0 && summary.planned === 0;

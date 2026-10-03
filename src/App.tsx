@@ -7,7 +7,8 @@ import { toast } from "./components/Toast";
 import { cleanupDispatcherSession } from "./components/dispatcherSessionStore";
 import { ensureRunStateReconciliation } from "./components/dispatcher-chat/run-state-reconciliation";
 import { cleanupSubAgentEvents } from "./components/subAgentEventStore";
-import { cleanupGraphPlansForSession } from "./components/graph/graph-store";
+import { cleanupWorkflowPlansForSession } from "./components/workflow/workflow-store";
+import { useWorkspaceStore } from "./stores/workspace-store";
 import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
 import { sortProjectsByRecency } from "./lib/project-sort";
 import "./App.css";
@@ -145,7 +146,7 @@ function App() {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return;
     const ok = await confirm(
-      `确定删除项目“${project.name}”吗？该项目下的全部会话、图计划与运行数据将一并删除。`,
+      `确定删除项目“${project.name}”吗？该项目下的全部会话、工作流计划与运行数据将一并删除。`,
       {
         title: "删除项目",
         kind: "warning",
@@ -155,11 +156,13 @@ function App() {
     try {
       const result = await invoke<ProjectDeleteResult>("project_delete", { projectId });
       // 清理模块级内存 store 中被删会话的残留状态（实时会话状态 / 子智能体
-      // 事件 / 图计划快照），这些 store 按 sessionId 累积，不随视图卸载清掉。
+      // 事件 / 工作流计划快照 / 工作流视图记忆），这些 store 按 sessionId
+      // 累积，不随视图卸载清掉。
       for (const sessionId of result.deletedSessionIds) {
         cleanupDispatcherSession(sessionId);
         cleanupSubAgentEvents(sessionId);
-        cleanupGraphPlansForSession(sessionId);
+        cleanupWorkflowPlansForSession(sessionId);
+        useWorkspaceStore.getState().clearWorkflowView(sessionId);
       }
     } catch (e) {
       toast.error(`删除项目失败：${String(e)}`);

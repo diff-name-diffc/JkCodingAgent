@@ -7,18 +7,18 @@ import {
   closeOtherTabs,
   closeTab,
   closeTabsToRight,
-  DEFAULT_GRAPH_PANEL_VIEW,
+  DEFAULT_WORKFLOW_PANEL_VIEW,
   deleteFileTab,
   fileTabs,
   openBrowserTab,
   openDiffTab,
   openFileTab,
-  openGraphTab,
+  openWorkflowTab,
   renameFileTab,
   selectTab,
   type EditorTab,
   type EditorTabsState,
-  type GraphPanelView,
+  type WorkflowPanelView,
 } from "../components/project/main-tabs";
 import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-store";
 
@@ -29,13 +29,13 @@ import { selectWorkspacePrefs, useWorkspaceStore } from "../stores/workspace-sto
  */
 export function useProjectPanels(workspaceId: string) {
   const [editorWorkbenchVisible, setEditorWorkbenchVisible] = useState(true);
-  // 文件、diff、执行图与浏览器统一标签体系（UI-09/13/18）。
+  // 文件、diff、工作流与浏览器统一标签体系（UI-09/13/18）。
   const [editorTabs, setEditorTabs] = useState<EditorTabsState>(EMPTY_EDITOR_TABS);
   const openFiles = fileTabs(editorTabs);
   const activeEditorTab = activeTab(editorTabs);
   const activeFileTabId = activeEditorTab?.kind === "file" ? activeEditorTab.id : null;
   /**
-   * 编辑区是否有内容（UI-13 收敛为单一派生值）：任何标签（文件/diff/执行图/
+   * 编辑区是否有内容（UI-13 收敛为单一派生值）：任何标签（文件/diff/工作流/
    * 浏览器）都算内容——ProjectPage 与 ProjectWorkbenchContent 不再各自复制表达式。
    */
   const hasEditorContent = editorTabs.tabs.length > 0;
@@ -102,17 +102,17 @@ export function useProjectPanels(workspaceId: string) {
     setEditorTabs((prev) => (prev.activeTabId ? closeTab(prev, prev.activeTabId) : prev));
   }, []);
 
-  /** 打开/激活执行图标签（UI-13）；planId 为 null 进入列表态，reducer 幂等；
+  /** 打开/激活工作流标签（UI-13）；planId 为 null 进入列表态，reducer 幂等；
    * view 指定详情态初始一级视图（画布 / 执行结果）。 */
-  const handleOpenGraphTab = useCallback(
-    (sessionId: string, planId: string | null, view: GraphPanelView = DEFAULT_GRAPH_PANEL_VIEW) => {
+  const handleOpenWorkflowTab = useCallback(
+    (sessionId: string, planId: string | null, view: WorkflowPanelView = DEFAULT_WORKFLOW_PANEL_VIEW) => {
       setEditorWorkbenchVisible(true);
-      setEditorTabs((prev) => openGraphTab(prev, sessionId, planId, view));
+      setEditorTabs((prev) => openWorkflowTab(prev, sessionId, planId, view));
     },
     [],
   );
 
-  const handleCloseGraphTab = useCallback((tabId: string) => {
+  const handleCloseWorkflowTab = useCallback((tabId: string) => {
     setEditorTabs((prev) => closeTab(prev, tabId));
   }, []);
 
@@ -159,8 +159,8 @@ export function useProjectPanels(workspaceId: string) {
     handleDiffFileSelect,
     handleCommitSelect,
     handleCommitFileClick,
-    handleOpenGraphTab,
-    handleCloseGraphTab,
+    handleOpenWorkflowTab,
+    handleCloseWorkflowTab,
     handleOpenBrowserTab,
     handleCloseBrowserTab,
     hideEditorWorkbench,

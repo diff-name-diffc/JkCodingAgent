@@ -157,7 +157,7 @@ impl DispatcherDb {
         .context("load dispatcher session after title update")
     }
 
-    /// 按 id 读取会话记录（供图执行回执等场景广播会话更新）。
+    /// 按 id 读取会话记录（供工作流执行回执等场景广播会话更新）。
     pub fn get_dispatcher_session(
         &self,
         session_id: &str,
@@ -524,7 +524,7 @@ impl DispatcherDb {
         Ok(title)
     }
 
-    /// 会话 → 项目 id（图运行器据此定位项目根路径）。
+    /// 会话 → 项目 id（工作流运行器据此定位项目根路径）。
     pub fn get_session_project_id(&self, session_id: &str) -> Result<Option<String>> {
         let conn = self.conn()?;
         let project_id = conn

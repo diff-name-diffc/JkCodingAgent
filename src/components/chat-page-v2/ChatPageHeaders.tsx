@@ -250,8 +250,8 @@ export function ProjectChatHeader({
   mcpStatus,
   mcpChecking,
   contextUsage,
-  graphAvailable,
-  onOpenGraphPanel,
+  workflowAvailable,
+  onOpenWorkflowPanel,
   onOpenMcpStatus,
   onClearMessages,
   onOpenSettings,
@@ -261,8 +261,8 @@ export function ProjectChatHeader({
   sessionTitle: string | null;
   projectName?: string | null;
   branchName?: string | null;
-  graphAvailable: boolean;
-  onOpenGraphPanel: () => void;
+  workflowAvailable: boolean;
+  onOpenWorkflowPanel: () => void;
   onClosePanel?: () => void;
 }) {
   const displayTitle = sessionTitle?.trim() || "新会话";
@@ -292,12 +292,12 @@ export function ProjectChatHeader({
         <Button
           variant="outline"
           size="sm"
-          onClick={onOpenGraphPanel}
-          disabled={!graphAvailable}
-          title={graphAvailable ? "查看最近的执行图" : "当前会话还没有执行图"}
+          onClick={onOpenWorkflowPanel}
+          disabled={!workflowAvailable}
+          title={workflowAvailable ? "查看最近的工作流" : "当前会话还没有工作流"}
         >
           <Waypoints size={13} strokeWidth={2} />
-          执行图
+          工作流
         </Button>
         <McpStatusButton
           mcpStatus={mcpStatus}

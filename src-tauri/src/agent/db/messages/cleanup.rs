@@ -30,9 +30,9 @@ impl DispatcherDb {
     /// 截断即重发，被删轮次的副作用一并回收：
     /// - 子智能体 trace（`sub_agent_run_traces`）按被删工具运行的 `tool_call_id`
     ///   精确匹配删除，不留孤儿行；
-    /// - 图编排产物按计划创建时间截断（`graph_plans.created_at` 为 epoch 毫秒，
-    ///   与目标消息 `created_at` 换算比较），`graph_runs` / `graph_node_runs` /
-    ///   `graph_node_activities` 随外键级联删除。
+    /// - 工作流编排产物按计划创建时间截断（`workflow_plans.created_at` 为 epoch 毫秒，
+    ///   与目标消息 `created_at` 换算比较），`workflow_runs` / `workflow_node_runs` /
+    ///   `workflow_node_activities` 随外键级联删除。
     /// - 历史滚动摘要（`dispatcher_session_summaries`）锚点落在被删范围的
     ///   精确回收；锚点早于截断点的只覆盖存活前缀，有意保留。
     ///
@@ -125,20 +125,20 @@ impl DispatcherDb {
             }
         }
 
-        // 图编排产物无消息关联，按计划创建时间截断（graph_plans.created_at 为
-        // epoch 毫秒）。graph_runs / graph_node_runs / graph_node_activities
+        // 工作流编排产物无消息关联，按计划创建时间截断（workflow_plans.created_at 为
+        // epoch 毫秒）。workflow_runs / workflow_node_runs / workflow_node_activities
         // 由外键 ON DELETE CASCADE 级联回收。解析失败即中止（事务回滚），
         // 不做静默跳过——留痕优于泄漏。
         let target_epoch_ms = chrono::DateTime::parse_from_rfc3339(&target_created_at)
             .with_context(|| format!("parse truncated message created_at {target_created_at}"))?
             .timestamp_millis();
         tx.execute(
-            "DELETE FROM graph_plans WHERE workspace_id = ?1 AND created_at >= ?2",
+            "DELETE FROM workflow_plans WHERE workspace_id = ?1 AND created_at >= ?2",
             params![workspace_id, target_epoch_ms],
         )
-        .context("delete graph plans created at or after truncated message")?;
+        .context("delete workflow plans created at or after truncated message")?;
 
-        // 历史滚动摘要（v6）：锚点落在被删范围的摘要已失效，随截断精确回收；
+        // 历史滚动摘要：锚点落在被删范围的摘要已失效，随截断精确回收；
         // 锚点早于截断点的摘要只覆盖存活前缀，仍然有效，有意保留。读取路径
         // （`valid_session_summary`）另有锚点存在性校验兜底。必须在删除消息
         // 之前执行（IN 子查询引用 dispatcher_messages 的被删范围）。

@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
  * 每个都收到所有终端的每一次输出事件（内部再按 shell_id 过滤）。这里收敛为
  * 一个模块级懒注册监听者，按 `shell_id` 分发给对应终端的回调集合；退订后集合
  * 清空则删除键。与 `subAgentEventStore.ts` 的 `registerGlobalListener` 单例守卫、
- * `graph-store.ts` 的既有单例模式保持一致。
+ * `workflow-store.ts` 的既有单例模式保持一致。
  */
 
 interface ShellOutputPayload {

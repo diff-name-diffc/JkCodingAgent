@@ -1,10 +1,10 @@
 //! 项目编排 Agent（`RigOrchestratorAgent`）。
 //!
-//! 用固定只读能力探索项目，核心产物是执行图（DAG）——通过
-//! `submit_graph` 协议工具提交，经校验后落 `graph_plans` 并等待用户确认；
-//! 图执行由 `agent::graph::runner` 承担。模型可见工具为固定协议集合
-//! （run_tool_program / message / submit_graph / graph_plan_report /
-//! graph_result_read / graph_get / graph_node_{update,add,delete}），
+//! 用固定只读能力探索项目，核心产物是工作流（DAG）——通过
+//! `submit_workflow` 协议工具提交，经校验后落 `workflow_plans` 并等待用户确认；
+//! 工作流执行由 `agent::workflow::runner` 承担。模型可见工具为固定协议集合
+//! （run_tool_program / message / submit_workflow / workflow_plan_report /
+//! workflow_result_read / workflow_get / workflow_node_{update,add,delete}），
 //! 只读数据面（read_file/list_dir/glob/grep）由 `run_tool_program` 的绑定调用。
 
 use std::path::PathBuf;
@@ -19,9 +19,9 @@ use tokio::sync::watch;
 
 use super::project_prompt::{build_iteration_system_prompt, build_static_prompt, log_warning};
 use super::project_tools::{
-    graph_get_shell, graph_node_add_shell, graph_node_delete_shell, graph_node_update_shell,
-    graph_plan_report_shell, graph_result_read_shell, message_shell, submit_graph_shell,
-    ORCHESTRATOR_PROTOCOL_TOOL_NAMES,
+    message_shell, submit_workflow_shell, workflow_get_shell, workflow_node_add_shell,
+    workflow_node_delete_shell, workflow_node_update_shell, workflow_plan_report_shell,
+    workflow_result_read_shell, ORCHESTRATOR_PROTOCOL_TOOL_NAMES,
 };
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord};
@@ -135,7 +135,12 @@ impl RigOrchestratorAgent {
                 request.user_segments_json.clone(),
             )
             .await?;
-        crate::agent::common::emit(&on_event, AgentEvent::UserMessage { message: Box::new(user) });
+        crate::agent::common::emit(
+            &on_event,
+            AgentEvent::UserMessage {
+                message: Box::new(user),
+            },
+        );
 
         // 工作区边界校验（canonicalize + 受管项目成员校验）+ 建目录。
         let workspace = validate_project_workspace(db, request.project_path).await?;
@@ -159,21 +164,21 @@ impl RigOrchestratorAgent {
 
         // 静态提示词 + Harness 目录（含既往节点运行统计的轻量学习回路）。
         let mut static_prompt = build_static_prompt(&self.config.root_dir).await?;
-        let catalog = crate::agent::graph::harness::build_harness_catalog();
-        let stats = match crate::agent::graph::GraphStore::new(db)
+        let catalog = crate::agent::workflow::harness::build_harness_catalog();
+        let stats = match crate::agent::workflow::WorkflowStore::new(db)
             .node_run_stats_async(workspace_id)
             .await
         {
             Ok(stats) => stats,
             Err(error) => {
                 log_warning(&format!(
-                    "[graph] 读取节点运行统计失败（{workspace_id}），目录回注不含历史统计：{error:#}"
+                    "[workflow] 读取节点运行统计失败（{workspace_id}），目录回注不含历史统计：{error:#}"
                 ));
                 Vec::new()
             }
         };
         static_prompt.push_str("\n\n---\n\n");
-        static_prompt.push_str(&super::project_prompt::render_graph_harness_catalog(
+        static_prompt.push_str(&super::project_prompt::render_workflow_harness_catalog(
             &catalog, &stats,
         ));
 
@@ -310,13 +315,13 @@ impl RigOrchestratorAgent {
         let tools = vec![
             program_tool(deps, data_plane, on_event.clone()),
             message_shell(),
-            submit_graph_shell(),
-            graph_plan_report_shell(),
-            graph_result_read_shell(),
-            graph_get_shell(),
-            graph_node_update_shell(),
-            graph_node_add_shell(),
-            graph_node_delete_shell(),
+            submit_workflow_shell(),
+            workflow_plan_report_shell(),
+            workflow_result_read_shell(),
+            workflow_get_shell(),
+            workflow_node_update_shell(),
+            workflow_node_add_shell(),
+            workflow_node_delete_shell(),
         ];
         debug_assert_eq!(tools.len(), ORCHESTRATOR_PROTOCOL_TOOL_NAMES.len());
         (RigToolSurface::new(tools), sdk)
@@ -422,13 +427,13 @@ impl RigOrchestratorAgent {
     }
 }
 
-/// 编排器协议处理器：submit_graph / graph_plan_report / graph_result_read /
-/// message / graph_get / graph_node_{update,add,delete} 的宿主侧动作。
+/// 编排器协议处理器：submit_workflow / workflow_plan_report / workflow_result_read /
+/// message / workflow_get / workflow_node_{update,add,delete} 的宿主侧动作。
 struct RigOrchestratorProtocol {
     db: DispatcherDb,
     workspace_id: String,
     app_handle: Option<AppHandle>,
-    /// 每轮最多提交一次执行图。
+    /// 每轮最多提交一次工作流。
     submitted: Mutex<bool>,
 }
 
@@ -437,22 +442,22 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
     fn handles(&self, name: &str) -> bool {
         matches!(
             name,
-            "submit_graph"
-                | "graph_plan_report"
-                | "graph_result_read"
+            "submit_workflow"
+                | "workflow_plan_report"
+                | "workflow_result_read"
                 | "message"
-                | "graph_get"
-                | "graph_node_update"
-                | "graph_node_add"
-                | "graph_node_delete"
+                | "workflow_get"
+                | "workflow_node_update"
+                | "workflow_node_add"
+                | "workflow_node_delete"
         )
     }
 
     async fn handle(&self, tool_name: &str, arguments: &Value) -> Option<RigProtocolResult> {
         match tool_name {
-            "submit_graph" => {
+            "submit_workflow" => {
                 let already_submitted = *self.submitted.lock();
-                let outcome = super::project_submit::intercept_submit_graph(
+                let outcome = super::project_submit::intercept_submit_workflow(
                     &self.db,
                     &self.workspace_id,
                     self.app_handle.as_ref(),
@@ -461,7 +466,7 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                 )
                 .await;
                 Some(match outcome {
-                    Ok(super::project_submit::SubmitGraphInterception::Submitted {
+                    Ok(super::project_submit::SubmitWorkflowInterception::Submitted {
                         display_text,
                         action,
                     }) => {
@@ -473,15 +478,15 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                             final_message: None,
                         }
                     }
-                    Ok(super::project_submit::SubmitGraphInterception::Rejected { error }) => {
+                    Ok(super::project_submit::SubmitWorkflowInterception::Rejected { error }) => {
                         RigProtocolResult::retryable_error(error)
                     }
                     Err(error) => RigProtocolResult::retryable_error(format!(
-                        "错误：执行图提交处理失败：{error:#}"
+                        "错误：工作流提交处理失败：{error:#}"
                     )),
                 })
             }
-            "graph_plan_report" => {
+            "workflow_plan_report" => {
                 let report = super::project_report::build_plan_report(
                     &self.db,
                     &self.workspace_id,
@@ -491,11 +496,11 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                 Some(match report {
                     Ok(text) => RigProtocolResult::text_feedback(text),
                     Err(error) => RigProtocolResult::retryable_error(format!(
-                        "错误：读取执行图报告失败：{error:#}"
+                        "错误：读取工作流报告失败：{error:#}"
                     )),
                 })
             }
-            "graph_result_read" => {
+            "workflow_result_read" => {
                 let result = super::project_report::build_result_read(
                     &self.db,
                     &self.workspace_id,
@@ -509,8 +514,8 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                     )),
                 })
             }
-            "graph_get" => {
-                let text = super::project_graph_ops::build_graph_get(
+            "workflow_get" => {
+                let text = super::project_workflow_ops::build_workflow_get(
                     &self.db,
                     &self.workspace_id,
                     arguments,
@@ -519,12 +524,12 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                 Some(match text {
                     Ok(text) => RigProtocolResult::text_feedback(text),
                     Err(error) => RigProtocolResult::retryable_error(format!(
-                        "错误：读取执行图失败：{error:#}"
+                        "错误：读取工作流失败：{error:#}"
                     )),
                 })
             }
-            "graph_node_update" => {
-                let outcome = super::project_graph_ops::intercept_graph_node_update(
+            "workflow_node_update" => {
+                let outcome = super::project_workflow_ops::intercept_workflow_node_update(
                     &self.db,
                     self.app_handle.as_ref(),
                     &self.workspace_id,
@@ -532,19 +537,19 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                 )
                 .await;
                 Some(match outcome {
-                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Applied { text }) => {
-                        RigProtocolResult::text_feedback(text)
-                    }
-                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Rejected { error }) => {
-                        RigProtocolResult::retryable_error(error)
-                    }
+                    Ok(super::project_workflow_ops::WorkflowNodeMutationOutcome::Applied {
+                        text,
+                    }) => RigProtocolResult::text_feedback(text),
+                    Ok(super::project_workflow_ops::WorkflowNodeMutationOutcome::Rejected {
+                        error,
+                    }) => RigProtocolResult::retryable_error(error),
                     Err(error) => RigProtocolResult::retryable_error(format!(
-                        "错误：执行图节点更新失败：{error:#}"
+                        "错误：工作流节点更新失败：{error:#}"
                     )),
                 })
             }
-            "graph_node_add" => {
-                let outcome = super::project_graph_ops::intercept_graph_node_add(
+            "workflow_node_add" => {
+                let outcome = super::project_workflow_ops::intercept_workflow_node_add(
                     &self.db,
                     self.app_handle.as_ref(),
                     &self.workspace_id,
@@ -552,19 +557,19 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                 )
                 .await;
                 Some(match outcome {
-                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Applied { text }) => {
-                        RigProtocolResult::text_feedback(text)
-                    }
-                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Rejected { error }) => {
-                        RigProtocolResult::retryable_error(error)
-                    }
+                    Ok(super::project_workflow_ops::WorkflowNodeMutationOutcome::Applied {
+                        text,
+                    }) => RigProtocolResult::text_feedback(text),
+                    Ok(super::project_workflow_ops::WorkflowNodeMutationOutcome::Rejected {
+                        error,
+                    }) => RigProtocolResult::retryable_error(error),
                     Err(error) => RigProtocolResult::retryable_error(format!(
-                        "错误：执行图节点新增失败：{error:#}"
+                        "错误：工作流节点新增失败：{error:#}"
                     )),
                 })
             }
-            "graph_node_delete" => {
-                let outcome = super::project_graph_ops::intercept_graph_node_delete(
+            "workflow_node_delete" => {
+                let outcome = super::project_workflow_ops::intercept_workflow_node_delete(
                     &self.db,
                     self.app_handle.as_ref(),
                     &self.workspace_id,
@@ -572,14 +577,14 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                 )
                 .await;
                 Some(match outcome {
-                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Applied { text }) => {
-                        RigProtocolResult::text_feedback(text)
-                    }
-                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Rejected { error }) => {
-                        RigProtocolResult::retryable_error(error)
-                    }
+                    Ok(super::project_workflow_ops::WorkflowNodeMutationOutcome::Applied {
+                        text,
+                    }) => RigProtocolResult::text_feedback(text),
+                    Ok(super::project_workflow_ops::WorkflowNodeMutationOutcome::Rejected {
+                        error,
+                    }) => RigProtocolResult::retryable_error(error),
                     Err(error) => RigProtocolResult::retryable_error(format!(
-                        "错误：执行图节点删除失败：{error:#}"
+                        "错误：工作流节点删除失败：{error:#}"
                     )),
                 })
             }
@@ -613,8 +618,8 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
         let mut sections = Vec::new();
         for action in actions {
             match action {
-                RigProtocolAction::GraphSubmitted { title, node_count } => sections.push(format!(
-                    "🗺️ 执行图《{title}》已生成并通过校验（{node_count} 个节点）。\n\n请在图面板中检查节点设计与任务指令，确认后开始执行。"
+                RigProtocolAction::WorkflowSubmitted { title, node_count } => sections.push(format!(
+                    "🗺️ 工作流《{title}》已生成并通过校验（{node_count} 个节点）。\n\n请在工作流面板中检查节点设计与任务指令，确认后开始执行。"
                 )),
             }
         }

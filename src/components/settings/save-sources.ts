@@ -7,7 +7,7 @@ import type { SaveSourceMode } from "./save-status";
  * SSH 服务器页与 MCP 页各自持有 400ms debounce 本地保存管线、RAG 配置页为
  * 手动保存，三者的保存进度不进入指示器——在 SSH 页保存失败时头部可能仍显示
  * 「已保存」。本注册表让各页把 {dirty/saving/hasError/mode} 快照发布到模块级
- * 单例（模式参照 use-aha-settings / graph-store），由指示器与关闭脏检查聚合消费。
+ * 单例（模式参照 use-aha-settings / workflow-store），由指示器与关闭脏检查聚合消费。
  *
  * 生命周期：页面挂载时 `registerSaveSource(id, flush)`、卸载时注销（返回的
  * 清理函数）；状态变化时 `publishSaveSource(id, status)` 推送快照。快照同值

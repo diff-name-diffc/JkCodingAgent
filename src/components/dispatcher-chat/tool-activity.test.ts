@@ -148,7 +148,7 @@ describe("categorizeTool", () => {
     ["grep", "search"],
     ["glob", "search"],
     ["call_sub_agent", "subagent"],
-    ["submit_graph", "graph"],
+    ["submit_workflow", "workflow"],
     ["run_tool_program", "program"],
     ["generate_image", "image"],
     ["edit_image", "image"],

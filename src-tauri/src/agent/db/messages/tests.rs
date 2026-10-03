@@ -194,7 +194,7 @@ fn image_reference_note_is_only_added_for_user_role() {
 // ── truncate_messages_from（regenerate / 编辑重发共用截断）─────────────
 
 #[test]
-fn truncate_messages_from_cleans_traces_and_graph_plans() {
+fn truncate_messages_from_cleans_traces_and_workflow_plans() {
     let db = test_db();
     let session = db
         .create_chat_session("truncate", Some("tech"))
@@ -251,38 +251,38 @@ fn truncate_messages_from_cleans_traces_and_graph_plans() {
     insert_trace("call-gone");
     insert_trace("call-pending");
 
-    // 图编排：新计划创建于目标消息之后（应随截断删除，级联 run/node_run/activity）；
+    // 工作流编排：新计划创建于目标消息之后（应随截断删除，级联 run/node_run/activity）；
     // 旧计划早于目标消息一小时（应保留）。
     let insert_plan = |id: &str, created_at_ms: i64| {
         conn.execute(
-            "INSERT INTO graph_plans (
+            "INSERT INTO workflow_plans (
                  id, workspace_id, title, definition_json, created_at, updated_at
              ) VALUES (?1, ?2, 'plan', '{}', ?3, ?3)",
             params![id, session.id, created_at_ms],
         )
-        .expect("insert graph plan");
+        .expect("insert workflow plan");
     };
     insert_plan("plan-old", target_ms - 3_600_000);
     insert_plan("plan-new", target_ms + 1_000);
     conn.execute(
-        "INSERT INTO graph_runs (id, plan_id, attempt_no, status, started_at)
+        "INSERT INTO workflow_runs (id, plan_id, attempt_no, status, started_at)
          VALUES ('run-1', 'plan-new', 1, 'succeeded', ?1)",
         params![target_ms],
     )
-    .expect("insert graph run");
+    .expect("insert workflow run");
     conn.execute(
-        "INSERT INTO graph_node_runs (
+        "INSERT INTO workflow_node_runs (
              run_id, plan_id, node_id, model_ref, model_label, model_category, base_tool_group
          ) VALUES ('run-1', 'plan-new', 'node-1', 'ref', 'label', 'chat', 'coder')",
         [],
     )
-    .expect("insert graph node run");
+    .expect("insert workflow node run");
     conn.execute(
-        "INSERT INTO graph_node_activities (id, run_id, node_id, sequence, kind, status, started_at)
+        "INSERT INTO workflow_node_activities (id, run_id, node_id, sequence, kind, status, started_at)
          VALUES ('act-1', 'run-1', 'node-1', 0, 'log', 'completed', ?1)",
         params![target_ms],
     )
-    .expect("insert graph node activity");
+    .expect("insert workflow node activity");
 
     // python 运行记录绑定被删消息，应随外键级联消失。
     conn.execute(
@@ -358,38 +358,38 @@ fn truncate_messages_from_cleans_traces_and_graph_plans() {
         ),
         1
     );
-    // 图编排：新计划连同 run/node_run/activity 级联删除，旧计划保留。
+    // 工作流编排：新计划连同 run/node_run/activity 级联删除，旧计划保留。
     assert_eq!(
         count(
-            "SELECT COUNT(*) FROM graph_plans WHERE workspace_id = ?1",
+            "SELECT COUNT(*) FROM workflow_plans WHERE workspace_id = ?1",
             &session.id
         ),
         1
     );
     assert_eq!(
         count(
-            "SELECT COUNT(*) FROM graph_plans WHERE id = 'plan-old' AND workspace_id = ?1",
+            "SELECT COUNT(*) FROM workflow_plans WHERE id = 'plan-old' AND workspace_id = ?1",
             &session.id
         ),
         1
     );
     assert_eq!(
         count(
-            "SELECT COUNT(*) FROM graph_runs WHERE plan_id = ?1",
+            "SELECT COUNT(*) FROM workflow_runs WHERE plan_id = ?1",
             "plan-new"
         ),
         0
     );
     assert_eq!(
         count(
-            "SELECT COUNT(*) FROM graph_node_runs WHERE plan_id = ?1",
+            "SELECT COUNT(*) FROM workflow_node_runs WHERE plan_id = ?1",
             "plan-new"
         ),
         0
     );
     assert_eq!(
         count(
-            "SELECT COUNT(*) FROM graph_node_activities WHERE run_id = ?1",
+            "SELECT COUNT(*) FROM workflow_node_activities WHERE run_id = ?1",
             "run-1"
         ),
         0

@@ -1,49 +1,49 @@
-//! 编排器协议工具（rig 壳工具）：`submit_graph` / `graph_plan_report` / `message`。
+//! 编排器协议工具（rig 壳工具）：`submit_workflow` / `workflow_plan_report` / `message`。
 //!
 //! 三者的定义（name/description/parameters）逐字迁移自旧
-//! 旧自实现工具层（已随迁移删除）的 submit_graph/graph_plan_report/shell；执行回调为
+//! 旧自实现工具层（已随迁移删除）的 submit_workflow/workflow_plan_report/shell；执行回调为
 //! fail-closed 兜底——真正的动作由 `RigOrchestratorProtocol`（宿主拦截）完成，
 //! 若因接线错误走到回调，以「错误：」暴露误用而不是返回假成功回执。
 
 use rig::tool::{PortableDynamicTool, ToolExecutionError};
 use serde_json::{json, Value};
 
-use crate::agent::graph::types::GRAPH_DEFINITION_VERSION;
+use crate::agent::workflow::types::WORKFLOW_DEFINITION_VERSION;
 
-/// `submit_graph`：提交执行图（编排器收口工具）。
-pub(crate) fn submit_graph_shell() -> PortableDynamicTool {
+/// `submit_workflow`：提交工作流（编排器收口工具）。
+pub(crate) fn submit_workflow_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
-        "submit_graph",
-        "提交任务执行图（DAG），这是复杂任务的收口方式。调用前必须已完成需求理解与必要的只读探索；提交后系统会校验图定义并登记为待确认计划，等待用户确认后由图运行器执行。每轮最多提交一次。",
-        submit_graph_parameters_schema(),
+        "submit_workflow",
+        "提交任务工作流（DAG），这是复杂任务的收口方式。调用前必须已完成需求理解与必要的只读探索；提交后系统会校验工作流定义并登记为待确认计划，等待用户确认后由工作流运行器执行。每轮最多提交一次。",
+        submit_workflow_parameters_schema(),
         |_args| {
             Box::pin(async move {
                 Err(ToolExecutionError::refused(
-                    "错误：submit_graph 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                    "错误：submit_workflow 仅支持在编排器拦截环境下运行，当前上下文不可用。",
                 ))
             })
         },
     )
 }
 
-/// `graph_plan_report`：读取最近一次执行图运行报告（反思闭环，不收口）。
-pub(crate) fn graph_plan_report_shell() -> PortableDynamicTool {
+/// `workflow_plan_report`：读取最近一次工作流运行报告（反思闭环，不收口）。
+pub(crate) fn workflow_plan_report_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
-        "graph_plan_report",
-        "读取当前会话最近一次执行图的运行报告：验收结论、各节点状态、节点输出摘要与失败原因。上次执行图失败或完成后，先用它了解执行情况，再决定答复用户或提交 inheritsFrom 修复图。",
+        "workflow_plan_report",
+        "读取当前会话最近一次工作流的运行报告：验收结论、各节点状态、节点输出摘要与失败原因。上次工作流失败或完成后，先用它了解执行情况，再决定答复用户或提交 inheritsFrom 修复工作流。",
         json!({
             "type": "object",
             "properties": {
                 "planId": {
                     "type": "string",
-                    "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                    "description": "可选：指定工作流计划 id；缺省取会话最近的工作流计划"
                 }
             }
         }),
         |_args| {
             Box::pin(async move {
                 Err(ToolExecutionError::refused(
-                    "错误：graph_plan_report 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                    "错误：workflow_plan_report 仅支持在编排器拦截环境下运行，当前上下文不可用。",
                 ))
             })
         },
@@ -54,7 +54,7 @@ pub(crate) fn graph_plan_report_shell() -> PortableDynamicTool {
 pub(crate) fn message_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
         "message",
-        "向用户发送本轮任务的最终答复。当任务不需要执行图（简单问答、信息查询、澄清说明）时，用它收口；需要执行图时用 submit_graph。",
+        "向用户发送本轮任务的最终答复。当任务不需要工作流（简单问答、信息查询、澄清说明）时，用它收口；需要工作流时用 submit_workflow。",
         json!({
             "type": "object",
             "properties": {
@@ -72,97 +72,97 @@ pub(crate) fn message_shell() -> PortableDynamicTool {
     )
 }
 
-/// `graph_result_read`：读取执行图执行结果（结构化结果的感知工具，不收口）。
-pub(crate) fn graph_result_read_shell() -> PortableDynamicTool {
+/// `workflow_result_read`：读取工作流执行结果（结构化结果的感知工具，不收口）。
+pub(crate) fn workflow_result_read_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
-        "graph_result_read",
-        "读取当前会话最近一次执行图的执行结果：结果类型（审查报告/执行结果）、验收结论、完整结论文本（审查类=问题清单，编辑类=执行总结）与修改文件清单。审查完成后要用结论规划修复/后续图，或需要向用户复述结果详情时，先用它拿到完整结论，再决定下一步。",
+        "workflow_result_read",
+        "读取当前会话最近一次工作流的执行结果：结果类型（审查报告/执行结果）、验收结论、完整结论文本（审查类=问题清单，编辑类=执行总结）与修改文件清单。审查完成后要用结论规划修复/后续工作流，或需要向用户复述结果详情时，先用它拿到完整结论，再决定下一步。",
         json!({
             "type": "object",
             "properties": {
                 "planId": {
                     "type": "string",
-                    "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                    "description": "可选：指定工作流计划 id；缺省取会话最近的工作流计划"
                 }
             }
         }),
         |_args| {
             Box::pin(async move {
                 Err(ToolExecutionError::refused(
-                    "错误：graph_result_read 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                    "错误：workflow_result_read 仅支持在编排器拦截环境下运行，当前上下文不可用。",
                 ))
             })
         },
     )
 }
 
-/// `graph_get`：读取执行图定义与状态（感知工具，不收口）。
-pub(crate) fn graph_get_shell() -> PortableDynamicTool {
+/// `workflow_get`：读取工作流定义与状态（感知工具，不收口）。
+pub(crate) fn workflow_get_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
-        "graph_get",
-        "读取当前会话执行图的完整定义与状态：节点任务、依赖、共享 state 键、最近运行摘要。上下文过长或被压缩后图细节可能丢失，需要时用它重新感知最新图信息，再决定答复、读报告或修复。",
+        "workflow_get",
+        "读取当前会话工作流的完整定义与状态：节点任务、依赖、共享 state 键、最近运行摘要。上下文过长或被压缩后工作流细节可能丢失，需要时用它重新感知最新工作流信息，再决定答复、读报告或修复。",
         json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
                 "planId": {
                     "type": "string",
-                    "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                    "description": "可选：指定工作流计划 id；缺省取会话最近的工作流计划"
                 }
             }
         }),
         |_args| {
             Box::pin(async move {
                 Err(ToolExecutionError::refused(
-                    "错误：graph_get 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                    "错误：workflow_get 仅支持在编排器拦截环境下运行，当前上下文不可用。",
                 ))
             })
         },
     )
 }
 
-/// `graph_node_update`：定点修改待确认图的单个节点（局部更新，不收口）。
-pub(crate) fn graph_node_update_shell() -> PortableDynamicTool {
+/// `workflow_node_update`：定点修改待确认工作流的单个节点（局部更新，不收口）。
+pub(crate) fn workflow_node_update_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
-        "graph_node_update",
-        "定点修正待确认（draft）执行图中的单个节点：patch 里提供哪个字段就替换哪个，未提供的字段保持不变（含 dependsOn，即改边）。仅 draft 态可用；图已开始执行后的修复请用 submit_graph + inheritsFrom 提交修复图。",
-        graph_node_update_parameters_schema(),
+        "workflow_node_update",
+        "定点修正待确认（draft）工作流中的单个节点：patch 里提供哪个字段就替换哪个，未提供的字段保持不变（含 dependsOn，即改边）。仅 draft 态可用；工作流已开始执行后的修复请用 submit_workflow + inheritsFrom 提交修复工作流。",
+        workflow_node_update_parameters_schema(),
         |_args| {
             Box::pin(async move {
                 Err(ToolExecutionError::refused(
-                    "错误：graph_node_update 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                    "错误：workflow_node_update 仅支持在编排器拦截环境下运行，当前上下文不可用。",
                 ))
             })
         },
     )
 }
 
-/// `graph_node_add`：向待确认图新增节点（可原子插入执行边中间）。
-pub(crate) fn graph_node_add_shell() -> PortableDynamicTool {
+/// `workflow_node_add`：向待确认工作流新增节点（可原子插入执行边中间）。
+pub(crate) fn workflow_node_add_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
-        "graph_node_add",
-        "向待确认（draft）执行图新增一个节点（须给完整节点定义）。insertBefore 可选：把指定节点的、指向本节点上游的依赖边改写为本节点，实现 A→B 中间插入为 A→新节点→B；不传则按 dependsOn 并行/尾部追加。仅 draft 态可用。",
-        graph_node_add_parameters_schema(),
+        "workflow_node_add",
+        "向待确认（draft）工作流新增一个节点（须给完整节点定义）。insertBefore 可选：把指定节点的、指向本节点上游的依赖边改写为本节点，实现 A→B 中间插入为 A→新节点→B；不传则按 dependsOn 并行/尾部追加。仅 draft 态可用。",
+        workflow_node_add_parameters_schema(),
         |_args| {
             Box::pin(async move {
                 Err(ToolExecutionError::refused(
-                    "错误：graph_node_add 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                    "错误：workflow_node_add 仅支持在编排器拦截环境下运行，当前上下文不可用。",
                 ))
             })
         },
     )
 }
 
-/// `graph_node_delete`：从待确认图删除节点（可选级联删除下游）。
-pub(crate) fn graph_node_delete_shell() -> PortableDynamicTool {
+/// `workflow_node_delete`：从待确认工作流删除节点（可选级联删除下游）。
+pub(crate) fn workflow_node_delete_shell() -> PortableDynamicTool {
     PortableDynamicTool::new(
-        "graph_node_delete",
-        "从待确认（draft）执行图删除节点。节点被下游依赖时默认拒绝并列出全部传递下游；确认需要连带清理时带 force=true，将级联删除依赖它的全部下游节点，保证图无悬空依赖。仅 draft 态可用。",
-        graph_node_delete_parameters_schema(),
+        "workflow_node_delete",
+        "从待确认（draft）工作流删除节点。节点被下游依赖时默认拒绝并列出全部传递下游；确认需要连带清理时带 force=true，将级联删除依赖它的全部下游节点，保证工作流无悬空依赖。仅 draft 态可用。",
+        workflow_node_delete_parameters_schema(),
         |_args| {
             Box::pin(async move {
                 Err(ToolExecutionError::refused(
-                    "错误：graph_node_delete 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                    "错误：workflow_node_delete 仅支持在编排器拦截环境下运行，当前上下文不可用。",
                 ))
             })
         },
@@ -173,13 +173,13 @@ pub(crate) fn graph_node_delete_shell() -> PortableDynamicTool {
 pub(crate) const ORCHESTRATOR_PROTOCOL_TOOL_NAMES: [&str; 9] = [
     "run_tool_program",
     "message",
-    "submit_graph",
-    "graph_plan_report",
-    "graph_result_read",
-    "graph_get",
-    "graph_node_update",
-    "graph_node_add",
-    "graph_node_delete",
+    "submit_workflow",
+    "workflow_plan_report",
+    "workflow_result_read",
+    "workflow_get",
+    "workflow_node_update",
+    "workflow_node_add",
+    "workflow_node_delete",
 ];
 
 fn bounded_identifier(description: &str) -> Value {
@@ -190,7 +190,7 @@ fn bounded_identifier(description: &str) -> Value {
     })
 }
 
-fn graph_node_schema() -> Value {
+fn workflow_node_schema() -> Value {
     let depends_on = json!({
         "type": "array",
         "maxItems": 20,
@@ -237,7 +237,7 @@ fn graph_node_schema() -> Value {
     })
 }
 
-fn graph_definition_schema() -> Value {
+fn workflow_definition_schema() -> Value {
     let inherits_from = json!({
         "type": "object",
         "additionalProperties": false,
@@ -260,9 +260,9 @@ fn graph_definition_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "description": "执行图定义；边由节点 dependsOn 派生，节点输出按 outputKey 写回共享 state。",
+        "description": "工作流定义；边由节点 dependsOn 派生，节点输出按 outputKey 写回共享 state。",
         "properties": {
-            "version": { "type": "integer", "enum": [GRAPH_DEFINITION_VERSION] },
+            "version": { "type": "integer", "enum": [WORKFLOW_DEFINITION_VERSION] },
             "title": { "type": "string", "minLength": 1, "maxLength": 200 },
             "summary": { "type": "string", "maxLength": 2000 },
             "inheritsFrom": inherits_from,
@@ -271,36 +271,33 @@ fn graph_definition_schema() -> Value {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 20,
-                "items": graph_node_schema(),
+                "items": workflow_node_schema(),
             },
         },
         "required": ["version", "title", "nodes"],
     })
 }
 
-fn submit_graph_parameters_schema() -> Value {
+fn submit_workflow_parameters_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "properties": { "definition": graph_definition_schema() },
+        "properties": { "definition": workflow_definition_schema() },
         "required": ["definition"],
     })
 }
 
-/// graph_node_update 的 patch 子 schema：复用节点 schema 的字段约束改为全
+/// workflow_node_update 的 patch 子 schema：复用节点 schema 的字段约束改为全
 /// 可选（minProperties=1 拒绝空 patch）；节点 id 不在 patch 面——id 是依赖
-/// 引用锚点，改 id 等同改图拓扑，应重提整图。
-fn graph_node_patch_schema() -> Value {
-    let mut node = graph_node_schema();
+/// 引用锚点，改 id 等同改工作流拓扑，应重提整个工作流。
+fn workflow_node_patch_schema() -> Value {
+    let mut node = workflow_node_schema();
     let object = node
         .as_object_mut()
-        .expect("graph_node_schema 恒为 object schema");
+        .expect("workflow_node_schema 恒为 object schema");
     // 节点 id 从 properties 中移除（additionalProperties=false 随即拒绝 patch
     // 携带 id）；required 清空 + minProperties=1 拒绝空 patch。
-    if let Some(properties) = object
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    {
+    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
         properties.remove("id");
     }
     object.insert("minProperties".into(), json!(1));
@@ -308,52 +305,52 @@ fn graph_node_patch_schema() -> Value {
     node
 }
 
-fn graph_node_update_parameters_schema() -> Value {
+fn workflow_node_update_parameters_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "planId": {
                 "type": "string",
-                "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                "description": "可选：指定工作流计划 id；缺省取会话最近的工作流计划"
             },
             "nodeId": bounded_identifier("要更新的节点 id"),
-            "patch": graph_node_patch_schema(),
+            "patch": workflow_node_patch_schema(),
         },
         "required": ["nodeId", "patch"],
     })
 }
 
-fn graph_node_add_parameters_schema() -> Value {
+fn workflow_node_add_parameters_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "planId": {
                 "type": "string",
-                "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                "description": "可选：指定工作流计划 id；缺省取会话最近的工作流计划"
             },
-            "node": graph_node_schema(),
+            "node": workflow_node_schema(),
             "insertBefore": {
                 "type": "array",
                 "maxItems": 20,
                 "uniqueItems": true,
                 "items": bounded_identifier("要改写依赖边的下游节点 id"),
-                "description": "可选：把这些节点对本节点上游的依赖边接管为本节点（中间插入）；不传则按 node.dependsOn 直接挂入图",
+                "description": "可选：把这些节点对本节点上游的依赖边接管为本节点（中间插入）；不传则按 node.dependsOn 直接挂入工作流",
             },
         },
         "required": ["node"],
     })
 }
 
-fn graph_node_delete_parameters_schema() -> Value {
+fn workflow_node_delete_parameters_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "planId": {
                 "type": "string",
-                "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                "description": "可选：指定工作流计划 id；缺省取会话最近的工作流计划"
             },
             "nodeId": bounded_identifier("要删除的节点 id"),
             "force": {
@@ -372,7 +369,7 @@ mod tests {
     fn minimal_definition() -> Value {
         json!({
             "definition": {
-                "version": GRAPH_DEFINITION_VERSION,
+                "version": WORKFLOW_DEFINITION_VERSION,
                 "title": "实现运行时工具",
                 "nodes": [{
                     "id": "n1",
@@ -389,7 +386,7 @@ mod tests {
     #[test]
     fn schema_is_strict_and_rejects_removed_or_unknown_fields() {
         let validator =
-            jsonschema::draft202012::new(&submit_graph_parameters_schema()).expect("schema");
+            jsonschema::draft202012::new(&submit_workflow_parameters_schema()).expect("schema");
         assert!(validator.is_valid(&minimal_definition()));
 
         let mut unknown_field = minimal_definition();
@@ -406,7 +403,7 @@ mod tests {
     #[test]
     fn schema_accepts_optional_use_plan_mode_boolean() {
         let validator =
-            jsonschema::draft202012::new(&submit_graph_parameters_schema()).expect("schema");
+            jsonschema::draft202012::new(&submit_workflow_parameters_schema()).expect("schema");
         let mut planned = minimal_definition();
         planned["definition"]["nodes"][0]["usePlanMode"] = json!(true);
         assert!(validator.is_valid(&planned));
@@ -416,9 +413,9 @@ mod tests {
     }
 
     #[test]
-    fn schema_enforces_graph_size_fields() {
+    fn schema_enforces_workflow_size_fields() {
         let validator =
-            jsonschema::draft202012::new(&submit_graph_parameters_schema()).expect("schema");
+            jsonschema::draft202012::new(&submit_workflow_parameters_schema()).expect("schema");
         let mut oversized = minimal_definition();
         oversized["definition"]["title"] = json!("x".repeat(201));
         oversized["definition"]["nodes"][0]["task"] = json!("x".repeat(32_001));
@@ -428,14 +425,14 @@ mod tests {
     #[tokio::test]
     async fn shells_are_fail_closed_without_host_interception() {
         for tool in [
-            submit_graph_shell(),
-            graph_plan_report_shell(),
-            graph_result_read_shell(),
+            submit_workflow_shell(),
+            workflow_plan_report_shell(),
+            workflow_result_read_shell(),
             message_shell(),
-            graph_get_shell(),
-            graph_node_update_shell(),
-            graph_node_add_shell(),
-            graph_node_delete_shell(),
+            workflow_get_shell(),
+            workflow_node_update_shell(),
+            workflow_node_add_shell(),
+            workflow_node_delete_shell(),
         ] {
             let error = tool
                 .execute(json!({}))
@@ -454,21 +451,21 @@ mod tests {
     #[test]
     fn orchestrator_tool_names_cover_all_shells() {
         let names = ORCHESTRATOR_PROTOCOL_TOOL_NAMES;
-        assert!(names.contains(&"submit_graph"));
-        assert!(names.contains(&"graph_plan_report"));
-        assert!(names.contains(&"graph_result_read"));
+        assert!(names.contains(&"submit_workflow"));
+        assert!(names.contains(&"workflow_plan_report"));
+        assert!(names.contains(&"workflow_result_read"));
         assert!(names.contains(&"message"));
         assert!(names.contains(&"run_tool_program"));
-        assert!(names.contains(&"graph_get"));
-        assert!(names.contains(&"graph_node_update"));
-        assert!(names.contains(&"graph_node_add"));
-        assert!(names.contains(&"graph_node_delete"));
+        assert!(names.contains(&"workflow_get"));
+        assert!(names.contains(&"workflow_node_update"));
+        assert!(names.contains(&"workflow_node_add"));
+        assert!(names.contains(&"workflow_node_delete"));
     }
 
     #[test]
     fn node_add_and_delete_schemas_are_strict() {
-        let add_validator = jsonschema::draft202012::new(&graph_node_add_parameters_schema())
-            .expect("schema");
+        let add_validator =
+            jsonschema::draft202012::new(&workflow_node_add_parameters_schema()).expect("schema");
         // 完整节点定义 + insertBefore 数组合法。
         let valid = json!({
             "node": {
@@ -491,7 +488,8 @@ mod tests {
         assert!(!add_validator.is_valid(&extra));
 
         let delete_validator =
-            jsonschema::draft202012::new(&graph_node_delete_parameters_schema()).expect("schema");
+            jsonschema::draft202012::new(&workflow_node_delete_parameters_schema())
+                .expect("schema");
         assert!(delete_validator.is_valid(&json!({ "nodeId": "n1", "force": true })));
         assert!(delete_validator.is_valid(&json!({ "nodeId": "n1" })));
         // 缺 nodeId / force 非布尔拒绝。
@@ -501,7 +499,7 @@ mod tests {
 
     #[test]
     fn node_update_patch_schema_is_strict_and_optional() {
-        let validator = jsonschema::draft202012::new(&graph_node_update_parameters_schema())
+        let validator = jsonschema::draft202012::new(&workflow_node_update_parameters_schema())
             .expect("schema");
         let valid = json!({
             "nodeId": "n1",
@@ -530,7 +528,7 @@ mod tests {
             .definition()
             .description
             .contains("最终答复"));
-        assert!(submit_graph_shell()
+        assert!(submit_workflow_shell()
             .definition()
             .description
             .contains("每轮最多提交一次"));

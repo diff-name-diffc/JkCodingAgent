@@ -20,7 +20,7 @@ const PURPOSE_GROUPS: Array<{
   {
     id: "project",
     title: "项目智能体",
-    description: "项目会话使用的对话、摘要与执行图验收模型。",
+    description: "项目会话使用的对话、摘要与工作流验收模型。",
     kinds: ["projectChat", "projectSummary", "projectVerifier"],
   },
   {

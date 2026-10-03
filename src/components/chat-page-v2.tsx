@@ -14,7 +14,7 @@ import { CategoryPickerState } from "./chat/category-picker-state";
 import type { ComposerMode } from "./chat/prompt-input";
 import { PlainChatHeader, ProjectChatHeader } from "./chat-page-v2/ChatPageHeaders";
 import { getUserMessagePayload } from "./chat-page-v2/message-utils";
-import { useGraphPanelController } from "./chat-page-v2/useGraphPanelController";
+import { useWorkflowPanelController } from "./chat-page-v2/useWorkflowPanelController";
 import { usePythonRunController } from "./chat-page-v2/usePythonRunController";
 import { useChatSessionController } from "./chat-page-v2/useChatSessionController";
 import { useChatMessages } from "./chat-page-v2/useChatMessages";
@@ -58,7 +58,7 @@ export interface ChatPageV2Props {
   onClosePanel?: () => void;
   embedded?: boolean;
   /** 多项目保活挂载时隐藏工作区为 false；据此关闭分支轮询等常驻副作用
-   * （执行图已迁主区标签，其保活门控由编辑 pane 的 active 承担，UI-13）。 */
+   * （工作流已迁主区标签，其保活门控由编辑 pane 的 active 承担，UI-13）。 */
   workspaceVisible?: boolean;
 }
 
@@ -158,7 +158,7 @@ export function ChatPageV2({
   // 多项目保活时页面同时挂载多套聊天 DOM，全局选择器会命中隐藏工作区。
   const shellContainerRef = useRef<HTMLDivElement>(null);
   const pythonRuns = usePythonRunController(activeSessionId, currentSessionIdRef);
-  const graphPanel = useGraphPanelController(activeSessionId, isPlainChat, currentSessionIdRef);
+  const workflowPanel = useWorkflowPanelController(activeSessionId, isPlainChat, currentSessionIdRef);
   // 头部任务语境（UI-11）：项目模式显示会话标题与当前分支；plain chat 传 null 关闭查询。
   const projectSessionTitle = useProjectSessionTitle(
     isPlainChat ? null : projectId,
@@ -169,7 +169,7 @@ export function ChatPageV2({
     !isPlainChat && workspaceVisible,
   );
   // 稳定引用：截断（regenerate / 编辑重发）后关闭旧画布并刷新「最近计划」入口。
-  const { close: closeGraphPanel, refreshLatestPlan } = graphPanel;
+  const { close: closeWorkflowPanel, refreshLatestPlan } = workflowPanel;
   const shouldStickToBottomRef = useRef(true);
 
   const scrollMessageListToBottom = useCallback(() => {
@@ -246,8 +246,8 @@ export function ChatPageV2({
           });
           setMessages((prev) => prev.slice(0, editIndex));
           setEditingMessageId(null);
-          // 截断已连带删除被删轮次的图计划：关闭旧画布并刷新「最近计划」入口。
-          closeGraphPanel();
+          // 截断已连带删除被删轮次的工作流计划：关闭旧画布并刷新「最近计划」入口。
+          closeWorkflowPanel();
           refreshLatestPlan();
           await actions.sendUserMessage(text, attachedImages, targetSessionId);
         } catch (err) {
@@ -266,7 +266,7 @@ export function ChatPageV2({
     activeSessionId,
     attachedImages,
     editingMessageId,
-    closeGraphPanel,
+    closeWorkflowPanel,
     input,
     isSubmittingEdit,
     messages,
@@ -357,8 +357,8 @@ export function ChatPageV2({
             messageId: message.id,
           });
           setMessages((prev) => prev.slice(0, messageIndex));
-          // 截断已连带删除被删轮次的图计划：关闭旧画布并刷新「最近计划」入口。
-          closeGraphPanel();
+          // 截断已连带删除被删轮次的工作流计划：关闭旧画布并刷新「最近计划」入口。
+          closeWorkflowPanel();
           refreshLatestPlan();
           await actions.sendUserMessage(text, images, activeSessionId);
         } catch (err) {
@@ -372,7 +372,7 @@ export function ChatPageV2({
     [
       actions,
       activeSessionId,
-      closeGraphPanel,
+      closeWorkflowPanel,
       isRunning,
       isSubmittingEdit,
       messages,
@@ -442,8 +442,8 @@ export function ChatPageV2({
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
       contextUsage={contextUsage}
-      graphAvailable={graphPanel.latestPlanId !== null}
-      onOpenGraphPanel={graphPanel.open}
+      workflowAvailable={workflowPanel.latestPlanId !== null}
+      onOpenWorkflowPanel={workflowPanel.open}
       onOpenMcpStatus={onOpenMcpStatus}
       onClearMessages={handleClearMessages}
       onOpenSettings={onOpenSettings}

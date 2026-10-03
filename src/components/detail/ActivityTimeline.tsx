@@ -19,7 +19,7 @@ export interface ActivityRow {
 /**
  * 简单活动时间线（UI-14 共享）：竖线 + 状态点 + 行内容。
  * 面向子智能体/Python 步骤这类十级~百级行数的列表；千级行数的
- * 图节点活动继续使用虚拟化 ExecutionTimelineList（量级决策，
+ * 工作流节点活动继续使用虚拟化 ExecutionTimelineList（量级决策，
  * 状态视觉经 status-meta/StatusPill 统一）。
  */
 export function ActivityTimeline({ rows }: { rows: ActivityRow[] }) {

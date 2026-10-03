@@ -1,6 +1,6 @@
 /**
  * 主区编辑pane标签纯 reducer（UI-09 建立，UI-13/18 扩展）：文件、Git diff、
- * 执行图与浏览器预览统一为同一标签体系，关闭/回退语义集中在此便于单测。
+ * 工作流与浏览器预览统一为同一标签体系，关闭/回退语义集中在此便于单测。
  * 组件侧（useProjectPanels）只做状态持有与副作用编排。
  */
 
@@ -10,20 +10,20 @@ export type OpenDiff =
   | { kind: "commit"; hash: string; message: string }
   | { kind: "commit-file"; hash: string; filePath: string; label: string };
 
-/** 图详情态的一级视图：canvas=执行图画布；result=执行结果（结论 md + 文件清单）。 */
-export type GraphPanelView = "canvas" | "result";
+/** 工作流详情态的一级视图：canvas=工作流画布；result=执行结果（结论 md + 文件清单）。 */
+export type WorkflowPanelView = "canvas" | "result";
 
-/** 详情态初始一级视图的缺省值——openGraphTab / openGraphPanel / handleOpenGraphTab
+/** 详情态初始一级视图的缺省值——openWorkflowTab / openWorkflowPanel / handleOpenWorkflowTab
  * 等各层签名的默认值共用此常量，避免 "canvas" 字面量多处散落漂移。 */
-export const DEFAULT_GRAPH_PANEL_VIEW: GraphPanelView = "canvas";
+export const DEFAULT_WORKFLOW_PANEL_VIEW: WorkflowPanelView = "canvas";
 
 export type EditorTab =
   | { id: string; kind: "file"; path: string; name: string }
   | { id: string; kind: "diff"; diff: OpenDiff }
-  /** 执行图工作视图（UI-13）：每会话单例标签，两级视图——planId 为 null 是
-   * 会话图列表态，非 null 是该图详情态；标签 id 稳定于 sessionId。详情态内
+  /** 工作流工作视图（UI-13）：每会话单例标签，两级视图——planId 为 null 是
+   * 会话工作流列表态，非 null 是该工作流详情态；标签 id 稳定于 sessionId。详情态内
    * 的初始一级视图由 view 指定（默认画布；列表行「结果」入口直达结果视图）。 */
-  | { id: string; kind: "graph"; sessionId: string; planId: string | null; view?: GraphPanelView }
+  | { id: string; kind: "workflow"; sessionId: string; planId: string | null; view?: WorkflowPanelView }
   /** 浏览器预览（UI-18）：工作区单例，内容跟随活动会话（与旧右面板语义一致；
    * 每会话 id 会在切会话后留下无法渲染的死壳标签）。 */
   | { id: string; kind: "browser"; title: string };
@@ -49,8 +49,8 @@ export function diffTabId(diff: OpenDiff): string {
   return `diff:commit:${diff.hash}`;
 }
 
-export function graphTabId(sessionId: string): string {
-  return `graph:${sessionId}`;
+export function workflowTabId(sessionId: string): string {
+  return `workflow:${sessionId}`;
 }
 
 /** 打开/激活文件标签（已存在则仅激活）。 */
@@ -97,23 +97,23 @@ export function selectTab(state: EditorTabsState, tabId: string): EditorTabsStat
 }
 
 /**
- * 打开/激活执行图标签（UI-13）：每会话至多一个图标签，两级视图——`planId`
- * 传 null 进入会话图列表态，传具体 id 切入该图详情态（同会话切换仅更新标签
+ * 打开/激活工作流标签（UI-13）：每会话至多一个工作流标签，两级视图——`planId`
+ * 传 null 进入会话工作流列表态，传具体 id 切入该工作流详情态（同会话切换仅更新标签
  * 的 planId 与 view，不新建标签；详情面板按 planId 全量重建获得干净状态）。
  * `view` 是详情态的初始一级视图（列表行「结果」入口传 "result" 直达）。
  * 同会话同 planId 同 view 且已激活时幂等返回，避免意图同步 effect 反复触发
  * 无谓渲染。
  */
-export function openGraphTab(
+export function openWorkflowTab(
   state: EditorTabsState,
   sessionId: string,
   planId: string | null,
-  view: GraphPanelView = DEFAULT_GRAPH_PANEL_VIEW,
+  view: WorkflowPanelView = DEFAULT_WORKFLOW_PANEL_VIEW,
 ): EditorTabsState {
-  const id = graphTabId(sessionId);
+  const id = workflowTabId(sessionId);
   const existing = state.tabs.find(
-    (tab): tab is Extract<EditorTab, { kind: "graph" }> =>
-      tab.id === id && tab.kind === "graph",
+    (tab): tab is Extract<EditorTab, { kind: "workflow" }> =>
+      tab.id === id && tab.kind === "workflow",
   );
   if (existing) {
     if (state.activeTabId === id && existing.planId === planId && existing.view === view) {
@@ -121,14 +121,14 @@ export function openGraphTab(
     }
     return {
       tabs: state.tabs.map((tab) =>
-        tab.id === id && tab.kind === "graph" ? { ...tab, planId, view } : tab,
+        tab.id === id && tab.kind === "workflow" ? { ...tab, planId, view } : tab,
       ),
       activeTabId: id,
     };
   }
   const tabs = [
-    ...state.tabs.filter((tab) => !(tab.kind === "graph" && tab.sessionId === sessionId)),
-    { id, kind: "graph" as const, planId, sessionId, view },
+    ...state.tabs.filter((tab) => !(tab.kind === "workflow" && tab.sessionId === sessionId)),
+    { id, kind: "workflow" as const, planId, sessionId, view },
   ];
   return { tabs, activeTabId: id };
 }

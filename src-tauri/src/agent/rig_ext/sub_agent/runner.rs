@@ -67,7 +67,7 @@ pub struct RigSubAgentRequest<'a> {
     pub parent_tool_call_id: &'a str,
     pub app_handle: Option<AppHandle>,
     pub session_id: &'a str,
-    /// 父级取消信号（图运行/父 run 取消时透传）。
+    /// 父级取消信号（工作流运行/父 run 取消时透传）。
     pub cancel_rx: Option<watch::Receiver<bool>>,
 }
 

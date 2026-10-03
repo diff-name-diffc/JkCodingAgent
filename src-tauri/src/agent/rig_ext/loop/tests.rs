@@ -424,8 +424,8 @@ impl ProtocolToolHandler for StubProtocolHandler {
             "finish_tool" => Some(RigProtocolResult {
                 text: "壳工具回显".to_string(),
                 retryable_error: false,
-                actions: vec![RigProtocolAction::GraphSubmitted {
-                    title: "测试图".to_string(),
+                actions: vec![RigProtocolAction::WorkflowSubmitted {
+                    title: "测试工作流".to_string(),
                     node_count: 2,
                 }],
                 final_message: arguments
@@ -448,9 +448,9 @@ impl ProtocolToolHandler for StubProtocolHandler {
         let mut sections = Vec::new();
         for action in actions {
             match action {
-                RigProtocolAction::GraphSubmitted { title, node_count } => sections.push(format!(
-                    "🗺️ 执行图《{title}》已生成并通过校验（{node_count} 个节点）。"
-                )),
+                RigProtocolAction::WorkflowSubmitted { title, node_count } => sections.push(
+                    format!("🗺️ 工作流《{title}》已生成并通过校验（{node_count} 个节点）。"),
+                ),
             }
         }
         if let Some(message) = final_message {
@@ -507,7 +507,7 @@ async fn protocol_action_closes_the_turn_with_a_synthesized_reply() {
 
     // 单轮：模型调用协议壳工具 + 最终答复；协议动作优先收口，不再请求模型。
     let model = MockCompletionModel::from_stream_turns([vec![
-        MockStreamEvent::text("提交图"),
+        MockStreamEvent::text("提交工作流"),
         MockStreamEvent::tool_call(
             "call-p1",
             "finish_tool",
@@ -524,7 +524,7 @@ async fn protocol_action_closes_the_turn_with_a_synthesized_reply() {
         &fixture.db,
         &fixture.workspace_id,
         &model,
-        vec![rig::completion::Message::user("出图")],
+        vec![rig::completion::Message::user("提交工作流")],
         Vec::new(),
         &surface,
         &DirectToolExecution,
@@ -541,7 +541,7 @@ async fn protocol_action_closes_the_turn_with_a_synthesized_reply() {
     assert_eq!(model.request_count(), 1);
     let text = reply.plain_text();
     assert!(
-        text.contains("执行图《测试图》已生成并通过校验（2 个节点）"),
+        text.contains("工作流《测试工作流》已生成并通过校验（2 个节点）"),
         "{text}"
     );
     assert!(text.contains("补充说明：\n补充说明文本"), "{text}");

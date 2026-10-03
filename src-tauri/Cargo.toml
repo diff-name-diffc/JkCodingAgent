@@ -83,12 +83,13 @@ split-debuginfo = "unpacked"
 incremental = true
 
 [profile.release]
-# 体积优先（构建时间让位）：
-# - strip：剥离符号表与调试信息，是 75MB 主二进制的最大单项体积来源；
-# - fat LTO + codegen-units=1：跨 crate 全图内联与死代码消除，比 thin/64
-#   再省 5~15%（代价是 release 链接阶段明显变慢，本图实测记录见提交说明）。
+# 构建时间优先（本地自用，无分发诉求，不做体积优先）：
+# - thin LTO + codegen-units=32：链接阶段保持并行且可增量，改代码后无需
+#   重走 fat LTO/CGU=1 的单线程全图优化（那会让每次构建多花数分钟）；
+#   代价是主二进制比 fat/CGU=1 大约 10%。
+# - strip：剥离符号表与调试信息，不花构建时间，体积纯收益，保留。
 # panic 保持 unwind：Tauri/wry 依赖 catch_unwind 收敛 panic，不能改 abort。
 panic = "unwind"
 strip = true
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 32

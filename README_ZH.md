@@ -37,10 +37,18 @@ xattr -rd com.apple.quarantine /Applications/JKCodingAgent.app
 ```bash
 pnpm install          # 安装依赖
 pnpm dev              # 启动 Vite 开发服务器（端口 1420）
-pnpm build            # TypeScript 类型检查 + Vite 打包
+pnpm typecheck        # TypeScript 类型检查（与打包解耦）
+pnpm build            # Vite 打包
 pnpm tauri dev        # 启动完整桌面应用（自动启动开发服务器）
 pnpm tauri build      # 构建生产环境桌面二进制包
+pnpm app:install      # 将构建产物覆盖安装到 /Applications
 ```
+
+> **⚠️ 升级到 v16 schema 基线须重置本地数据。** 数据库 schema 基线已按工作流
+> 口径重建（v16），旧版本构建产生的本地库**不可迁移**，启动时会被直接拒开。
+> 请退出应用后删除 `~/.jkcodingagent/jkbot.sqlite3`（连同 `-wal` / `-shm`
+> 残留文件）再重启，应用会重建全新数据库。库中的全部本地数据——会话、设置、
+> SSH 服务器、MCP 注册表——将一并清空且不可恢复，如有需要请先备份该文件。
 
 ## 技术栈
 

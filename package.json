@@ -15,9 +15,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
+    "typecheck": "tsc",
     "preview": "vite preview",
     "tauri": "tauri",
+    "app:install": "bash install-app.sh",
     "rag:dev": "cd rag && uv run python -m rag_server",
     "rag:sync": "cd rag && uv sync",
     "rag:build": "bash rag/scripts/build_sidecar.sh",

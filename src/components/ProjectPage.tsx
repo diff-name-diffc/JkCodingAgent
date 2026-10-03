@@ -8,7 +8,7 @@ import { StatusDockBar } from "./shell/StatusDockBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useProjectPanels } from "../hooks/useProjectPanels";
 import { useBrowserSessionLinkNav } from "../hooks/useBrowserSessionDock";
-import { useGraphTabSync } from "../hooks/useGraphTabSync";
+import { useWorkflowTabSync } from "../hooks/useWorkflowTabSync";
 import { useWorkspaceBudget } from "../hooks/useWorkspaceBudget";
 import { useGlobalShortcuts } from "../hooks/use-global-shortcuts";
 import type { ShortcutBinding } from "../lib/keyboard-bindings";
@@ -164,15 +164,15 @@ export function ProjectPage({
     setActiveSessionId(sessionId);
   }, []);
 
-  // 执行图意图 → 主区标签同步（UI-13）：store 的 graphPanel 是打开意图，
+  // 工作流意图 → 主区标签同步（UI-13）：store 的 workflowPanel 是打开意图，
   // 标签是渲染真值；关标签时按会话+计划匹配清除意图。
   // 放不下双栏时让出会话栏，否则标签写进状态后编辑区仍被会话挡住，点击像没反应。
   // openSeq 去重：还原会话后，回调身份变化不能把会话再抢走。
-  const handledGraphOpen = useRef(0);
-  const revealGraphPane = useCallback(
+  const handledWorkflowOpen = useRef(0);
+  const revealWorkflowPane = useCallback(
     (openSeq: number) => {
-      if (handledGraphOpen.current === openSeq) return;
-      handledGraphOpen.current = openSeq;
+      if (handledWorkflowOpen.current === openSeq) return;
+      handledWorkflowOpen.current = openSeq;
       const fits = editorFitsBesideSession({
         viewportWidth: window.innerWidth,
         viewportHeight: window.innerHeight,
@@ -192,14 +192,14 @@ export function ProjectPage({
       terminalHeight,
     ],
   );
-  const { closeGraphTab } = useGraphTabSync({
+  const { closeWorkflowTab } = useWorkflowTabSync({
     activeSessionId,
     editorTabs: panels.editorTabs,
-    onOpenGraphTab: panels.handleOpenGraphTab,
-    onCloseGraphTab: panels.handleCloseGraphTab,
-    onGraphOpenRequest: revealGraphPane,
+    onOpenWorkflowTab: panels.handleOpenWorkflowTab,
+    onCloseWorkflowTab: panels.handleCloseWorkflowTab,
+    onWorkflowOpenRequest: revealWorkflowPane,
   });
-  // 扩大/还原主区：收起/恢复会话 pane（执行图与浏览器标签共用，切换不触发重跑）。
+  // 扩大/还原主区：收起/恢复会话 pane（工作流与浏览器标签共用，切换不触发重跑）。
   const handleExpandMainArea = useCallback(() => {
     setSessionWorkbenchVisible((visible) => !visible);
   }, []);
@@ -344,7 +344,7 @@ export function ProjectPage({
       budget={budget}
       editorPaneRatio={editorPaneRatio}
       onEditorPaneRatioChange={setEditorPaneRatio}
-      onCloseGraphTab={closeGraphTab}
+      onCloseWorkflowTab={closeWorkflowTab}
       onExpandMainArea={handleExpandMainArea}
     />
   );

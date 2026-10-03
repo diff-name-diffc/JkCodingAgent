@@ -46,7 +46,7 @@ export const PURPOSE_DEFS: PurposeDef[] = [
   { kind: "embedding", title: "文本向量模型", description: "预留的向量模型配置。", testKind: "embedding", isModelListFetchable: true },
   { kind: "projectChat", title: "项目主模型", description: "项目对话和工具调用的主模型。", testKind: "chat", isModelListFetchable: true },
   { kind: "projectSummary", title: "项目摘要模型", description: "项目会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。", testKind: "summary", isModelListFetchable: true },
-  { kind: "projectVerifier", title: "项目验收模型", description: "执行图运行收尾的验收评审模型；留空时回退项目摘要模型。", testKind: "summary", isModelListFetchable: true },
+  { kind: "projectVerifier", title: "项目验收模型", description: "工作流运行收尾的验收评审模型；留空时回退项目摘要模型。", testKind: "summary", isModelListFetchable: true },
   { kind: "chatChat", title: "聊天主模型", description: "聊天对话和工具调用的主模型。", testKind: "chat", isModelListFetchable: true },
   { kind: "chatSummary", title: "聊天摘要模型", description: "聊天会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。", testKind: "summary", isModelListFetchable: true },
   { kind: "review", title: "SSH 审查模型", description: "SSH 命令执行前的安全审查模型。", testKind: "review", isModelListFetchable: true },

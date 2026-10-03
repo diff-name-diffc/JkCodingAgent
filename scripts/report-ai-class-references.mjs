@@ -10,10 +10,10 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".css"]);
 // 动态生成 `.ai-*` class 时必须在这里完整枚举所有实际 class，防止静态扫描误删。
 // 当前代码没有动态 `.ai-*` class；`is-*` 等状态 modifier 不属于本清单。
 const DYNAMIC_AI_CLASS_VALUES = new Map([
-  ["ai-graph-node--", ["pending", "running", "succeeded", "failed", "skipped", "cancelled"]],
-  ["ai-graph-notice-row--", ["running", "succeeded", "failed"]],
-  ["ai-graph-tool-card--", ["running", "succeeded", "failed"]],
-  ["ai-graph-edge--", ["waiting", "ready", "active", "done", "failed"]],
+  ["ai-workflow-node--", ["pending", "running", "succeeded", "failed", "skipped", "cancelled"]],
+  ["ai-workflow-notice-row--", ["running", "succeeded", "failed"]],
+  ["ai-workflow-tool-card--", ["running", "succeeded", "failed"]],
+  ["ai-workflow-edge--", ["waiting", "ready", "active", "done", "failed"]],
   ["ai-status-pill--", ["success", "error", "running", "warn", "neutral", "pending"]],
   ["ai-tool-call-node--", ["running", "success", "error", "planned"]],
   ["ai-activity-timeline-dot--", ["running", "success", "error", "neutral"]],

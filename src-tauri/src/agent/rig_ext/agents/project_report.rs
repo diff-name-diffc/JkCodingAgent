@@ -1,28 +1,28 @@
-//! `graph_plan_report` / `graph_result_read` 协议拦截：前者的图计划最近一次
+//! `workflow_plan_report` / `workflow_result_read` 协议拦截：前者的工作流计划最近一次
 //! 运行的紧凑报告（验收结论、各节点状态/输出摘要/错误、共享 state 键），后者
 //! 的结构化执行结果（结果类型、结论 md 全文、修改文件清单），作为工具结果
 //! 返回给编排器——支撑「失败 → 读报告」「审查完成 → 读结果 → 规划修复/
-//! 后续图」的反思闭环。
+//! 后续工作流」的反思闭环。
 //!
-//! 与 submit_graph 拦截不同：两者都不收口本轮，模型拿到内容后继续决策。
+//! 与 submit_workflow 拦截不同：两者都不收口本轮，模型拿到内容后继续决策。
 
 use anyhow::Result;
 use serde_json::Value;
 
 use super::plan_access::{latest_run_of, resolve_session_plan};
 use crate::agent::db::DispatcherDb;
-use crate::agent::graph::types::{
-    GraphNodeRunRecord, GraphRunResult, NODE_FAILED, NODE_PHASE_CACHED, NODE_SUCCEEDED,
+use crate::agent::workflow::types::{
+    WorkflowNodeRunRecord, WorkflowRunResult, NODE_FAILED, NODE_PHASE_CACHED, NODE_SUCCEEDED,
     PLAN_RUNNING, RESULT_KIND_EDIT, RESULT_KIND_REVIEW, RUN_MODE_FULL, RUN_MODE_RESUME,
     VERDICT_FAIL, VERDICT_PARTIAL, VERDICT_PASS,
 };
-use crate::agent::graph::GraphStore;
+use crate::agent::workflow::WorkflowStore;
 
 /// 报告节点输出摘要的最大字符数。
 const OUTPUT_PREVIEW_CHARS: usize = 400;
 const ERROR_PREVIEW_CHARS: usize = 300;
-/// graph_result_read 结论全文回读的截断上限。结论（问题清单/执行总结）是
-/// 模型规划后续图的依据，必须尽量保真——上限远大于报告的节点摘要；
+/// workflow_result_read 结论全文回读的截断上限。结论（问题清单/执行总结）是
+/// 模型规划后续工作流的依据，必须尽量保真——上限远大于报告的节点摘要；
 /// 超限截断并注明完整版位置。
 const CONCLUSION_MAX_CHARS: usize = 20_000;
 /// 修改文件清单的列出上限（与运行回执 receipt 的 40 个口径一致）。
@@ -45,14 +45,14 @@ fn verdict_label(verdict_status: &str, run_status: &str) -> String {
     }
 }
 
-/// graph_plan_report 拦截：返回运行报告文本（永不收口）。
-/// 无图计划/运行记录时返回说明性文本，模型可据此决定直接答复或重新出图。
+/// workflow_plan_report 拦截：返回运行报告文本（永不收口）。
+/// 无工作流计划/运行记录时返回说明性文本，模型可据此决定直接答复或重新提交工作流。
 pub(crate) async fn build_plan_report(
     db: &DispatcherDb,
     workspace_id: &str,
     arguments: &Value,
 ) -> Result<String> {
-    let store = GraphStore::new(db);
+    let store = WorkflowStore::new(db);
     let plan = match resolve_session_plan(&store, workspace_id, arguments).await? {
         Ok(plan) => plan,
         Err(guidance) => return Ok(guidance),
@@ -63,7 +63,7 @@ pub(crate) async fn build_plan_report(
     // 静默来自不同运行（审查项 G8-18）。
     let Some(latest_run) = latest_run_of(&plan) else {
         return Ok(format!(
-            "执行图《{}》（plan_id={}，状态 {}）尚未运行过。{}",
+            "工作流《{}》（plan_id={}，状态 {}）尚未运行过。{}",
             plan.title,
             plan.id,
             plan.status,
@@ -71,7 +71,7 @@ pub(crate) async fn build_plan_report(
         ));
     };
     let total_node_runs = plan.node_runs.len();
-    let node_runs: Vec<&GraphNodeRunRecord> = plan
+    let node_runs: Vec<&WorkflowNodeRunRecord> = plan
         .node_runs
         .iter()
         .filter(|record| record.run_id == latest_run.id)
@@ -92,21 +92,21 @@ pub(crate) async fn build_plan_report(
     ))
 }
 
-/// graph_result_read 拦截：返回执行结果文本（永不收口）。结论 md 来自 run
-/// 收尾的结构化落库（v11），完整回读供模型据结论规划修复/后续图。
+/// workflow_result_read 拦截：返回执行结果文本（永不收口）。结论 md 来自 run
+/// 收尾的结构化落库，完整回读供模型据结论规划修复/后续工作流。
 pub(crate) async fn build_result_read(
     db: &DispatcherDb,
     workspace_id: &str,
     arguments: &Value,
 ) -> Result<String> {
-    let store = GraphStore::new(db);
+    let store = WorkflowStore::new(db);
     let plan = match resolve_session_plan(&store, workspace_id, arguments).await? {
         Ok(plan) => plan,
         Err(guidance) => return Ok(guidance),
     };
     let Some(latest_run) = latest_run_of(&plan) else {
         return Ok(format!(
-            "执行图《{}》（plan_id={}，状态 {}）尚未运行过，还没有执行结果。{}",
+            "工作流《{}》（plan_id={}，状态 {}）尚未运行过，还没有执行结果。{}",
             plan.title,
             plan.id,
             plan.status,
@@ -134,14 +134,14 @@ fn build_result_text(
     run_status: &str,
     verdict_status: &str,
     verdict_reason: &str,
-    result: Option<&GraphRunResult>,
+    result: Option<&WorkflowRunResult>,
 ) -> String {
     let verdict = verdict_label(verdict_status, run_status);
     let Some(result) = result else {
         return format!(
-            "执行图《{title}》（plan_id={plan_id}）第 {attempt_no} 次运行没有结构化执行结果\
+            "工作流《{title}》（plan_id={plan_id}）第 {attempt_no} 次运行没有结构化执行结果\
              （结果记录上线前的历史运行或被取消的运行）。验收：{verdict}。\n\
-             需要节点级成败与失败原因请改用 graph_plan_report。"
+             需要节点级成败与失败原因请改用 workflow_plan_report。"
         );
     };
     let kind_label = match result.result_kind.as_str() {
@@ -150,7 +150,7 @@ fn build_result_text(
         _ => "未知类型",
     };
     let mut lines = vec![format!(
-        "执行图《{title}》（plan_id={plan_id}）执行结果：第 {attempt_no} 次运行 · {kind_label} · 验收：{verdict}"
+        "工作流《{title}》（plan_id={plan_id}）执行结果：第 {attempt_no} 次运行 · {kind_label} · 验收：{verdict}"
     )];
     if !verdict_reason.trim().is_empty() {
         lines.push(format!("验收理由：{}", verdict_reason.trim()));
@@ -167,7 +167,7 @@ fn build_result_text(
                 lines.push(source);
                 lines.push(head);
                 lines.push(format!(
-                    "…（结论共 {total} 字符，已截断；完整内容见执行图面板的执行结果视图）"
+                    "…（结论共 {total} 字符，已截断；完整内容见工作流面板的执行结果视图）"
                 ));
             } else {
                 lines.push(source);
@@ -177,7 +177,7 @@ fn build_result_text(
         _ => {
             lines.push("结论：汇总节点未成功产出结论文本。".to_string());
             lines.push(
-                "各节点输出摘要与失败原因可用 graph_plan_report 查看；完整节点输出可在图面板点开节点查看。"
+                "各节点输出摘要与失败原因可用 workflow_plan_report 查看；完整节点输出可在工作流面板点开节点查看。"
                     .to_string(),
             );
         }
@@ -192,7 +192,10 @@ fn build_result_text(
             .collect();
         lines.push(format!("修改文件（{total} 个）：{}", listed.join("、")));
         if total > MODIFIED_FILES_LIMIT {
-            lines.push(format!("…另有 {} 个文件未列出", total - MODIFIED_FILES_LIMIT));
+            lines.push(format!(
+                "…另有 {} 个文件未列出",
+                total - MODIFIED_FILES_LIMIT
+            ));
         }
     }
     lines.join("\n")
@@ -208,12 +211,12 @@ fn build_report(
     run_status: &str,
     verdict_status: &str,
     verdict_reason: &str,
-    node_runs: &[&GraphNodeRunRecord],
+    node_runs: &[&WorkflowNodeRunRecord],
     state_json: &str,
     node_run_mismatch: bool,
 ) -> String {
     let mut lines = vec![format!(
-        "执行图《{title}》（plan_id={plan_id}）计划状态：{plan_status}"
+        "工作流《{title}》（plan_id={plan_id}）计划状态：{plan_status}"
     )];
     // 显式枚举运行模式：未来新增模式时落入「未知模式」而不是被静默描述为完整执行。
     let mode_note = match mode {
@@ -233,7 +236,7 @@ fn build_report(
         // 防御性告警：节点明细与报告头运行不同源（正常不应发生），
         // 已按报告头运行过滤，避免把其他运行的明细混入本报告。
         lines.push(
-            "警告：部分节点明细与最近运行不一致，已按最近运行过滤；节点详情请以图面板为准。"
+            "警告：部分节点明细与最近运行不一致，已按最近运行过滤；节点详情请以工作流面板为准。"
                 .to_string(),
         );
     }
@@ -246,7 +249,7 @@ fn build_report(
         match record.status.as_str() {
             NODE_SUCCEEDED => {
                 let summary =
-                    crate::agent::graph::input::extract_summary_section(&record.output_text)
+                    crate::agent::workflow::input::extract_summary_section(&record.output_text)
                         .unwrap_or_else(|| record.output_text.clone());
                 let summary: String = summary.chars().take(OUTPUT_PREVIEW_CHARS).collect();
                 lines.push(format!(
@@ -269,8 +272,8 @@ fn build_report(
             }
         }
     }
-    // state 解析失败不能静默吞掉：模型据报告决定是否提交 inheritsFrom 修复图，
-    // 丢失 state 键信息会导致修复图 injectStateKeys 无从引用。
+    // state 解析失败不能静默吞掉：模型据报告决定是否提交 inheritsFrom 修复工作流，
+    // 丢失 state 键信息会导致修复工作流 injectStateKeys 无从引用。
     // 防御（审查项 G8-16）：空串/纯空白等价于无 state 键，静默跳过不告警，
     // 避免与真实损坏数据混淆、误导模型放弃可用的 inheritsFrom 修复。
     if !state_json.trim().is_empty() {
@@ -282,11 +285,11 @@ fn build_report(
                     .unwrap_or_default();
                 if !state_keys.is_empty() {
                     lines.push(format!("共享 state 键：{}", state_keys.join("、")));
-                    lines.push("提示：修复图可通过 inheritsFrom 继承本计划的共享 state，并用 injectStateKeys 引用上述键；失败节点之外的成功成果无需重做。".to_string());
+                    lines.push("提示：修复工作流可通过 inheritsFrom 继承本计划的共享 state，并用 injectStateKeys 引用上述键；失败节点之外的成功成果无需重做。".to_string());
                 }
             }
             Err(error) => {
-                lines.push(format!("警告：共享 state 解析失败（{error}），无法列出可用 state 键；修复图请谨慎使用 inheritsFrom。"));
+                lines.push(format!("警告：共享 state 解析失败（{error}），无法列出可用 state 键；修复工作流请谨慎使用 inheritsFrom。"));
             }
         }
     }
@@ -296,12 +299,12 @@ fn build_report(
 #[cfg(test)]
 mod tests {
     use super::{build_report, build_result_text};
-    use crate::agent::graph::types::{
-        GraphNodeRunRecord, GraphRunResult, RESULT_KIND_EDIT, RESULT_KIND_REVIEW,
+    use crate::agent::workflow::types::{
+        WorkflowNodeRunRecord, WorkflowRunResult, RESULT_KIND_EDIT, RESULT_KIND_REVIEW,
     };
 
-    fn node_run(node_id: &str, run_id: &str, status: &str) -> GraphNodeRunRecord {
-        GraphNodeRunRecord {
+    fn node_run(node_id: &str, run_id: &str, status: &str) -> WorkflowNodeRunRecord {
+        WorkflowNodeRunRecord {
             run_id: run_id.to_string(),
             plan_id: "plan-1".to_string(),
             node_id: node_id.to_string(),
@@ -328,7 +331,7 @@ mod tests {
         let runs = [node_run("n1", "run-1", "succeeded")];
         let refs = runs.iter().collect::<Vec<_>>();
         build_report(
-            "测试图",
+            "测试工作流",
             "plan-1",
             "completed",
             1,
@@ -373,7 +376,7 @@ mod tests {
         let runs = [node_run("n1", "run-1", "succeeded")];
         let refs = runs.iter().collect::<Vec<_>>();
         let report = build_report(
-            "测试图",
+            "测试工作流",
             "plan-1",
             "completed",
             1,
@@ -393,8 +396,8 @@ mod tests {
         conclusion_node_id: Option<&str>,
         conclusion_md: Option<&str>,
         modified_files: &[&str],
-    ) -> GraphRunResult {
-        GraphRunResult {
+    ) -> WorkflowRunResult {
+        WorkflowRunResult {
             conclusion_node_id: conclusion_node_id.map(str::to_string),
             conclusion_md: conclusion_md.map(str::to_string),
             result_kind: kind.to_string(),
@@ -410,7 +413,15 @@ mod tests {
             Some("## 审查结论\n- 问题 A（P0）：连接池未释放\n- 问题 B：缺少超时"),
             &["src/a.rs", "docs/report.md"],
         );
-        let text = build_result_text("审查图", "plan-9", 2, "completed", "pass", "产出完整", Some(&result));
+        let text = build_result_text(
+            "审查工作流",
+            "plan-9",
+            2,
+            "completed",
+            "pass",
+            "产出完整",
+            Some(&result),
+        );
         assert!(text.contains("审查报告（调研审查类）"));
         assert!(text.contains("第 2 次运行"));
         assert!(text.contains("验收：验收通过"));
@@ -424,8 +435,21 @@ mod tests {
 
     #[test]
     fn result_text_edit_kind_label() {
-        let result = result_of(RESULT_KIND_EDIT, Some("n3"), Some("## 执行总结\n完成"), &["src/a.rs"]);
-        let text = build_result_text("改造图", "plan-1", 1, "completed", "partial", "", Some(&result));
+        let result = result_of(
+            RESULT_KIND_EDIT,
+            Some("n3"),
+            Some("## 执行总结\n完成"),
+            &["src/a.rs"],
+        );
+        let text = build_result_text(
+            "改造工作流",
+            "plan-1",
+            1,
+            "completed",
+            "partial",
+            "",
+            Some(&result),
+        );
         assert!(text.contains("执行结果（编辑写入类）"));
         assert!(text.contains("验收：部分达成"));
         assert!(!text.contains("验收理由"));
@@ -433,24 +457,40 @@ mod tests {
 
     #[test]
     fn result_text_none_result_guides_to_report() {
-        let text = build_result_text("旧图", "plan-1", 1, "completed", "fail", "", None);
+        let text = build_result_text("旧工作流", "plan-1", 1, "completed", "fail", "", None);
         assert!(text.contains("没有结构化执行结果"));
-        assert!(text.contains("graph_plan_report"));
+        assert!(text.contains("workflow_plan_report"));
     }
 
     #[test]
     fn result_text_missing_conclusion_guides_to_nodes() {
         let result = result_of(RESULT_KIND_EDIT, Some("summary"), None, &[]);
-        let text = build_result_text("失败图", "plan-1", 1, "failed", "fail", "汇总节点失败", Some(&result));
+        let text = build_result_text(
+            "失败工作流",
+            "plan-1",
+            1,
+            "failed",
+            "fail",
+            "汇总节点失败",
+            Some(&result),
+        );
         assert!(text.contains("汇总节点未成功产出结论文本"));
-        assert!(text.contains("graph_plan_report"));
+        assert!(text.contains("workflow_plan_report"));
     }
 
     #[test]
     fn result_text_truncates_oversized_conclusion() {
         let conclusion = "问".repeat(super::CONCLUSION_MAX_CHARS + 500);
         let result = result_of(RESULT_KIND_REVIEW, Some("summary"), Some(&conclusion), &[]);
-        let text = build_result_text("大图", "plan-1", 1, "completed", "pass", "", Some(&result));
+        let text = build_result_text(
+            "大工作流",
+            "plan-1",
+            1,
+            "completed",
+            "pass",
+            "",
+            Some(&result),
+        );
         assert!(text.contains("已截断"));
         // 截断后正文不超过上限（含提示行也远小于原文）。
         assert!(text.chars().count() < conclusion.chars().count());
@@ -462,7 +502,15 @@ mod tests {
         let files: Vec<String> = (0..45).map(|index| format!("src/f{index}.rs")).collect();
         let files_ref: Vec<&str> = files.iter().map(String::as_str).collect();
         let result = result_of(RESULT_KIND_EDIT, Some("n"), Some("结论"), &files_ref);
-        let text = build_result_text("宽改图", "plan-1", 1, "completed", "pass", "", Some(&result));
+        let text = build_result_text(
+            "宽改工作流",
+            "plan-1",
+            1,
+            "completed",
+            "pass",
+            "",
+            Some(&result),
+        );
         assert!(text.contains("修改文件（45 个）："));
         assert!(text.contains("…另有 5 个文件未列出"));
     }

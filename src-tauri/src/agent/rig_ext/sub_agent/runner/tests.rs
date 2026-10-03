@@ -101,7 +101,7 @@ fn surface_offers_progress_tool_and_rejects_nested_sub_agents() {
     assert!(error.contains("不允许递归调用子智能体工具"), "{error}");
 
     // 不可用工具名（编排器专属）在构建期报错，而不是运行期静默缺失。
-    let unavailable = config(vec!["submit_graph"]);
+    let unavailable = config(vec!["submit_workflow"]);
     let error = RigSubAgentRuntime::build(&RigSubAgentRequest {
         config: &unavailable,
         parent_spec: &parent_spec,

@@ -8,7 +8,7 @@
 //! - `program`：run_tool_program（进程内 JavaScript 编排调用方注入的数据面工具）；
 //! - `mcp`：MCP 动态工具桥（`mcp__<server>__<tool>`）。
 //!
-//! 协议类工具（submit_graph / graph_plan_report / architecture_run /
+//! 协议类工具（submit_workflow / workflow_plan_report / architecture_run /
 //! notify_user_progress / 子智能体工具）不在本层——它们在各 agent 工厂就近
 //! 定义（与各自的 runtime 拦截逻辑同源）。
 //!

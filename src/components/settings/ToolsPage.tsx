@@ -32,7 +32,7 @@ export function ToolsPage() {
       {tab === "project" ? (
         <Section
           title="项目运行时能力"
-          description="项目智能体通过受限运行时可代理的只读能力；答复、提交执行图等控制工具始终可用。"
+          description="项目智能体通过受限运行时可代理的只读能力；答复、提交工作流等控制工具始终可用。"
         >
           <ToolsTab
             context="project"

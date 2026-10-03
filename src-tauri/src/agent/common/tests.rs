@@ -78,7 +78,7 @@ fn filters_process_only_assistant_messages() {
     )));
     assert!(!should_keep_llm_message(&chat_message(
         "assistant",
-        "📋 已提交 执行图，等待确认"
+        "📋 已提交 工作流，等待确认"
     )));
 }
 

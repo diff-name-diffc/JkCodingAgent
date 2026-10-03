@@ -6,7 +6,7 @@ import { isTopOverlay, peekOverlay, popOverlay, pushOverlay, shouldHandleEscape 
  *
  * active 期间把 id 压入全局覆盖层栈（cleanup 保证弹出）；window keydown 中
  * 仅当自己是栈顶且事件未被更内层（Radix 弹层等）处理时响应——「嵌套弹层
- * Escape 只处理最顶层」。底层快捷键（use-chat-shortcuts / GraphPanel 等）
+ * Escape 只处理最顶层」。底层快捷键（use-chat-shortcuts / WorkflowPanel 等）
  * 依据 hasOpenOverlay() 让路，消除一次按键同时关闭多层的「双关」。
  *
  * Radix 弹层不进本栈：它们走 DismissableLayer 自己的分支栈，与本栈覆盖层

@@ -51,6 +51,9 @@ jobs:
       - name: Report custom AI class references
         run: pnpm styles:report
 
+      - name: Run frontend typecheck
+        run: pnpm typecheck
+
       - name: Run web build
         run: pnpm build
 

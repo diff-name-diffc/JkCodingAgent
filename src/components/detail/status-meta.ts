@@ -2,18 +2,18 @@
  * 状态双编码映射（UI-12 建立，UI-13/14/18/20 共用）。
  *
  * tone 驱动 StatusPill 的配色与图标形状，label 复用各领域的既有中文文案
- * （graph 两域直接引用 graph-utils 的 PLAN/NODE_STATUS_META，保持单一出处）。
+ * （workflow 两域直接引用 workflow-utils 的 PLAN/NODE_STATUS_META，保持单一出处）。
  * 未知状态一律回退 neutral + 原文——绝不虚构成功（tokens.md §5 评审结论 4：
  * 状态色一律双编码「图标 + 文字」，不得只靠彩点）。
  */
-import { NODE_STATUS_META, PLAN_STATUS_META } from "../graph/graph-utils";
+import { NODE_STATUS_META, PLAN_STATUS_META } from "../workflow/workflow-utils";
 
 export type StatusTone = "success" | "error" | "running" | "warn" | "neutral" | "pending";
 
 export type StatusDomain =
   | "tool"
-  | "graph-node"
-  | "graph-plan"
+  | "workflow-node"
+  | "workflow-plan"
   | "python"
   | "subagent"
   | "verdict"
@@ -33,7 +33,7 @@ const TOOL_STATUS: Record<string, StatusMeta> = {
   error: { tone: "error", label: "失败" },
 };
 
-const GRAPH_NODE_STATUS: Record<string, StatusMeta> = {
+const WORKFLOW_NODE_STATUS: Record<string, StatusMeta> = {
   pending: { tone: "pending", label: NODE_STATUS_META.pending.label },
   running: { tone: "running", label: NODE_STATUS_META.running.label },
   succeeded: { tone: "success", label: NODE_STATUS_META.succeeded.label },
@@ -42,7 +42,7 @@ const GRAPH_NODE_STATUS: Record<string, StatusMeta> = {
   cancelled: { tone: "warn", label: NODE_STATUS_META.cancelled.label },
 };
 
-const GRAPH_PLAN_STATUS: Record<string, StatusMeta> = {
+const WORKFLOW_PLAN_STATUS: Record<string, StatusMeta> = {
   draft: { tone: "pending", label: PLAN_STATUS_META.draft.label },
   running: { tone: "running", label: PLAN_STATUS_META.running.label },
   completed: { tone: "success", label: PLAN_STATUS_META.completed.label },
@@ -65,9 +65,9 @@ const SUBAGENT_STATUS: Record<string, StatusMeta> = {
   failed: { tone: "error", label: "失败" },
 };
 
-/** GraphRunSummary.verdictStatus：运行结果之外的独立验收结论。
+/** WorkflowRunSummary.verdictStatus：运行结果之外的独立验收结论。
  * unknown 默认「未能验收」（终态但验证器未给出结论）；运行中尚无验收
- * 对象的场景由调用方以 label 覆盖为「验收未开始」（GraphPanelHeader）。 */
+ * 对象的场景由调用方以 label 覆盖为「验收未开始」（WorkflowPanelHeader）。 */
 const VERDICT_STATUS: Record<string, StatusMeta> = {
   pass: { tone: "success", label: "验收通过" },
   partial: { tone: "warn", label: "部分通过" },
@@ -104,8 +104,8 @@ const MCP_SERVER_STATUS: Record<string, StatusMeta> = {
 
 const DOMAIN_STATUS: Record<StatusDomain, Record<string, StatusMeta>> = {
   tool: TOOL_STATUS,
-  "graph-node": GRAPH_NODE_STATUS,
-  "graph-plan": GRAPH_PLAN_STATUS,
+  "workflow-node": WORKFLOW_NODE_STATUS,
+  "workflow-plan": WORKFLOW_PLAN_STATUS,
   python: PYTHON_STATUS,
   subagent: SUBAGENT_STATUS,
   verdict: VERDICT_STATUS,

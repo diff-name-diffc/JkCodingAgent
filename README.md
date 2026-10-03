@@ -37,10 +37,20 @@ xattr -rd com.apple.quarantine /Applications/JKCodingAgent.app
 ```bash
 pnpm install          # Install dependencies
 pnpm dev              # Start Vite dev server (port 1420)
-pnpm build            # TypeScript check + Vite build
+pnpm typecheck        # TypeScript check (separate from build)
+pnpm build            # Vite build
 pnpm tauri dev        # Launch full desktop app (auto-starts dev server)
 pnpm tauri build      # Build production desktop binary
+pnpm app:install      # Install the built .app to /Applications (overwrite)
 ```
+
+> **⚠️ Upgrading to the v16 schema baseline requires a local data reset.** The
+> database schema baseline was rebuilt (workflow-era v16); databases created by
+> older builds **cannot be migrated** and will be refused at startup. Quit the
+> app and delete `~/.jkcodingagent/jkbot.sqlite3` (along with any `-wal` /
+> `-shm` sidecar files), then relaunch to recreate a fresh database. All local
+> data stored there — sessions, settings, SSH servers, MCP registry — will be
+> reset and is not recoverable, so back up the file first if needed.
 
 ## Tech Stack
 

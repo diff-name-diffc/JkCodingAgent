@@ -1,8 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { McpStatus, OpenSettingsOptions, Project } from "../../types";
 import type { useProjectPanels } from "../../hooks/useProjectPanels";
-import type { GraphTab } from "../../hooks/useGraphTabSync";
-import { DEFAULT_GRAPH_PANEL_VIEW } from "./main-tabs";
+import type { WorkflowTab } from "../../hooks/useWorkflowTabSync";
+import { DEFAULT_WORKFLOW_PANEL_VIEW } from "./main-tabs";
 import { splitDualPaneWidths, type WorkspaceBudget } from "./workspace-budget";
 import { nextSplitterValue, splitterKeyDelta } from "../../lib/splitter-step";
 import { ChatPageV2 } from "../chat-page-v2";
@@ -18,12 +18,12 @@ const FileViewer = lazy(() =>
 const GitDiffViewer = lazy(() =>
   import("../GitDiffViewer").then((module) => ({ default: module.GitDiffViewer })),
 );
-const GraphPanel = lazy(() =>
-  import("../graph/GraphPanel").then((module) => ({ default: module.GraphPanel })),
+const WorkflowPanel = lazy(() =>
+  import("../workflow/WorkflowPanel").then((module) => ({ default: module.WorkflowPanel })),
 );
-const GraphPlanListView = lazy(() =>
-  import("../graph/GraphPlanListView").then((module) => ({
-    default: module.GraphPlanListView,
+const WorkflowPlanListView = lazy(() =>
+  import("../workflow/WorkflowPlanListView").then((module) => ({
+    default: module.WorkflowPlanListView,
   })),
 );
 const BrowserPanel = lazy(() =>
@@ -45,15 +45,15 @@ interface ProjectWorkbenchContentProps {
   onOpenMcpStatus: () => void;
   onOpenSettings: (options?: OpenSettingsOptions) => void;
   /** 工作区是否可见（保活隐藏时为 false）：门控聊天侧常驻副作用与
-   * 主区标签视图（执行图等）的快捷键/自适应响应。 */
+   * 主区标签视图（工作流等）的快捷键/自适应响应。 */
   workspaceVisible: boolean;
   /** 空间预算（UI-04）：双栏/单栏与像素宽由纯函数模块决定。 */
   budget: WorkspaceBudget;
   editorPaneRatio: number;
   onEditorPaneRatioChange: (ratio: number) => void;
-  /** 关闭执行图标签（UI-13；由 useGraphTabSync 提供，同步清除打开意图）。 */
-  onCloseGraphTab: (tab: GraphTab) => void;
-  /** 扩大/还原主区（收起/恢复会话 pane），执行图与浏览器标签共用。 */
+  /** 关闭工作流标签（UI-13；由 useWorkflowTabSync 提供，同步清除打开意图）。 */
+  onCloseWorkflowTab: (tab: WorkflowTab) => void;
+  /** 扩大/还原主区（收起/恢复会话 pane），工作流与浏览器标签共用。 */
   onExpandMainArea: () => void;
 }
 
@@ -73,18 +73,18 @@ export function ProjectWorkbenchContent({
   budget,
   editorPaneRatio,
   onEditorPaneRatioChange,
-  onCloseGraphTab,
+  onCloseWorkflowTab,
   onExpandMainArea,
 }: ProjectWorkbenchContentProps) {
   const workspaceSplitRef = useRef<HTMLDivElement>(null);
-  // 图详情「返回列表」走意图通道（与列表→详情同一双向通道，useGraphTabSync 消费）。
-  const openGraphPanel = useWorkspaceStore((state) => state.openGraphPanel);
-  // UI-13：编辑区内容判定收敛到 useProjectPanels 单一派生值（含 file/diff/graph 标签）。
+  // 工作流详情「返回列表」走意图通道（与列表→详情同一双向通道，useWorkflowTabSync 消费）。
+  const openWorkflowPanel = useWorkspaceStore((state) => state.openWorkflowPanel);
+  // UI-13：编辑区内容判定收敛到 useProjectPanels 单一派生值（含 file/diff/workflow 标签）。
   const hasEditorContent = panels.hasEditorContent;
   const editorRequested = panels.editorWorkbenchVisible && hasEditorContent;
-  // 先取出图标签（JSX 闭包内联合类型收窄不保留）。
-  const activeGraphTab =
-    panels.activeEditorTab?.kind === "graph" ? panels.activeEditorTab : null;
+  // 先取出工作流标签（JSX 闭包内联合类型收窄不保留）。
+  const activeWorkflowTab =
+    panels.activeEditorTab?.kind === "workflow" ? panels.activeEditorTab : null;
   // 预算降级为单栏时：会话面板优先；用户主动收起会话后编辑区独占。
   const dual = budget.dualPane && sessionWorkbenchVisible && editorRequested;
   const showSessionPane = dual || sessionWorkbenchVisible;
@@ -243,31 +243,31 @@ export function ProjectWorkbenchContent({
       )}
     >
       <Suspense fallback={<ProjectLazyPaneFallback label="编辑器加载中..." />}>
-        {activeGraphTab ? (
-          activeGraphTab.planId ? (
-            <GraphPanel
-              planId={activeGraphTab.planId}
-              sessionId={activeGraphTab.sessionId}
+        {activeWorkflowTab ? (
+          activeWorkflowTab.planId ? (
+            <WorkflowPanel
+              planId={activeWorkflowTab.planId}
+              sessionId={activeWorkflowTab.sessionId}
               active={workspaceVisible && showEditorPane}
-              onClose={() => onCloseGraphTab(activeGraphTab)}
-              onBackToList={() => openGraphPanel(activeGraphTab.sessionId, null)}
+              onClose={() => onCloseWorkflowTab(activeWorkflowTab)}
+              onBackToList={() => openWorkflowPanel(activeWorkflowTab.sessionId, null)}
               onExpandMainArea={onExpandMainArea}
               mainAreaExpanded={!sessionWorkbenchVisible}
-              initialView={activeGraphTab.view ?? DEFAULT_GRAPH_PANEL_VIEW}
+              initialView={activeWorkflowTab.view ?? DEFAULT_WORKFLOW_PANEL_VIEW}
               onOpenFile={panels.handleFileSelect}
             />
           ) : (
-            <GraphPlanListView
-              sessionId={activeGraphTab.sessionId}
+            <WorkflowPlanListView
+              sessionId={activeWorkflowTab.sessionId}
               active={workspaceVisible && showEditorPane}
-              onClose={() => onCloseGraphTab(activeGraphTab)}
+              onClose={() => onCloseWorkflowTab(activeWorkflowTab)}
               onExpandMainArea={onExpandMainArea}
               mainAreaExpanded={!sessionWorkbenchVisible}
             />
           )
         ) : panels.activeEditorTab?.kind === "browser" ? (
           /* 浏览器预览标签（UI-18）：内容跟随活动会话；关标签=隐藏面板不停进程；
-             扩大按钮与执行图同语义（收起会话 pane 占满主区）。 */
+             扩大按钮与工作流同语义（收起会话 pane 占满主区）。 */
           <BrowserPanel
             sessionId={activeSessionId}
             projectPath={project.path}

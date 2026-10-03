@@ -10,7 +10,7 @@ import {
 
 // 模块级栈是单例：每个用例先清空，保证隔离。
 function reset() {
-  for (const id of ["a", "b", "c", "command-palette", "graph-node-drawer"]) {
+  for (const id of ["a", "b", "c", "command-palette", "workflow-node-drawer"]) {
     popOverlay(id);
   }
 }
@@ -103,10 +103,10 @@ describe("「一键双关」回归场景（UI-23b）", () => {
     expect(shouldHandleEscape(peekOverlay(), "command-palette", false)).toBe(false);
   });
 
-  it("执行图节点抽屉在 Artifact 之上：只有抽屉响应 Escape", () => {
+  it("工作流节点抽屉在 Artifact 之上：只有抽屉响应 Escape", () => {
     reset();
-    pushOverlay("graph-node-drawer");
-    expect(shouldHandleEscape(peekOverlay(), "graph-node-drawer", false)).toBe(true);
+    pushOverlay("workflow-node-drawer");
+    expect(shouldHandleEscape(peekOverlay(), "workflow-node-drawer", false)).toBe(true);
     expect(hasOpenOverlay()).toBe(true);
     reset();
   });

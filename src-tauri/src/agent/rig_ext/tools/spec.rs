@@ -100,7 +100,7 @@ impl ToolAccess {
     };
 
     /// 非只读但不直接落盘/变更外部状态：效果由对应子系统托管
-    /// （message 最终消息、submit_graph / graph_plan_report 协议壳、
+    /// （message 最终消息、submit_workflow / workflow_plan_report 协议壳、
     /// notify_user_progress / call_sub_agent 子智能体调度）。
     pub const SUBSYSTEM_MANAGED: Self = Self {
         readonly: false,
@@ -628,8 +628,8 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
     // 备忘录工具的读写集固定在应用自管的备忘录目录
     // （~/.jkcodingagent/ssh-memos/）：路径由 validate_server_id 白名单拼接、
     // 有全文/单段字符硬上限（超限拒绝写盘），没有任意路径选择或任意执行能力，
-    // 因此写侧按 SUBSYSTEM_MANAGED 声明（同 message/submit_graph 的「效果由
-    // 对应子系统托管」语义）——写收窄授权（子智能体/图节点 expectedFiles）
+    // 因此写侧按 SUBSYSTEM_MANAGED 声明（同 message/submit_workflow 的「效果由
+    // 对应子系统托管」语义）——写收窄授权（子智能体/工作流节点 expectedFiles）
     // 下 mutates_filesystem 工具会被 fail-closed 拒绝，而备忘录写入不属于
     // 工作区写集，也不应被工作区授权拦截。
     policy_row(
@@ -687,7 +687,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::SERIAL,
         ClaimResource::External,
     ),
-    // ── 图编排协议壳 ──
+    // ── 工作流编排协议壳 ──
     // 外层运行时只看到这一次程序调用。子步骤是程序里的绑定调用：
     // 授权以注入的数据面为准，参数在每次调用时按该工具的 JSON Schema 校验。
     // 该入口仅在项目编排器注册。
@@ -701,7 +701,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ClaimResource::External,
     ),
     policy_row(
-        "submit_graph",
+        "submit_workflow",
         ToolCategory::Other,
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
@@ -710,7 +710,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ClaimResource::External,
     ),
     policy_row(
-        "graph_plan_report",
+        "workflow_plan_report",
         ToolCategory::Other,
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
@@ -718,11 +718,11 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::SERIAL,
         ClaimResource::External,
     ),
-    // graph_result_read：宿主拦截的执行结果回读（结论 md 全文 + 修改文件
+    // workflow_result_read：宿主拦截的执行结果回读（结论 md 全文 + 修改文件
     // 清单）。不声明 compress——LLM 压缩会把问题清单摘要掉，违背工具目的；
     // 超长结论由拦截层确定性截断（CONCLUSION_MAX_CHARS）。
     policy_row(
-        "graph_result_read",
+        "workflow_result_read",
         ToolCategory::Other,
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
@@ -730,11 +730,11 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::SERIAL,
         ClaimResource::External,
     ),
-    // graph_get / graph_node_{update,add,delete}：宿主拦截的读感知与 draft 图
+    // workflow_get / workflow_node_{update,add,delete}：宿主拦截的读感知与 draft 工作流
     // 节点级 CRUD，效果由协议处理器托管（同上 SUBSYSTEM_MANAGED 语义），
     // 与报告工具同口径。
     policy_row(
-        "graph_get",
+        "workflow_get",
         ToolCategory::Other,
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
@@ -743,7 +743,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ClaimResource::External,
     ),
     policy_row(
-        "graph_node_update",
+        "workflow_node_update",
         ToolCategory::Other,
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
@@ -752,7 +752,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ClaimResource::External,
     ),
     policy_row(
-        "graph_node_add",
+        "workflow_node_add",
         ToolCategory::Other,
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
@@ -761,7 +761,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ClaimResource::External,
     ),
     policy_row(
-        "graph_node_delete",
+        "workflow_node_delete",
         ToolCategory::Other,
         ToolAccess::SUBSYSTEM_MANAGED,
         ToolSafety::Safe,
@@ -891,7 +891,9 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{claim_resource, ClaimResource, ToolCategory, ToolSafety, ToolSpec, TOOL_POLICY_TABLE};
+    use super::{
+        claim_resource, ClaimResource, ToolCategory, ToolSafety, ToolSpec, TOOL_POLICY_TABLE,
+    };
 
     fn spec_for(name: &str) -> ToolSpec {
         ToolSpec::new(
@@ -1112,7 +1114,7 @@ mod tests {
             assert_eq!(spec.safety, ToolSafety::Safe);
             // 写集固定在应用自管的备忘录目录，由工具自约束（见策略表注释）：
             // 不得声明 mutates_filesystem，否则会被写收窄授权
-            // （子智能体/图节点 expectedFiles）fail-closed 拒绝。
+            // （子智能体/工作流节点 expectedFiles）fail-closed 拒绝。
             assert!(!spec.access.readonly);
             assert!(!spec.access.mutates_filesystem);
             assert!(!spec.access.mutates_external_state);
@@ -1189,7 +1191,7 @@ mod tests {
             ClaimResource::SshServerAndWorkspace
         );
         assert_eq!(claim_resource("message"), ClaimResource::External);
-        assert_eq!(claim_resource("graph_get"), ClaimResource::External);
+        assert_eq!(claim_resource("workflow_get"), ClaimResource::External);
         // 未登记名字 fail-closed。
         assert_eq!(claim_resource("write_file"), ClaimResource::External);
     }

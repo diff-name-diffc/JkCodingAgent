@@ -16,7 +16,7 @@ import { useDeferredContent } from "./use-deferred-content";
 
 /**
  * 遗留 react-markdown 管线的实现（文件查看器 / 子智能体结果 / Python 运行
- * 记录 / 图节点输出）。经 ./MarkdownRenderer.tsx 的 lazy 外壳按需加载，
+ * 记录 / 工作流节点输出）。经 ./MarkdownRenderer.tsx 的 lazy 外壳按需加载，
  * 不要新增对本文件的静态 import。
  *
  * 这些表面只渲染终态 markdown，不接 Python 运行按钮与流式参数——那是

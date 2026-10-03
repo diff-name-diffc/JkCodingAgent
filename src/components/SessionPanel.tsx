@@ -2,6 +2,9 @@ import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle, MoreHorizontal } from "lucide-react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cleanupDispatcherSession } from "./dispatcherSessionStore";
+import { cleanupSubAgentEvents } from "./subAgentEventStore";
+import { cleanupWorkflowPlansForSession } from "./workflow/workflow-store";
+import { useWorkspaceStore } from "../stores/workspace-store";
 import type { Project } from "../types";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { formatRelativeTime } from "../utils";
@@ -207,7 +210,12 @@ export function SessionPanel({
 
       try {
         await deleteProjectSession({ sessionId: id, projectId: project.id });
+        // 与项目级删除（App.tsx）同口径：模块级内存 store 按 sessionId 累积，
+        // 须逐项清理——工作流快照清理还会登记墓碑，拦截晚到的 IPC 事件复活快照。
         cleanupDispatcherSession(id);
+        cleanupSubAgentEvents(id);
+        cleanupWorkflowPlansForSession(id);
+        useWorkspaceStore.getState().clearWorkflowView(id);
         const remaining = sessionsRef.current.filter((session) => session.id !== id);
         if (activeSessionIdRef.current === id) {
           onSelectSession(remaining[0]?.id ?? null);

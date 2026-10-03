@@ -1,4 +1,4 @@
-use super::{ActiveRunCleanup, ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
+use super::{ActiveRunCleanup, ActiveRunStore, ArchRunRegistry, WorkflowRunRegistry};
 use std::sync::Arc;
 
 #[test]
@@ -87,8 +87,8 @@ fn is_running_and_active_run_ids_track_entries_per_workspace() {
 }
 
 #[test]
-fn graph_run_reentry_rejected_and_finish_requires_dead_receivers() {
-    let registry = GraphRunRegistry::default();
+fn workflow_run_reentry_rejected_and_finish_requires_dead_receivers() {
+    let registry = WorkflowRunRegistry::default();
     let handle = registry.begin("plan-1").unwrap();
     assert!(registry.begin("plan-1").is_err());
 
@@ -104,10 +104,10 @@ fn graph_run_reentry_rejected_and_finish_requires_dead_receivers() {
 }
 
 #[test]
-fn graph_run_slot_reclaimed_after_receivers_gone() {
+fn workflow_run_slot_reclaimed_after_receivers_gone() {
     // G11-09 兜底：finish 未到达（句柄丢失/panic 路径）时，
     // 接收端归零后下一次 begin 回收槽位，同一 plan 可再次启动。
-    let registry = GraphRunRegistry::default();
+    let registry = WorkflowRunRegistry::default();
     let handle = registry.begin("plan-1").unwrap();
     drop(handle.resume_rx);
     drop(handle.cancel_rx);
@@ -117,7 +117,7 @@ fn graph_run_slot_reclaimed_after_receivers_gone() {
 
 #[tokio::test]
 async fn resume_is_deduplicated_and_refused_after_cancel() {
-    let registry = GraphRunRegistry::default();
+    let registry = WorkflowRunRegistry::default();
     let mut handle = registry.begin("plan-1").unwrap();
 
     // 第一个 resume 缓冲成功（暂停前到达不丢失）；重复信号去重。

@@ -1,0 +1,26 @@
+//! 工作流编排（Workflow Orchestrator）模块。
+//!
+//! 项目 Agent 的核心产物是工作流（DAG）：编排阶段由 rig 项目编排 Agent
+//! （`rig_ext::agents::project`）通过
+//! `submit_workflow` 工具产出 `WorkflowDefinition`（v4），经 `validate` 结构+语义校验后落库；
+//! 执行阶段由 `runner` 驱动 `scheduler` 的 ready-queue 状态机调度 `acp_exec`
+//! 节点执行器（每节点一个 claude-agent-acp 子进程；依赖驱动、失败重试一次、
+//! 断点续跑、高危写检查点），节点间通过共享 state 流转数据；收尾由 `verifier`
+//! 产出验收结论、`receipt` 把执行回执写回会话消息，完成「规划 → 执行 →
+//! 验证 → 反思」闭环。
+//! 全程通过 `workflow-run-event` 全局广播进展。
+
+pub(crate) mod acp_exec;
+pub(crate) mod commands;
+pub(crate) mod harness;
+pub(crate) mod input;
+pub(crate) mod node_task;
+pub(crate) mod receipt;
+pub(crate) mod runner;
+pub(crate) mod scheduler;
+pub(crate) mod store;
+pub mod types;
+pub(crate) mod validate;
+pub(crate) mod verifier;
+
+pub(crate) use store::WorkflowStore;

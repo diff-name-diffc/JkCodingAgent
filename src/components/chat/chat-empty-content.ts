@@ -3,7 +3,7 @@
  *
  * 三个主入口分别有贴合语境的起步提示，不再共用同一套通用空态：
  *   - plain（普通聊天）：独立聊天工作区，不绑定项目——通用问答/写作/贴代码分析。
- *   - project（项目）：绑定项目仓库——可读写项目文件、看 Git 变更、产出执行图。
+ *   - project（项目）：绑定项目仓库——可读写项目文件、看 Git 变更、产出工作流。
  *   - architecture（架构）：绘图任务示例，见 ArchitectureChatPanel 的 ARCH_EMPTY_STATE。
  *
  * 纯数据 + 纯函数，无组件依赖，便于单测与复用。
@@ -31,15 +31,15 @@ export const PLAIN_CHAT_EMPTY_STATE: Required<ChatEmptyStateContent> = {
   ],
 };
 
-/** 项目会话：绑定项目仓库，起步提示偏向项目文件 / Git 变更 / 执行图。 */
+/** 项目会话：绑定项目仓库，起步提示偏向项目文件 / Git 变更 / 工作流。 */
 export const PROJECT_CHAT_EMPTY_STATE: Required<ChatEmptyStateContent> = {
   title: "在这个项目里开始一个任务",
-  copy: "Agent 可以读取与修改项目文件、运行命令、产出执行图，并在这里汇总改了什么、如何验证。",
+  copy: "Agent 可以读取与修改项目文件、运行命令、产出工作流，并在这里汇总改了什么、如何验证。",
   prompts: [
     "梳理这个项目的目录结构，说明主要模块与职责",
     "审查当前 Git 变更，总结改了什么、有哪些风险",
     "为最近改动的代码补充单元测试并运行验证",
-    "把这个需求拆成执行图，分步实现并自检",
+    "把这个需求拆成工作流，分步实现并自检",
   ],
 };
 

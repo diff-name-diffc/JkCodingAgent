@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NODE_STATUS_META, PLAN_STATUS_META } from "../graph/graph-utils";
+import { NODE_STATUS_META, PLAN_STATUS_META } from "../workflow/workflow-utils";
 import { resolveStatusMeta } from "./status-meta";
 
 describe("resolveStatusMeta", () => {
@@ -10,23 +10,23 @@ describe("resolveStatusMeta", () => {
     expect(resolveStatusMeta("tool", "error")).toEqual({ tone: "error", label: "失败" });
   });
 
-  it("graph-node 域与 NODE_STATUS_META 标签一致", () => {
+  it("workflow-node 域与 NODE_STATUS_META 标签一致", () => {
     for (const status of ["pending", "running", "succeeded", "failed", "skipped", "cancelled"]) {
-      expect(resolveStatusMeta("graph-node", status).label).toBe(
+      expect(resolveStatusMeta("workflow-node", status).label).toBe(
         NODE_STATUS_META[status as keyof typeof NODE_STATUS_META].label,
       );
     }
-    expect(resolveStatusMeta("graph-node", "failed").tone).toBe("error");
-    expect(resolveStatusMeta("graph-node", "pending").tone).toBe("pending");
+    expect(resolveStatusMeta("workflow-node", "failed").tone).toBe("error");
+    expect(resolveStatusMeta("workflow-node", "pending").tone).toBe("pending");
   });
 
-  it("graph-plan 域与 PLAN_STATUS_META 标签一致", () => {
+  it("workflow-plan 域与 PLAN_STATUS_META 标签一致", () => {
     for (const status of ["draft", "running", "completed", "failed", "cancelled"]) {
-      expect(resolveStatusMeta("graph-plan", status).label).toBe(
+      expect(resolveStatusMeta("workflow-plan", status).label).toBe(
         PLAN_STATUS_META[status as keyof typeof PLAN_STATUS_META].label,
       );
     }
-    expect(resolveStatusMeta("graph-plan", "cancelled").tone).toBe("warn");
+    expect(resolveStatusMeta("workflow-plan", "cancelled").tone).toBe("warn");
   });
 
   it("python 域含 stopped/idle，failed 为 error tone", () => {

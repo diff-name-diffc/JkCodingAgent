@@ -16,7 +16,7 @@ use rusqlite::{params, Transaction};
 use super::content::delete_chat_image_resources;
 
 /// 在事务内删除会话的全部从属资源（不删会话行本身）：
-/// tool 产物/运行、子智能体 trace、图编排产物、token 用量、图片记录、
+/// tool 产物/运行、子智能体 trace、工作流编排产物、token 用量、图片记录、
 /// 关键字、历史滚动摘要与消息。`python_code_runs` / `chat_images` 行由
 /// 消息外键级联，这里显式删 chat_images 是为了拿回图片目录路径供提交后回收。
 ///
@@ -41,18 +41,18 @@ pub(crate) fn purge_session_resources_tx(
         params![workspace_id],
     )
     .context("purge sub-agent run traces")?;
-    // 图编排产物（graph_plans / graph_node_runs）随会话清理同步删除。
+    // 工作流编排产物（workflow_plans / workflow_node_runs）随会话清理同步删除。
     tx.execute(
-        "DELETE FROM graph_node_runs
-         WHERE plan_id IN (SELECT id FROM graph_plans WHERE workspace_id = ?1)",
+        "DELETE FROM workflow_node_runs
+         WHERE plan_id IN (SELECT id FROM workflow_plans WHERE workspace_id = ?1)",
         params![workspace_id],
     )
-    .context("purge graph node runs")?;
+    .context("purge workflow node runs")?;
     tx.execute(
-        "DELETE FROM graph_plans WHERE workspace_id = ?1",
+        "DELETE FROM workflow_plans WHERE workspace_id = ?1",
         params![workspace_id],
     )
-    .context("purge graph plans")?;
+    .context("purge workflow plans")?;
     tx.execute(
         "DELETE FROM dispatcher_session_token_usage WHERE workspace_id = ?1",
         params![workspace_id],
@@ -64,7 +64,7 @@ pub(crate) fn purge_session_resources_tx(
         params![workspace_id],
     )
     .context("purge session keywords")?;
-    // 历史滚动摘要（v6）：摘要文本是已删消息的派生物，随会话资源一并回收。
+    // 历史滚动摘要：摘要文本是已删消息的派生物，随会话资源一并回收。
     tx.execute(
         "DELETE FROM dispatcher_session_summaries WHERE workspace_id = ?1",
         params![workspace_id],

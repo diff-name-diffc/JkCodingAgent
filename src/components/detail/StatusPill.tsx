@@ -4,7 +4,7 @@ import { resolveStatusMeta, type StatusDomain, type StatusTone } from "./status-
 
 /**
  * 状态双编码 pill（图标形状 + 文字，配色走 tone）——tokens.md §5 评审结论 4
- * 的统一落点：工具卡、聚合摘要行、执行图、子智能体、Python 状态共用。
+ * 的统一落点：工具卡、聚合摘要行、工作流、子智能体、Python 状态共用。
  */
 const TONE_ICON: Record<StatusTone, LucideIcon> = {
   success: Check,

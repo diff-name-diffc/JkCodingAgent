@@ -6,7 +6,7 @@ use crate::agent::rig_ext::tools::spec::ClaimResource;
 const UNSCOPED_WORKSPACE: &str = "/";
 
 /// 资源域用的工作区根：canonical 形态才能与 `File(..)` 声明（同为 canonical）做包含判定，
-/// 也才能与图运行的工作区根写租约比对。解析失败退回词法归一化结果（仅作身份，不做包含判定）。
+/// 也才能与工作流运行的工作区根写租约比对。解析失败退回词法归一化结果（仅作身份，不做包含判定）。
 fn workspace_scope(root: &std::path::Path) -> std::path::PathBuf {
     crate::agent::rig_ext::tools::common::canonicalize_existing_prefix(root)
         .unwrap_or_else(|_| crate::agent::rig_ext::tools::common::lexical_normalize(root))
@@ -302,7 +302,10 @@ mod tests {
         );
         assert!(matches!(
             &claims[..],
-            [Claim { resource: Resource::External, write: true }]
+            [Claim {
+                resource: Resource::External,
+                write: true
+            }]
         ));
     }
 

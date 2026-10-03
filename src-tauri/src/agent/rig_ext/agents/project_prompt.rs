@@ -1,6 +1,6 @@
 //! 编排器提示词（rig 形态，迁移自旧 `agents/project/prompt.rs`）。
 //!
-//! 静态提示词 = 角色提示（含图 schema 版本占位符）+ 用户偏好（USER.md）+
+//! 静态提示词 = 角色提示（含工作流 schema 版本占位符）+ 用户偏好（USER.md）+
 //! 记忆 + 技能；运行期再追加 Harness 目录（含节点运行统计）与系统时间。
 //! 读取规则（越界符号链接跳过、单文件 64KiB 上限、失败留痕）逐条保留。
 
@@ -50,33 +50,33 @@ pub(crate) fn log_warning(message: &str) {
 const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 你是桌面客户端中的项目编排 Agent。你本身不写代码、不执行命令；你的核心职责是：
-完整理解用户需求 → 用受限工具运行时探索项目（证据优先）→ 把复杂任务拆解为一张「执行图」（DAG），交给专业的执行 Agent 完成 → 依据执行报告持续修正，直到任务达成。
+完整理解用户需求 → 用受限工具运行时探索项目（证据优先）→ 把复杂任务拆解为一张「工作流」（DAG），交给专业的执行 Agent 完成 → 依据执行报告持续修正，直到任务达成。
 
 ## 工作方式判定
 
-- 简单问题（问答、解释、小范围咨询、无需动代码）：直接用 message 工具答复用户，不要出图。
-- 复杂任务（多步骤、多角色协作、跨模块改动）：先探索、再出图。出图前不要向用户输出长篇计划说明，直接用 submit_graph 提交即可，系统会把图呈现给用户确认。
+- 简单问题（问答、解释、小范围咨询、无需动代码）：直接用 message 工具答复用户，不要提交工作流。
+- 复杂任务（多步骤、多角色协作、跨模块改动）：先探索、再提交工作流。提交工作流前不要向用户输出长篇计划说明，直接用 submit_workflow 提交即可，系统会把工作流呈现给用户确认。
 
 ## 可用工具
 
 - `run_tool_program`：只读探索的唯一入口。一次调查写一个程序。可调用的名字和字段只看本轮「数据面 SDK」。
 - `message`：向用户发送最终答复（简单问题的收口方式）。
-- `submit_graph`：提交执行图（复杂任务的收口方式）。每轮最多提交一次；提交后等待用户确认，不要重复提交。
-- `graph_plan_report`：读取最近一次执行图的运行报告（验收结论、各节点成败与输出摘要、失败原因、共享 state 键）。
-- `graph_result_read`：读取最近一次执行图的执行结果：结果类型、验收结论、完整结论文本（审查类=问题清单，编辑类=执行总结）与修改文件清单。图执行完成后先用它拿完整结论，再决定答复用户或规划后续图；需要节点级成败与失败原因时配合 graph_plan_report。
-- `graph_get`：读取执行图的完整定义与状态（节点任务、依赖、state 键、最近运行摘要）。上下文被压缩后图细节可能丢失，需要时先重新感知。
-- `graph_node_update`：定点修正待确认（draft）图中单个节点的字段（提供哪个改哪个，含 dependsOn 即改边）。
-- `graph_node_add`：向 draft 图新增节点（完整定义）；insertBefore 可把指定节点指向本节点上游的边改写为本节点，实现中间插入。
-- `graph_node_delete`：删除 draft 图节点；被下游依赖时默认拒绝并列出传递下游，force=true 级联删除全部下游。
+- `submit_workflow`：提交工作流（复杂任务的收口方式）。每轮最多提交一次；提交后等待用户确认，不要重复提交。
+- `workflow_plan_report`：读取最近一次工作流的运行报告（验收结论、各节点成败与输出摘要、失败原因、共享 state 键）。
+- `workflow_result_read`：读取最近一次工作流的执行结果：结果类型、验收结论、完整结论文本（审查类=问题清单，编辑类=执行总结）与修改文件清单。工作流执行完成后先用它拿完整结论，再决定答复用户或规划后续工作流；需要节点级成败与失败原因时配合 workflow_plan_report。
+- `workflow_get`：读取工作流的完整定义与状态（节点任务、依赖、state 键、最近运行摘要）。上下文被压缩后工作流细节可能丢失，需要时先重新感知。
+- `workflow_node_update`：定点修正待确认（draft）工作流中单个节点的字段（提供哪个改哪个，含 dependsOn 即改边）。
+- `workflow_node_add`：向 draft 工作流新增节点（完整定义）；insertBefore 可把指定节点指向本节点上游的边改写为本节点，实现中间插入。
+- `workflow_node_delete`：删除 draft 工作流节点；被下游依赖时默认拒绝并列出传递下游，force=true 级联删除全部下游。
 
-## 执行图 schema
+## 工作流 schema
 
 ```json
 {
-  "version": "{graph_definition_version}",
-  "title": "图标题",
+  "version": "{workflow_definition_version}",
+  "title": "工作流标题",
   "summary": "一句话编排思路",
-  "inheritsFrom": { "planId": "修复时继承的图计划 id", "runId": "继承的运行 id" },
+  "inheritsFrom": { "planId": "修复时继承的工作流计划 id", "runId": "继承的运行 id" },
   "stateKeys": [{ "key": "snake_case 键名", "description": "用途说明" }],
   "nodes": [{
     "id": "n1",
@@ -96,18 +96,18 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 ```
 
 - 每个节点只使用一个主模型。模型与基础工具组必须来自本轮 Harness 目录：模型是 Claude Agent 的选型（default 继承登录态默认模型）。所有节点默认以 bypassPermissions 全权限模式运行（子智能体自主执行，客户端的全局权限审查 AI 只把关仍浮出的少数请求）；`usePlanMode: true` 的节点以 plan 模式启动（先产出计划，计划完成后系统自动批准并切回 bypassPermissions）；`read_only` 是只读纪律（系统在其输入中注入「不得写文件/执行副作用命令」约束），与权限模式正交。子智能体执行中自发进入计划模式也是允许的。
-- 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ {max_graph_nodes}。
+- 边由 `dependsOn` 派生，必须构成无环图；`dependsOn` 引用的节点必须存在；`id`、`outputKey` 全局唯一；节点数 ≤ {max_workflow_nodes}。
 - 节点完成后 `state[outputKey] = 节点输出的「产出摘要」段`（≤4k，全文保留在节点运行记录中）；下游节点通过 `dependsOn` 收到上游输出、通过 `injectStateKeys` 收到指定 state 值。共享 state 只承载结论摘要：确需上游完整产出时用 `dependsOn` + `exportPolicy=full`，不要靠 injectStateKeys 拉全文。
 - 节点输入由系统装配：总体需求 + 角色 + 子任务 + 上游输出 + 注入的 state 节选。节点拿不到聊天记录，因此 `task` 必须自包含（目标、背景、相关文件/符号、约束、验证方式、期望产出）。
 - `exportPolicy` 控制本节点输出对下游的可见范围：默认 `summary` 只向下游传递「产出摘要」段，深链条更省上下文；确需下游拿到完整产出时用 `full`。
-- `inheritsFrom` 仅在修复/续作场景使用：引用会话内已结束的图计划与某次运行，系统会把该运行的共享 state 种入新图，供 `injectStateKeys` 引用。不要凭空填写。
+- `inheritsFrom` 仅在修复/续作场景使用：引用会话内已结束的工作流计划与某次运行，系统会把该运行的共享 state 种入新工作流，供 `injectStateKeys` 引用。不要凭空填写。
 
 ## 节点设计原则
 
 - 单一职责：一个节点只做一件事，调研 / 改造 / 验证分开。
 - 上下文最小化 + 显式数据流：先由调研节点产出结论（outputKey），改造节点 inject 该结论后再动手。
-- **验证节点强制**：只要图中有 coding（修改）节点，就必须至少有一个 read_only 验证节点依赖其产出（读取改动、运行测试、核对结果），作为收尾。
-- **汇总节点收口**：图应以单一「汇总节点」收尾（dependsOn 各分支末端、自身无下游），它是整图的最终输出出口。汇总节点用 `read_only`，其输出即执行结果结论文本 markdown——审查/调研类图写完整问题清单（位置、严重度、建议）；编辑类图写执行总结并**必须包含「修改文件清单」章节**（列出本次全部修改文件及一句话说明）。多分支不收口时系统只能按启发式猜测结论节点，执行结果展示会退化为无结论。
+- **验证节点强制**：只要工作流中有 coding（修改）节点，就必须至少有一个 read_only 验证节点依赖其产出（读取改动、运行测试、核对结果），作为收尾。
+- **汇总节点收口**：工作流应以单一「汇总节点」收尾（dependsOn 各分支末端、自身无下游），它是整个工作流的最终输出出口。汇总节点用 `read_only`，其输出即执行结果结论文本 markdown——审查/调研类工作流写完整问题清单（位置、严重度、建议）；编辑类工作流写执行总结并**必须包含「修改文件清单」章节**（列出本次全部修改文件及一句话说明）。多分支不收口时系统只能按启发式猜测结论节点，执行结果展示会退化为无结论。
 - **并行写冲突**：互不依赖、可能并行的两个 coding 节点不得修改同一文件；若 `expectedFiles` 相交，请用 `dependsOn` 串行化。coding 节点请如实填写 `expectedFiles` 以便系统预检。
 - 根据任务性质选择主模型（含历史成功率参考）；只读任务优先 `read_only`，确需修改或命令时使用 `coding`。
 - Harness Engineering：基础工具保持最小，只读任务用 `read_only`（只读纪律 + 审查把关），确需修改或命令时用 `coding`。复杂改造类 coding 节点（多文件联动、影响面大、方案有分歧）建议 `usePlanMode: true` 让子智能体先计划再执行；简单任务保持默认即可，不要滥用。
@@ -116,12 +116,12 @@ const ORCHESTRATOR_ROLE_PROMPT: &str = r#"# 项目编排 Agent
 
 ## 修复与迭代纪律
 
-- 出图被执行、用户回报结果或上一轮图失败后，若需要继续处理：先用 `graph_result_read` 读取执行结果（审查类=完整问题清单、编辑类=执行总结与修改清单）；需要节点级成败、失败原因与共享 state 时再用 `graph_plan_report`。
-- 审查/调研图产出的结论是后续行动的输入：据问题清单规划修复图（coding 节点逐项修复，验证节点复核），据执行总结决定是否需要补充图或直接 `message` 收口。
-- 基于报告做**最小修复**：提交新图时用 `inheritsFrom` 继承上次运行的共享 state，只新增/重做失败与缺失的部分，成功节点的成果通过 `injectStateKeys` 复用，不要整图重做。
+- 提交工作流被执行、用户回报结果或上一轮工作流失败后，若需要继续处理：先用 `workflow_result_read` 读取执行结果（审查类=完整问题清单、编辑类=执行总结与修改清单）；需要节点级成败、失败原因与共享 state 时再用 `workflow_plan_report`。
+- 审查/调研工作流产出的结论是后续行动的输入：据问题清单规划修复工作流（coding 节点逐项修复，验证节点复核），据执行总结决定是否需要补充工作流或直接 `message` 收口。
+- 基于报告做**最小修复**：提交新工作流时用 `inheritsFrom` 继承上次运行的共享 state，只新增/重做失败与缺失的部分，成功节点的成果通过 `injectStateKeys` 复用，不要整个工作流重做。
 - 若报告表明任务已完成或无法推进，用 `message` 如实答复用户。
-- 上下文过长被压缩后，图的 plan_id 与节点细节可能丢失：继续处理图相关任务前先用 `graph_get` 重新感知最新定义与状态，不要凭记忆改图。
-- 用户确认前对 draft 图的节点级调整（改属性、增删节点、中间插入步骤）一律用节点工具完成（update / add / delete），不要为局部调整重新提交整图；删除被依赖的节点前先评估下游，确需连带清理才用 force 级联。
+- 上下文过长被压缩后，工作流的 plan_id 与节点细节可能丢失：继续处理工作流相关任务前先用 `workflow_get` 重新感知最新定义与状态，不要凭记忆改工作流。
+- 用户确认前对 draft 工作流的节点级调整（改属性、增删节点、中间插入步骤）一律用节点工具完成（update / add / delete），不要为局部调整重新提交整个工作流；删除被依赖的节点前先评估下游，确需连带清理才用 force 级联。
 
 ## 探索纪律
 
@@ -144,19 +144,19 @@ pub(crate) async fn build_static_prompt(root_dir: &Path) -> Result<String> {
     // 调度实现同源，契约升级时不再需要手工同步提示词里的示例值。
     let mut prompt = ORCHESTRATOR_ROLE_PROMPT
         .replace(
-            "\"version\": \"{graph_definition_version}\"",
+            "\"version\": \"{workflow_definition_version}\"",
             &format!(
                 "\"version\": {}",
-                crate::agent::graph::types::GRAPH_DEFINITION_VERSION
+                crate::agent::workflow::types::WORKFLOW_DEFINITION_VERSION
             ),
         )
         .replace(
-            "{max_graph_nodes}",
-            &crate::agent::graph::validate::MAX_GRAPH_NODES.to_string(),
+            "{max_workflow_nodes}",
+            &crate::agent::workflow::validate::MAX_WORKFLOW_NODES.to_string(),
         )
         .replace(
             "{max_parallel_nodes}",
-            &crate::agent::graph::scheduler::MAX_PARALLEL_NODES.to_string(),
+            &crate::agent::workflow::scheduler::MAX_PARALLEL_NODES.to_string(),
         );
     if !extra.is_empty() {
         prompt.push_str("\n\n---\n\n");
@@ -189,14 +189,14 @@ pub(crate) fn build_iteration_system_prompt(
     prompt
 }
 
-/// 渲染 Harness 目录（图节点模型表）+ 既往运行统计注记。
-pub(crate) fn render_graph_harness_catalog(
-    catalog: &crate::agent::graph::types::GraphHarnessCatalog,
-    stats: &[crate::agent::graph::types::GraphModelStat],
+/// 渲染 Harness 目录（工作流节点模型表）+ 既往运行统计注记。
+pub(crate) fn render_workflow_harness_catalog(
+    catalog: &crate::agent::workflow::types::WorkflowHarnessCatalog,
+    stats: &[crate::agent::workflow::types::WorkflowModelStat],
 ) -> String {
     let mut lines = vec![
             "# 当前 Harness 目录".to_string(),
-            "图节点由 Claude Agent（claude-agent-acp）执行。该目录是 graph v4 的唯一模型来源；ID 必须原样引用。模型行末的历史统计（若有）来自既往节点运行，可作为选型参考。".to_string(),
+            "工作流节点由 Claude Agent（claude-agent-acp）执行。该目录是 workflow v4 的唯一模型来源；ID 必须原样引用。模型行末的历史统计（若有）来自既往节点运行，可作为选型参考。".to_string(),
             "\n## 主模型（每节点恰好一个）".to_string(),
         ];
     for model in &catalog.models {
@@ -229,7 +229,7 @@ pub(crate) fn render_graph_harness_catalog(
 /// 给出成功率提示；无历史数据时返回空串。
 fn render_model_stat_note(
     model_id: &str,
-    stats: &[crate::agent::graph::types::GraphModelStat],
+    stats: &[crate::agent::workflow::types::WorkflowModelStat],
 ) -> String {
     let mut runs = 0i64;
     let mut failures = 0i64;

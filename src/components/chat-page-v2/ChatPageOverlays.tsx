@@ -14,7 +14,7 @@ interface ChatPageOverlaysProps {
 }
 
 /**
- * 聊天页覆盖层。执行图已迁入主区标签（UI-13），不再从这里以 portal
+ * 聊天页覆盖层。工作流已迁入主区标签（UI-13），不再从这里以 portal
  * 模态渲染；当前仅承载 Python 运行详情 Sheet（Radix，UI-09）。
  */
 export function ChatPageOverlays({

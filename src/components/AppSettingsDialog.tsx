@@ -18,7 +18,7 @@ import { flushAllSaveSources, hasDirtySaveSources } from "./settings/save-source
 import { SaveStatusIndicator } from "./settings/SaveStatusIndicator";
 import { ConfirmDialog } from "./settings/ConfirmDialog";
 import { GeneralPage } from "./settings/GeneralPage";
-import { GraphPage } from "./settings/GraphPage";
+import { WorkflowPage } from "./settings/WorkflowPage";
 import { ToolsPage } from "./settings/ToolsPage";
 import { SubAgentsPage } from "./settings/SubAgentsPage";
 import { ProvidersPage } from "./settings/providers/ProvidersPage";
@@ -33,7 +33,7 @@ export type SettingsNavKey =
   | "providers"
   | "purposes"
   | "tools"
-  | "graph"
+  | "workflow"
   | "subAgents"
   | "mcp"
   | "ssh"
@@ -58,7 +58,7 @@ const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
     label: "能力连接",
     items: [
       { key: "tools", label: "工具", icon: Wrench },
-      { key: "graph", label: "执行图", icon: Workflow },
+      { key: "workflow", label: "工作流", icon: Workflow },
       { key: "subAgents", label: "子智能体", icon: Users },
       { key: "mcp", label: "MCP 服务器", icon: Plug },
       { key: "ssh", label: "SSH", icon: SquareTerminal },
@@ -75,7 +75,7 @@ function normalizeInitialTab(tab?: string): SettingsNavKey {
     case "providers":
     case "purposes":
     case "tools":
-    case "graph":
+    case "workflow":
     case "subAgents":
     case "mcp":
     case "ssh":
@@ -237,7 +237,7 @@ export function AppSettingsDialog({
                       />
                     )}
                     {activeNav === "tools" && <ToolsPage />}
-                    {activeNav === "graph" && <GraphPage />}
+                    {activeNav === "workflow" && <WorkflowPage />}
                     {activeNav === "subAgents" && <SubAgentsPage />}
                     {activeNav === "mcp" && <McpServersPage />}
                     {activeNav === "ssh" && <SshServersPage />}

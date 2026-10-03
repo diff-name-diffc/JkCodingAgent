@@ -113,7 +113,7 @@ pub async fn review_shell_command(
 
     // 审查请求完全不携带 max_tokens（None → 请求体省略该字段）：显式小上限
     // 会压低模型自身的输出预算（推理模型的思考 token 还会与可见输出共享该
-    // 预算）；同时关闭思考，避免思考链耗尽预算导致结论为空（同 graph/verifier）。
+    // 预算）；同时关闭思考，避免思考链耗尽预算导致结论为空（同 workflow/verifier）。
     let spec = crate::agent::rig_ext::model::PurposeModelSpec {
         api_key: config.model_config.api_key.clone(),
         api_base: config.model_config.url.clone(),

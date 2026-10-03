@@ -1,6 +1,6 @@
 //! 协议工具拦截（编排器收口路径）。
 //!
-//! 与普通工具的区别：协议工具（`submit_graph` / `graph_plan_report` /
+//! 与普通工具的区别：协议工具（`submit_workflow` / `workflow_plan_report` /
 //! `message`）在模型侧是**壳工具**——定义照常发给模型，但执行不留真值，
 //! 真正的动作（校验/落库/广播/收口）由宿主拦截完成：按工具名分派的动作
 //! 落在可注入的处理器里，循环只负责「有动作/最终答复则收口、只有可重试
@@ -11,17 +11,17 @@ use serde_json::Value;
 /// 协议动作：宿主拦截到的收口信号。
 #[derive(Clone, Debug)]
 pub enum RigProtocolAction {
-    /// 编排器已产出执行图并登记为待确认计划，等待用户在图面板确认。
-    GraphSubmitted { title: String, node_count: usize },
+    /// 编排器已产出工作流并登记为待确认计划，等待用户在工作流面板确认。
+    WorkflowSubmitted { title: String, node_count: usize },
 }
 
 /// 一次协议工具调用的拦截结果。
 pub struct RigProtocolResult {
     /// 回灌给模型/前端的文本（壳工具回显、报告正文、或「错误：」前缀的拒绝原因）。
     pub text: String,
-    /// 可重试错误：本轮不收口，让模型修正后重试（如 submit_graph 校验失败）。
+    /// 可重试错误：本轮不收口，让模型修正后重试（如 submit_workflow 校验失败）。
     pub retryable_error: bool,
-    /// 协议动作（如图已提交），非空即收口。
+    /// 协议动作（如工作流已提交），非空即收口。
     pub actions: Vec<RigProtocolAction>,
     /// 最终答复（`message` 工具），无动作时据此收口。
     pub final_message: Option<String>,

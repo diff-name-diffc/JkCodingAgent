@@ -42,7 +42,7 @@ pub struct RigLoopHooks {
     pub default_model_name: String,
     /// 上下文窗口容量（tokens），随用量落库。
     pub context_window: Option<u64>,
-    /// 协议工具处理器（编排器注入：submit_graph / graph_plan_report / message）。
+    /// 协议工具处理器（编排器注入：submit_workflow / workflow_plan_report / message）。
     /// None（聊天路径）= 全部工具按普通工具执行。
     pub protocol_handler: Option<std::sync::Arc<dyn ProtocolToolHandler>>,
 }

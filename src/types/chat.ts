@@ -163,7 +163,7 @@ export interface AgentToolInfo {
 export interface AhaContextConfig {
   chatModelConfigs: DispatcherModelConfig[];
   summaryModelConfigs: DispatcherModelConfig[];
-  /** 验收模型（项目上下文专用）：执行图 run 收尾验收评审；留空回退摘要槽位。chat 侧恒空。 */
+  /** 验收模型（项目上下文专用）：工作流 run 收尾验收评审；留空回退摘要槽位。chat 侧恒空。 */
   verifierModelConfigs?: DispatcherModelConfig[];
   allowedTools: string[];
 }
@@ -221,7 +221,7 @@ export interface ModelLibraryEntry {
   contextWindow?: number;
 }
 
-/** 图节点 ACP 执行器（claude-agent-acp）的启动配置。 */
+/** 工作流节点 ACP 执行器（claude-agent-acp）的启动配置。 */
 export interface AcpAgentConfig {
   /**
    * 启动命令（按空白拆分为 program + args）。空 = 托管模式：应用把版本锁定
@@ -234,10 +234,10 @@ export interface AcpAgentConfig {
   baseUrl?: string | null;
 }
 
-export interface GraphExecutionConfig {
+export interface WorkflowExecutionConfig {
   /** 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户恢复。 */
   pauseBeforeWrite: boolean;
-  /** 图节点执行器（claude-agent-acp）的启动与凭据配置。 */
+  /** 工作流节点执行器（claude-agent-acp）的启动与凭据配置。 */
   acp?: AcpAgentConfig;
 }
 
@@ -251,8 +251,8 @@ export interface AhaSettingsV2 {
   contextDebug: boolean;
   review: SshReviewConfig;
   modelLibrary: ModelLibraryEntry[];
-  /** 执行图编排运行期设置。 */
-  graph?: GraphExecutionConfig;
+  /** 工作流编排运行期设置。 */
+  workflow?: WorkflowExecutionConfig;
   /** 外观主题偏好；权威源为后端 aha_get/save_settings_v2。 */
   theme?: ThemePreference;
 }

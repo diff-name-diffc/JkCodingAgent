@@ -10,11 +10,11 @@ pub(crate) mod plain_chat;
 
 pub(crate) mod plan_access;
 pub(crate) mod project;
-pub(crate) mod project_graph_ops;
 pub(crate) mod project_prompt;
 pub(crate) mod project_report;
 pub(crate) mod project_submit;
 pub(crate) mod project_tools;
+pub(crate) mod project_workflow_ops;
 #[cfg(test)]
 mod tests;
 
@@ -101,7 +101,7 @@ pub(crate) fn tool_result_policies_from_specs() -> Vec<(String, RigToolResultPol
 }
 
 /// 摘要模型名归一化：空串回退默认摘要模型（迁移自旧
-/// `agents/project/helpers.rs::normalize_summary_model`，图审阅等路径共用）。
+/// `agents/project/helpers.rs::normalize_summary_model`，工作流审阅等路径共用）。
 pub(crate) fn normalize_summary_model(model: &str) -> String {
     let trimmed = model.trim();
     if trimmed.is_empty() {

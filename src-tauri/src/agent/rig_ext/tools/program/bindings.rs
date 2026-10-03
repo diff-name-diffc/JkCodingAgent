@@ -18,8 +18,8 @@ use crate::agent::rig_ext::tools::run_record::prepare_arguments;
 pub(super) const RESERVED_BINDING_NAMES: &[&str] = &[
     "run_tool_program",
     "message",
-    "submit_graph",
-    "graph_plan_report",
+    "submit_workflow",
+    "workflow_plan_report",
     "notify_user_progress",
     "call_sub_agent",
 ];

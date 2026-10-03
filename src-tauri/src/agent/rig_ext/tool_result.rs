@@ -59,7 +59,7 @@ const INLINE_READ_TOOLS: &[&str] = &[
     "grep",
     "glob",
     "list_dir",
-    "graph_plan_report",
+    "workflow_plan_report",
     "ssh_memo_read",
 ];
 

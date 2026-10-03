@@ -18,9 +18,9 @@ mod run;
 use generation::GenerationGate;
 pub(crate) use generation::GenerationGuard;
 pub(crate) use run::ActiveRunHandle;
-use run::{ActiveRunStore, ArchRunRegistry, GraphRunRegistry};
+use run::{ActiveRunStore, ArchRunRegistry, WorkflowRunRegistry};
 
-pub(crate) use run::GraphRunHandle;
+pub(crate) use run::WorkflowRunHandle;
 
 /// 应用级状态聚合器，由 Tauri `.manage()` 托管，是整个调度智能体的长寿宿主。
 ///
@@ -39,7 +39,7 @@ pub(crate) use run::GraphRunHandle;
 pub struct DispatcherState {
     services: AgentServices,
     active_runs: ActiveRunStore,
-    graph_runs: GraphRunRegistry,
+    workflow_runs: WorkflowRunRegistry,
     arch_runs: ArchRunRegistry,
     title_generations: GenerationGate,
     keywords_generations: GenerationGate,
@@ -67,9 +67,9 @@ impl DispatcherState {
                 let db = DispatcherDb::new(db_path).context("打开本地数据库失败")?;
                 db.recover_interrupted_tool_tasks()
                     .context("恢复中断的工具执行事实")?;
-                super::graph::store::GraphStore::new(&db)
+                super::workflow::store::WorkflowStore::new(&db)
                     .fail_interrupted_runs(None)
-                    .context("恢复中断的执行图运行")?;
+                    .context("恢复中断的工作流运行")?;
                 // G11-04：子智能体配置加载失败时显式降级为 None（禁用子智能体
                 // 能力并在 UI 可见），而不是带着不完整状态继续静默运行。
                 let manager = Arc::new(SubAgentManager::new(db.pool()));
@@ -103,7 +103,7 @@ impl DispatcherState {
                 sub_agent_manager,
             },
             active_runs: ActiveRunStore::default(),
-            graph_runs: GraphRunRegistry::default(),
+            workflow_runs: WorkflowRunRegistry::default(),
             arch_runs: ArchRunRegistry::default(),
             title_generations: GenerationGate::default(),
             keywords_generations: GenerationGate::default(),
@@ -435,24 +435,24 @@ impl DispatcherState {
         self.active_runs.active_run_ids()
     }
 
-    pub(crate) fn begin_graph_run(
+    pub(crate) fn begin_workflow_run(
         &self,
         plan_id: &str,
-    ) -> std::result::Result<GraphRunHandle, String> {
-        self.graph_runs.begin(plan_id)
+    ) -> std::result::Result<WorkflowRunHandle, String> {
+        self.workflow_runs.begin(plan_id)
     }
 
-    pub(crate) fn finish_graph_run(&self, plan_id: &str) {
-        self.graph_runs.finish(plan_id);
+    pub(crate) fn finish_workflow_run(&self, plan_id: &str) {
+        self.workflow_runs.finish(plan_id);
     }
 
-    pub(crate) fn cancel_graph_run(&self, plan_id: &str) -> bool {
-        self.graph_runs.cancel(plan_id)
+    pub(crate) fn cancel_workflow_run(&self, plan_id: &str) -> bool {
+        self.workflow_runs.cancel(plan_id)
     }
 
-    /// 恢复暂停中（高危写检查点）的图运行。
-    pub(crate) fn resume_graph_run(&self, plan_id: &str) -> bool {
-        self.graph_runs.resume(plan_id)
+    /// 恢复暂停中（高危写检查点）的工作流运行。
+    pub(crate) fn resume_workflow_run(&self, plan_id: &str) -> bool {
+        self.workflow_runs.resume(plan_id)
     }
 
     /// 登记一次架构画布程序执行，返回 (run_id, 报告接收端)。

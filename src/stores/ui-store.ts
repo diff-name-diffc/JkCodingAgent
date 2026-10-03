@@ -9,7 +9,7 @@ import { persist } from "zustand/middleware";
  *   - command-palette open state
  *
  * 主题偏好不在这里：权威源是后端 AhaSettingsV2.theme（lib/theme.ts 校准）。
- * 工作区布局偏好与执行图归属已迁至 workspace-store（UI-08）。
+ * 工作区布局偏好与工作流归属已迁至 workspace-store（UI-08）。
  */
 export interface UIState {
   sidebarCollapsed: boolean;

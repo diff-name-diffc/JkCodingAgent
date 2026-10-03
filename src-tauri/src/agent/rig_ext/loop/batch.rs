@@ -17,7 +17,7 @@ pub(super) struct ToolBatch {
     pub(super) contents: Option<Vec<UserContent>>,
     /// 本批最后一个落库工具结果的消息 id（滚动摘要持久化的覆盖锚点跟踪）。
     pub(super) last_result_message_id: Option<String>,
-    /// 本批协议动作（编排器：图已提交）。
+    /// 本批协议动作（编排器：工作流已提交）。
     pub(super) actions: Vec<RigProtocolAction>,
     /// 本批最终答复（`message` 工具）。
     pub(super) final_message: Option<String>,

@@ -123,7 +123,7 @@ export function terminalDragBounds(
 }
 
 /**
- * 用户点开执行图等编辑区内容时，当前视口能否与会话并排。
+ * 用户点开工作流等编辑区内容时，当前视口能否与会话并排。
  * 不能并排时，打开动作必须让出会话栏，否则标签只写进状态，画面不变。
  */
 export function editorFitsBesideSession(

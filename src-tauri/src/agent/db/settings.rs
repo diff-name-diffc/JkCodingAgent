@@ -136,7 +136,7 @@ pub struct AhaContextConfig {
     pub chat_model_configs: Vec<DispatcherModelConfig>,
     #[serde(default)]
     pub summary_model_configs: Vec<DispatcherModelConfig>,
-    /// 验收模型（项目上下文专用）：执行图 run 收尾验收评审的独立槽位；
+    /// 验收模型（项目上下文专用）：工作流 run 收尾验收评审的独立槽位；
     /// 未配置时 verifier 回退摘要槽位。仅 project 落库存列，chat 侧恒空
     /// （serde default 兜底历史数据）。
     #[serde(default)]
@@ -267,8 +267,13 @@ pub struct AhaSettingsV2 {
     pub review: SshReviewConfig,
     #[serde(default)]
     pub model_library: Vec<ModelLibraryEntry>,
-    #[serde(default)]
-    pub graph: GraphExecutionConfig,
+    /// alias 兼容 graph→workflow 改名前落库的旧键（仅反序列化生效，落库恒为
+    /// 新名）：schema 版本门禁使旧库整库拒开，但开发机「先落 v16、后改名」
+    /// 的中间态库直开时旧键仍可达，无 alias 会被静默丢弃导致设置无声重置。
+    /// 若未来出现绕过版本门禁读取本 JSON 的路径（导入/同步），此 alias 是
+    /// 前置条件，不得移除。
+    #[serde(default, alias = "graph")]
+    pub workflow: WorkflowExecutionConfig,
     /// 外观主题偏好（system / light / dark）。应用级偏好，随设置统一存取；
     /// 前端 `lib/theme.ts` 据此切换根节点 `.dark` 类。
     #[serde(default = "default_theme_preference")]
@@ -291,7 +296,7 @@ impl Default for AhaSettingsV2 {
             context_debug: false,
             review: SshReviewConfig::default(),
             model_library: Vec::new(),
-            graph: GraphExecutionConfig::default(),
+            workflow: WorkflowExecutionConfig::default(),
             theme: default_theme_preference(),
         }
     }
@@ -306,19 +311,19 @@ fn normalize_theme_preference(raw: &str) -> String {
     }
 }
 
-/// 执行图编排的运行期设置（设置中心「执行图」页）。
+/// 工作流编排的运行期设置（设置中心「工作流」页）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct GraphExecutionConfig {
-    /// 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户在图面板恢复。
+pub struct WorkflowExecutionConfig {
+    /// 高危写检查点：每个 run 首个 coding 节点启动前暂停，等待用户在工作流面板恢复。
     #[serde(default = "default_pause_before_write")]
     pub pause_before_write: bool,
-    /// 图节点执行器（claude-agent-acp）的启动与凭据配置。
+    /// 工作流节点执行器（claude-agent-acp）的启动与凭据配置。
     #[serde(default)]
     pub acp: AcpAgentConfig,
 }
 
-/// 图节点 ACP 执行器（claude-agent-acp）的启动配置。
+/// 工作流节点 ACP 执行器（claude-agent-acp）的启动配置。
 /// 凭据注入子进程环境变量；缺省时依赖 `~/.claude` 登录态。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -345,7 +350,7 @@ const fn default_pause_before_write() -> bool {
     true
 }
 
-impl Default for GraphExecutionConfig {
+impl Default for WorkflowExecutionConfig {
     fn default() -> Self {
         Self {
             pause_before_write: default_pause_before_write(),
@@ -397,18 +402,6 @@ impl SshReviewConfig {
     pub fn is_configured(&self) -> bool {
         !self.model_config.is_empty()
     }
-}
-
-fn parse_model_configs_json(raw: &str) -> Vec<DispatcherModelConfig> {
-    normalize_model_configs(
-        serde_json::from_str::<Vec<DispatcherModelConfig>>(raw).unwrap_or_default(),
-    )
-}
-
-fn parse_review_model_config_json(raw: &str) -> DispatcherModelConfig {
-    serde_json::from_str::<DispatcherModelConfig>(raw)
-        .unwrap_or_default()
-        .trimmed()
 }
 
 impl AhaSettingsV2 {
@@ -491,110 +484,6 @@ impl AhaSettingsV2 {
     }
 }
 
-/// v11 及更早 dispatcher_settings 宽表行 → stored-form `AhaSettingsV2`（映射
-/// 与旧 get_settings_v2 的列语义逐字段一致）。按列名容错读取：v3 前无
-/// theme、v10 前无 verifier 的更旧库按默认值兜底，不依赖「沿链到达本块时
-/// 必为 20 列」的前提。仅供 `migrate_v11_to_v12` 使用。
-pub(crate) fn legacy_settings_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AhaSettingsV2> {
-    fn text(row: &rusqlite::Row<'_>, name: &str) -> Option<String> {
-        let index = row.as_ref().column_index(name).ok()?;
-        row.get::<_, Option<String>>(index).ok().flatten()
-    }
-    // context_debug 为 INTEGER 列：按整数读取（文本读取会类型不符而丢失）。
-    fn integer(row: &rusqlite::Row<'_>, name: &str) -> Option<i64> {
-        let index = row.as_ref().column_index(name).ok()?;
-        row.get::<_, Option<i64>>(index).ok().flatten()
-    }
-
-    let shared = AhaSharedModels {
-        vision_model_configs: text(row, "shared_vision_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        image_model_configs: text(row, "shared_image_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        image_edit_model_configs: text(row, "shared_image_edit_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        asr_model_configs: text(row, "shared_asr_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        tts_model_configs: text(row, "shared_tts_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        embedding_model_configs: text(row, "shared_embedding_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-    };
-    let project = AhaContextConfig {
-        chat_model_configs: text(row, "project_chat_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        summary_model_configs: text(row, "project_summary_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        verifier_model_configs: text(row, "project_verifier_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        allowed_tools: text(row, "project_allowed_tools_json")
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default(),
-    };
-    let chat = AhaContextConfig {
-        chat_model_configs: text(row, "chat_agent_chat_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        summary_model_configs: text(row, "chat_agent_summary_model_configs_json")
-            .map(|raw| parse_model_configs_json(&raw))
-            .unwrap_or_default(),
-        // chat 上下文无验收槽位存列：恒空。
-        verifier_model_configs: Vec::new(),
-        allowed_tools: text(row, "chat_agent_allowed_tools_json")
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default(),
-    };
-    let context_debug = integer(row, "context_debug")
-        .map(|value| value != 0)
-        .unwrap_or(false);
-    let review = SshReviewConfig {
-        model_config: text(row, "review_model_config_json")
-            .map(|raw| parse_review_model_config_json(&raw))
-            .unwrap_or_default(),
-        system_prompt: {
-            let prompt = text(row, "review_system_prompt")
-                .map(|raw| raw.trim().to_string())
-                .unwrap_or_default();
-            if prompt.is_empty() {
-                default_review_system_prompt()
-            } else {
-                prompt
-            }
-        },
-    };
-    let model_library = text(row, "model_library_json")
-        .map(|raw| {
-            normalized_library_entries(
-                &serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw).unwrap_or_default(),
-            )
-        })
-        .unwrap_or_default();
-    let graph = text(row, "graph_execution_config_json")
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default();
-    let theme = text(row, "theme").unwrap_or_else(default_theme_preference);
-
-    Ok(AhaSettingsV2 {
-        shared,
-        project,
-        chat,
-        context_debug,
-        review,
-        model_library,
-        graph,
-        theme: normalize_theme_preference(&theme),
-    })
-}
-
 impl DispatcherDb {
     pub fn get_settings_v2(&self) -> Result<AhaSettingsV2> {
         let conn = self.conn()?;
@@ -671,6 +560,21 @@ mod tests {
             max_tokens: None,
             context_window: None,
         }
+    }
+
+    #[test]
+    fn workflow_field_accepts_legacy_graph_key_and_reserializes_new_name() {
+        // graph→workflow 改名前落库的 JSON（开发机「先落 v16、后改名」中间态库）
+        // 经 alias 读回；序列化恒为新名，首次保存即收敛为 workflow 键。
+        let legacy = serde_json::json!({
+            "graph": { "pauseBeforeWrite": false, "acp": { "command": "custom-runner" } }
+        });
+        let parsed: AhaSettingsV2 = serde_json::from_value(legacy).unwrap();
+        assert!(!parsed.workflow.pause_before_write);
+        assert_eq!(parsed.workflow.acp.command, "custom-runner");
+        let written = serde_json::to_value(&parsed).unwrap();
+        assert!(written.get("workflow").is_some());
+        assert!(written.get("graph").is_none());
     }
 
     #[test]

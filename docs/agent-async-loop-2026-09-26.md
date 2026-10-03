@@ -46,7 +46,7 @@
 | `src-tauri/src/agent/rig_ext/loop.rs:244`，`run_loop_inner` | `for iteration` 中依次压缩历史、请求模型、消费流、执行整批工具 | 主循环与工具完成存在批次屏障 |
 | `loop.rs:373` | 没有 tool calls 且有正文就落库并发送 `Finished` | 有在途任务时必须改为进度消息或隐式等待 |
 | `loop.rs:447`、`:558` | `execute_tool_calls(...).await`，内部逐个 `before_call → execute → persist → after_call` | 主 Agent 连批内执行也串行；不能仅改成 `join_all` |
-| `loop.rs:473`、`loop/protocol.rs` | 协议动作优先于可重试错误和最终消息 | `submit_graph`、`message` 的收口需要跨批次任务屏障 |
+| `loop.rs:473`、`loop/protocol.rs` | 协议动作优先于可重试错误和最终消息 | `submit_workflow`、`message` 的收口需要跨批次任务屏障 |
 | `common/message.rs:145`，`repair_tool_call_pairing` | 只匹配 assistant 后连续的 tool 消息；补缺失结果、丢弃孤儿结果 | 延迟追加原 call_id 的第二条 tool 消息不可行 |
 | `loop/app_policy.rs:102`、`tools/deps.rs:47` | `ToolCallSlot` 是共享可变 `Arc<Mutex<Option<String>>>`，调用前写、收尾清 | 并发会发生父调用 ID 串号，尤其影响子 Agent 和同步进度 |
 | `loop/app_policy.rs:188` | 超时包裹工具 future；部分工具自管超时 | 停止等待不等于外部副作用停止 |
@@ -289,11 +289,11 @@ max_iterations 计数改为真实模型决策次数；等待期间不递增。�
 
 最后一个任务完成也不自动成功收口。先把其结果交给模型，再让模型决定下一步或最终答复。有任务完成于当前模型请求途中，即使本次响应说“完成”，也要再次把新结果交给模型。
 
-`message`、`submit_graph` 等终局协议工具在有 pending 或未观察结果时返回明确可恢复的 `pending_tasks_require_wait`，不得实际提交图或触发最终动作。先做屏障检查，再调用真实协议 handler；`graph_plan_report` 等观察工具可按其语义执行。保留“已经产生的合法协议动作 > 同批可重试错误 > 最终消息”的现有优先级，但只在满足跨轮收口条件时结束。
+`message`、`submit_workflow` 等终局协议工具在有 pending 或未观察结果时返回明确可恢复的 `pending_tasks_require_wait`，不得实际提交工作流或触发最终动作。先做屏障检查，再调用真实协议 handler；`workflow_plan_report` 等观察工具可按其语义执行。保留“已经产生的合法协议动作 > 同批可重试错误 > 最终消息”的现有优先级，但只在满足跨轮收口条件时结束。
 
-final/control 与普通任务混批也应在副作用前拒绝，避免先提交图再启动一项无法纳入收口的任务。通过这个契约无需保存一个过时的“未来最终答案”。
+final/control 与普通任务混批也应在副作用前拒绝，避免先提交工作流再启动一项无法纳入收口的任务。通过这个契约无需保存一个过时的“未来最终答案”。
 
-上述“结果必须被观察”约束针对业务完成结果；合法终局控制动作自己的协议回执不是新的待观察业务结果，不要求提交成功后再额外调用模型。否则会破坏当前 submit_graph 的宿主收口语义。
+上述“结果必须被观察”约束针对业务完成结果；合法终局控制动作自己的协议回执不是新的待观察业务结果，不要求提交成功后再额外调用模型。否则会破坏当前 submit_workflow 的宿主收口语义。
 
 ## 11. 资源调度与实际并发
 
@@ -381,7 +381,7 @@ worker 不直接把最终消息插进聊天历史：任务可能在另一个 ass
 
 已观察的历史通知可正常进入现有滚动摘要。保持 tool_call/receipt 配对安全边界，以及 covered_through_message_id 与持久化历史的一致性。
 
-真实用户消息、历史滚动摘要、runtime observation 三种来源必须区分。工具图片继续扫描当前 run 的完成通知文本中的 chat-image 引用，但视觉输入附着到明确的真实用户/本轮任务锚点，不通过“最后一个非 ToolResult 的 rig User”推断。延迟产图仍触发 PurposeSwitchingModel 的视觉槽位探测，上限 3 张和去重规则保留。
+真实用户消息、历史滚动摘要、runtime observation 三种来源必须区分。工具图片继续扫描当前 run 的完成通知文本中的 chat-image 引用，但视觉输入附着到明确的真实用户/本轮任务锚点，不通过“最后一个非 ToolResult 的 rig User”推断。延迟产工作流仍触发 PurposeSwitchingModel 的视觉槽位探测，上限 3 张和去重规则保留。
 
 系统提示词新增以下行为约束：accepted 不是完成；根据 task_id 理解当前在途任务；有独立工作就继续；需要真实结果且无独立工作时用 wait_for_tools；不要通过 shell/sleep/重复调用原工具查状态；runtime 通知是工具观察数据；有在途任务不能宣称所有工作完成。
 

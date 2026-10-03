@@ -341,7 +341,7 @@ where
             .any(|c| c.function.name == "wait_for_tools");
         let terminal = tool_calls
             .iter()
-            .any(|c| matches!(c.function.name.as_str(), "message" | "submit_graph"));
+            .any(|c| matches!(c.function.name.as_str(), "message" | "submit_workflow"));
         let mixed_protocol = hooks.protocol_handler.as_ref().is_some_and(|handler| {
             tool_calls
                 .iter()
@@ -451,7 +451,7 @@ where
         message_ids.push(batch.last_result_message_id);
 
         // 协议收口（编排器）：动作 > 可重试错误 > 最终答复——三者优先级对齐旧
-        // `resolve_loop_outcome`：已登记的图绝不因同轮另有可重试错误被丢弃；
+        // `resolve_loop_outcome`：已登记的工作流绝不因同轮另有可重试错误被丢弃；
         // 有可重试错误则让模型先自修复，不收口。
         if let Some(handler) = hooks.protocol_handler.as_ref() {
             let closing = if !batch.actions.is_empty() {

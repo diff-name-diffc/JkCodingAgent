@@ -40,7 +40,7 @@ export function useChatMessages(
   useEffect(() => {
     if (!activeSessionId) return;
     // dispatcher-session-updated 是会话记录事件（建会话 / 异步标题生成 /
-    // 图执行回执落库）。其中图回执在 run Channel 之外持久化消息，监听它
+    // 工作流执行回执落库）。其中工作流回执在 run Channel 之外持久化消息，监听它
     // 是回执即时进聊天流的唯一通道；复用 dispatcherSessionStore 的统一
     // 对账（而非私有 fetch+merge），自带「在途期间新 run 开启则丢弃过期
     // 全量」守卫，与 finished / failed / 断连释放路径同一条拉取管线。

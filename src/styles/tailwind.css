@@ -9333,19 +9333,19 @@
     box-shadow: none;
   }
 
-  /* ── 图编排（Graph Orchestrator）──────────────────────────────────────
-     UI-13：执行图迁入主区标签，不再 portal 全屏模态——
+  /* ── 工作流编排（Workflow Orchestrator）──────────────────────────────────────
+     UI-13：工作流迁入主区标签，不再 portal 全屏模态——
      旧 overlay/portal 两个覆盖层类已随迁移删除（见 03-tasks UI-13 记录）。 */
 
   /* 窄窗口下省略摘要，画布优先 */
   @media (max-width: 900px) {
-    .ai-graph-panel-summary {
+    .ai-workflow-panel-summary {
       display: none;
     }
   }
 
   /* 主区标签中的普通视图（编辑面 0–4px 圆角、无浮层阴影，tokens.md §2） */
-  .ai-graph-panel {
+  .ai-workflow-panel {
     position: relative;
     display: flex;
     flex-direction: column;
@@ -9357,7 +9357,7 @@
     background: var(--bg-panel);
   }
 
-  .ai-graph-panel-header {
+  .ai-workflow-panel-header {
     display: flex;
     flex-direction: column;
     border-bottom: 1px solid var(--border-dim);
@@ -9365,14 +9365,14 @@
   }
 
   /* 第一层：标题 + 状态 + 操作 */
-  .ai-graph-panel-header-top {
+  .ai-workflow-panel-header-top {
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 10px 14px;
   }
 
-  .ai-graph-panel-heading {
+  .ai-workflow-panel-heading {
     display: flex;
     min-width: 0;
     flex: 1;
@@ -9380,14 +9380,14 @@
     gap: 10px;
   }
 
-  .ai-graph-panel-title {
+  .ai-workflow-panel-title {
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
   }
 
-  .ai-graph-panel-summary {
+  .ai-workflow-panel-summary {
     overflow: hidden;
     font-size: 12px;
     color: var(--text-muted);
@@ -9396,26 +9396,26 @@
   }
 
   /* 运行/验收两结论独立分区（UI-13）：各带前缀小标签，避免并排两 chip 混淆 */
-  .ai-graph-header-conclusion {
+  .ai-workflow-header-conclusion {
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
     gap: 5px;
   }
 
-  .ai-graph-header-pill-label {
+  .ai-workflow-header-pill-label {
     font-size: 11px;
     color: var(--text-hint);
     white-space: nowrap;
   }
 
   /* 验收 pill 旁的「重新验收」入口：验收模型修复后补救/复检结论 */
-  .ai-graph-header-reverify {
+  .ai-workflow-header-reverify {
     flex-shrink: 0;
   }
 
   /* 第二层：任务统计 + 整体进度 */
-  .ai-graph-panel-header-stats {
+  .ai-workflow-panel-header-stats {
     display: flex;
     align-items: center;
     gap: 14px;
@@ -9423,7 +9423,7 @@
     border-top: 1px solid var(--border-dim);
   }
 
-  .ai-graph-stat {
+  .ai-workflow-stat {
     flex-shrink: 0;
     font-size: 11px;
     color: var(--text-muted);
@@ -9431,29 +9431,29 @@
     white-space: nowrap;
   }
 
-  .ai-graph-stat--running {
+  .ai-workflow-stat--running {
     color: var(--accent);
   }
 
-  .ai-graph-stat--succeeded {
+  .ai-workflow-stat--succeeded {
     color: var(--success);
   }
 
-  .ai-graph-stat--failed {
+  .ai-workflow-stat--failed {
     color: var(--danger);
   }
 
-  .ai-graph-stat--skipped,
-  .ai-graph-stat--cancelled {
+  .ai-workflow-stat--skipped,
+  .ai-workflow-stat--cancelled {
     color: var(--warning);
   }
 
-  .ai-graph-stat--progress {
+  .ai-workflow-stat--progress {
     font-weight: 600;
     color: var(--text-secondary);
   }
 
-  .ai-graph-progress {
+  .ai-workflow-progress {
     min-width: 60px;
     flex: 1;
     height: 4px;
@@ -9462,28 +9462,28 @@
     background: var(--bg-subtle);
   }
 
-  .ai-graph-progress-bar {
+  .ai-workflow-progress-bar {
     height: 100%;
     border-radius: 999px;
     background: var(--accent);
     transition: width 240ms ease-out;
   }
 
-  .ai-graph-progress-bar--failed {
+  .ai-workflow-progress-bar--failed {
     background: var(--danger);
   }
 
-  .ai-graph-progress-bar--cancelled {
+  .ai-workflow-progress-bar--cancelled {
     background: var(--warning);
   }
 
-  .ai-graph-panel-canvas {
+  .ai-workflow-panel-canvas {
     position: relative;
     min-height: 0;
     flex: 1;
   }
 
-  .ai-graph-panel-empty {
+  .ai-workflow-panel-empty {
     display: flex;
     height: 100%;
     align-items: center;
@@ -9492,19 +9492,19 @@
     color: var(--text-muted);
   }
 
-  .ai-graph-minimap {
+  .ai-workflow-minimap {
     border: 1px solid var(--border-dim);
     border-radius: 8px;
     background: var(--bg-card);
     box-shadow: 0 2px 10px rgb(23 32 29 / 0.08);
   }
 
-  .ai-graph-minimap .react-flow__minimap-mask {
+  .ai-workflow-minimap .react-flow__minimap-mask {
     fill: rgb(var(--accent-rgb) / 0.06);
   }
 
   /* 状态 chip（计划 + 节点共用） */
-  .ai-graph-chip {
+  .ai-workflow-chip {
     flex-shrink: 0;
     border-radius: 999px;
     padding: 2px 9px;
@@ -9513,43 +9513,43 @@
     line-height: 1.5;
   }
 
-  .ai-graph-chip--draft {
+  .ai-workflow-chip--draft {
     background: rgb(var(--warning-rgb) / 0.14);
     color: var(--warning);
   }
 
-  .ai-graph-chip--running {
+  .ai-workflow-chip--running {
     background: rgb(var(--accent-rgb) / 0.12);
     color: var(--accent);
   }
 
-  .ai-graph-chip--completed {
+  .ai-workflow-chip--completed {
     background: rgb(var(--success-rgb) / 0.12);
     color: var(--success);
   }
 
-  .ai-graph-chip--failed {
+  .ai-workflow-chip--failed {
     background: rgb(var(--danger-rgb) / 0.1);
     color: var(--danger);
   }
 
-  .ai-graph-chip--cancelled {
+  .ai-workflow-chip--cancelled {
     background: var(--bg-subtle);
     color: var(--text-muted);
   }
 
-  /* 执行结果类型 chip（v11：结果视图 / 列表行 / 聊天流图卡片） */
-  .ai-graph-chip--review {
+  /* 执行结果类型 chip（结果视图 / 列表行 / 聊天流工作流卡片） */
+  .ai-workflow-chip--review {
     background: rgb(var(--accent-rgb) / 0.12);
     color: var(--accent);
   }
 
-  .ai-graph-chip--edit {
+  .ai-workflow-chip--edit {
     background: rgb(var(--success-rgb) / 0.12);
     color: var(--success);
   }
 
-  .ai-graph-chip--unknown {
+  .ai-workflow-chip--unknown {
     background: var(--bg-subtle);
     color: var(--text-muted);
   }
@@ -9557,7 +9557,7 @@
   /* 节点状态徽章（原 chip--node-* 六类）已由共享 StatusPill 取代（UI-14） */
 
   /* React Flow 自定义节点 */
-  .ai-graph-node {
+  .ai-workflow-node {
     position: relative;
     display: flex;
     align-items: stretch;
@@ -9576,19 +9576,19 @@
       transform 120ms ease-out;
   }
 
-  .ai-graph-node:hover {
+  .ai-workflow-node:hover {
     border-color: var(--border-strong);
     box-shadow: 0 4px 14px rgb(23 32 29 / 0.1);
     transform: translateY(-1px);
   }
 
-  .ai-graph-node--selected,
-  .ai-graph-node--selected:hover {
+  .ai-workflow-node--selected,
+  .ai-workflow-node--selected:hover {
     border-color: var(--border-focus);
     box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / 0.22);
   }
 
-  .ai-graph-node-status-ring {
+  .ai-workflow-node-status-ring {
     flex-shrink: 0;
     align-self: center;
     width: 4px;
@@ -9597,45 +9597,45 @@
     background: var(--border-strong);
   }
 
-  .ai-graph-node--pending .ai-graph-node-status-ring {
+  .ai-workflow-node--pending .ai-workflow-node-status-ring {
     background: var(--border-strong);
   }
 
-  .ai-graph-node--running {
+  .ai-workflow-node--running {
     border-color: var(--border-accent);
   }
 
-  .ai-graph-node--running .ai-graph-node-status-ring {
+  .ai-workflow-node--running .ai-workflow-node-status-ring {
     background: var(--accent);
     /* 不加呼吸/脉冲动画：运行中的无限 opacity/box-shadow 动画会把节点提升为
        合成层，而 React Flow 画布经 fitView 缩放（非整数 scale）后，WKWebView
-       会对持续重绘的缩放图层降级栅格化，导致整个图界面字体发虚（蒙版感）。
+       会对持续重绘的缩放图层降级栅格化，导致整个工作流界面字体发虚（蒙版感）。
        运行态用静态高亮 + 状态文案表达即可。 */
     box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / 0.28);
   }
 
-  .ai-graph-node--succeeded .ai-graph-node-status-ring {
+  .ai-workflow-node--succeeded .ai-workflow-node-status-ring {
     background: var(--success);
   }
 
-  .ai-graph-node--failed {
+  .ai-workflow-node--failed {
     border-color: rgb(var(--danger-rgb) / 0.45);
     background: rgb(var(--danger-rgb) / 0.03);
   }
 
-  .ai-graph-node--failed .ai-graph-node-status-ring {
+  .ai-workflow-node--failed .ai-workflow-node-status-ring {
     background: var(--danger);
   }
 
-  .ai-graph-node--skipped .ai-graph-node-status-ring {
+  .ai-workflow-node--skipped .ai-workflow-node-status-ring {
     background: var(--warning);
   }
 
-  .ai-graph-node--cancelled .ai-graph-node-status-ring {
+  .ai-workflow-node--cancelled .ai-workflow-node-status-ring {
     background: var(--text-hint);
   }
 
-  .ai-graph-node-main {
+  .ai-workflow-node-main {
     display: flex;
     min-width: 0;
     flex: 1;
@@ -9645,7 +9645,7 @@
   }
 
   /* 任务标题（UI-13 压缩版一级信息）：单行省略，悬浮（title 属性）显示全文 */
-  .ai-graph-node-title {
+  .ai-workflow-node-title {
     overflow: hidden;
     font-size: 12.5px;
     font-weight: 600;
@@ -9656,7 +9656,7 @@
   }
 
   /* 角色/模型：二级小字 */
-  .ai-graph-node-agent {
+  .ai-workflow-node-agent {
     overflow: hidden;
     font-size: 11px;
     color: var(--text-muted);
@@ -9665,7 +9665,7 @@
   }
 
   /* 结果摘要：最多两行（实时输出优先，回退任务描述；全文在抽屉） */
-  .ai-graph-node-summary {
+  .ai-workflow-node-summary {
     display: -webkit-box;
     overflow: hidden;
     font-size: 10px;
@@ -9676,14 +9676,14 @@
     word-break: break-word;
   }
 
-  .ai-graph-node-meta-row {
+  .ai-workflow-node-meta-row {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 11px;
   }
 
-  .ai-graph-node-duration {
+  .ai-workflow-node-duration {
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
@@ -9693,7 +9693,7 @@
   }
 
   /* 连接锚点：默认隐藏，悬浮/选中时浮现 */
-  .ai-graph-node-handle {
+  .ai-workflow-node-handle {
     width: 7px;
     height: 7px;
     border: 1px solid var(--border-strong);
@@ -9702,32 +9702,32 @@
     transition: opacity 120ms ease-out;
   }
 
-  .ai-graph-node:hover .ai-graph-node-handle,
-  .ai-graph-node--selected .ai-graph-node-handle {
+  .ai-workflow-node:hover .ai-workflow-node-handle,
+  .ai-workflow-node--selected .ai-workflow-node-handle {
     opacity: 1;
   }
 
   /* 连线：颜色由各状态的 inline style 给出，这里只管线形态 */
-  .ai-graph-edge {
+  .ai-workflow-edge {
     stroke-width: 1.5;
   }
 
-  .ai-graph-edge--waiting {
+  .ai-workflow-edge--waiting {
     stroke-dasharray: 5 4;
     opacity: 0.65;
   }
 
-  .ai-graph-edge--failed {
+  .ai-workflow-edge--failed {
     stroke-width: 1.8;
   }
 
   /* 弱化点阵背景 */
-  .ai-graph-panel-canvas .react-flow__background {
+  .ai-workflow-panel-canvas .react-flow__background {
     opacity: 0.4;
   }
 
   /* 画布左下角控制条 */
-  .ai-graph-controls {
+  .ai-workflow-controls {
     position: absolute;
     bottom: 12px;
     left: 12px;
@@ -9742,7 +9742,7 @@
     box-shadow: 0 2px 10px rgb(23 32 29 / 0.08);
   }
 
-  .ai-graph-control-btn {
+  .ai-workflow-control-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -9756,34 +9756,34 @@
       color 100ms ease-out;
   }
 
-  .ai-graph-control-btn:hover {
+  .ai-workflow-control-btn:hover {
     background: var(--bg-subtle);
     color: var(--text-primary);
   }
 
-  .ai-graph-control-btn:disabled {
+  .ai-workflow-control-btn:disabled {
     opacity: 0.4;
     cursor: default;
   }
 
-  .ai-graph-control-btn:disabled:hover {
+  .ai-workflow-control-btn:disabled:hover {
     background: transparent;
     color: var(--text-secondary);
   }
 
   /* 存在手动拖动的布局时高亮提示可重置 */
-  .ai-graph-control-btn--active {
+  .ai-workflow-control-btn--active {
     color: var(--accent);
   }
 
   /* 底部共享 state 检查器 */
-  .ai-graph-state {
+  .ai-workflow-state {
     flex-shrink: 0;
     border-top: 1px solid var(--border-dim);
     background: var(--bg-card);
   }
 
-  .ai-graph-state-header {
+  .ai-workflow-state-header {
     display: flex;
     width: 100%;
     align-items: center;
@@ -9793,40 +9793,40 @@
     cursor: pointer;
   }
 
-  .ai-graph-state-title {
+  .ai-workflow-state-title {
     font-size: 12px;
     font-weight: 600;
   }
 
-  .ai-graph-state-count {
+  .ai-workflow-state-count {
     flex: 1;
     text-align: left;
     font-size: 11px;
     color: var(--text-muted);
   }
 
-  .ai-graph-state-body {
+  .ai-workflow-state-body {
     max-height: 180px;
     overflow-y: auto;
     padding: 0 14px 10px;
   }
 
-  .ai-graph-state-empty {
+  .ai-workflow-state-empty {
     padding: 6px 0;
     font-size: 12px;
     color: var(--text-muted);
   }
 
-  .ai-graph-state-row {
+  .ai-workflow-state-row {
     border-top: 1px solid var(--border-dim);
     padding: 4px 0;
   }
 
-  .ai-graph-state-row:first-child {
+  .ai-workflow-state-row:first-child {
     border-top: none;
   }
 
-  .ai-graph-state-row-head {
+  .ai-workflow-state-row-head {
     display: flex;
     width: 100%;
     align-items: baseline;
@@ -9835,15 +9835,15 @@
     text-align: left;
   }
 
-  .ai-graph-state-row-head:disabled {
+  .ai-workflow-state-row-head:disabled {
     cursor: default;
   }
 
-  .ai-graph-state-row-head:not(:disabled) {
+  .ai-workflow-state-row-head:not(:disabled) {
     cursor: pointer;
   }
 
-  .ai-graph-state-key {
+  .ai-workflow-state-key {
     flex-shrink: 0;
     border-radius: 4px;
     background: rgb(var(--accent-rgb) / 0.1);
@@ -9853,12 +9853,12 @@
     color: var(--accent);
   }
 
-  .ai-graph-state-key--extra {
+  .ai-workflow-state-key--extra {
     background: var(--bg-subtle);
     color: var(--text-muted);
   }
 
-  .ai-graph-state-desc {
+  .ai-workflow-state-desc {
     flex-shrink: 0;
     max-width: 34%;
     overflow: hidden;
@@ -9868,7 +9868,7 @@
     white-space: nowrap;
   }
 
-  .ai-graph-state-value {
+  .ai-workflow-state-value {
     min-width: 0;
     flex: 1;
     overflow: hidden;
@@ -9879,7 +9879,7 @@
     white-space: nowrap;
   }
 
-  .ai-graph-state-full {
+  .ai-workflow-state-full {
     max-height: 160px;
     overflow: auto;
     margin: 4px 0 6px;
@@ -9895,7 +9895,7 @@
   }
 
   /* 右侧节点详情抽屉 */
-  .ai-graph-drawer {
+  .ai-workflow-drawer {
     position: absolute;
     top: 0;
     right: 0;
@@ -9909,7 +9909,7 @@
     box-shadow: -12px 0 32px rgb(23 32 29 / 0.14);
   }
 
-  .ai-graph-drawer-header {
+  .ai-workflow-drawer-header {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -9917,7 +9917,7 @@
     border-bottom: 1px solid var(--border-dim);
   }
 
-  .ai-graph-drawer-agent {
+  .ai-workflow-drawer-agent {
     display: inline-flex;
     min-width: 0;
     flex: 1;
@@ -9931,31 +9931,31 @@
     white-space: nowrap;
   }
 
-  .ai-graph-drawer-duration {
+  .ai-workflow-drawer-duration {
     font-size: 11px;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
   }
 
-  .ai-graph-drawer-body {
+  .ai-workflow-drawer-body {
     min-height: 0;
     flex: 1;
     overflow-y: auto;
     padding: 14px;
   }
 
-  .ai-graph-drawer-title {
+  .ai-workflow-drawer-title {
     margin: 0 0 12px;
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
   }
 
-  .ai-graph-drawer-section {
+  .ai-workflow-drawer-section {
     margin-bottom: 14px;
   }
 
-  .ai-graph-drawer-label {
+  .ai-workflow-drawer-label {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -9967,12 +9967,12 @@
     color: var(--text-muted);
   }
 
-  .ai-graph-drawer-label--toggle {
+  .ai-workflow-drawer-label--toggle {
     cursor: pointer;
     letter-spacing: 0.12em;
   }
 
-  .ai-graph-drawer-hint {
+  .ai-workflow-drawer-hint {
     font-size: 11px;
     font-weight: 400;
     letter-spacing: normal;
@@ -9981,7 +9981,7 @@
   }
 
 
-  .ai-graph-drawer-pre {
+  .ai-workflow-drawer-pre {
     max-height: 260px;
     overflow: auto;
     margin: 0;
@@ -9996,11 +9996,11 @@
     word-break: break-word;
   }
 
-  .ai-graph-drawer-pre--output {
+  .ai-workflow-drawer-pre--output {
     max-height: 380px;
   }
 
-  .ai-graph-drawer-error {
+  .ai-workflow-drawer-error {
     border: 1px solid rgb(var(--danger-rgb) / 0.3);
     border-radius: 6px;
     background: rgb(var(--danger-rgb) / 0.06);
@@ -10017,7 +10017,7 @@
 
 
 
-  .ai-graph-drawer-deps-chips {
+  .ai-workflow-drawer-deps-chips {
     display: flex;
     min-width: 0;
     flex: 1;
@@ -10025,7 +10025,7 @@
     gap: 5px;
   }
 
-  .ai-graph-dep-chip {
+  .ai-workflow-dep-chip {
     display: inline-flex;
     max-width: 100%;
     align-items: center;
@@ -10045,7 +10045,7 @@
       color 100ms ease-out;
   }
 
-  .ai-graph-dep-chip:hover {
+  .ai-workflow-dep-chip:hover {
     border-color: var(--border-accent);
     color: var(--text-primary);
   }
@@ -10060,8 +10060,8 @@
 
 
 
-  /* 抽屉底部操作区（整图级停止/重试） */
-  .ai-graph-drawer-footer {
+  /* 抽屉底部操作区（整个工作流级停止/重试） */
+  .ai-workflow-drawer-footer {
     display: flex;
     flex-shrink: 0;
     justify-content: flex-end;
@@ -10072,7 +10072,7 @@
   }
 
   /* 消息流内联计划卡片 */
-  .ai-graph-plan-card {
+  .ai-workflow-plan-card {
     display: flex;
     align-items: stretch;
     gap: 10px;
@@ -10085,7 +10085,7 @@
     text-align: left;
   }
 
-  .ai-graph-plan-card-icon {
+  .ai-workflow-plan-card-icon {
     display: flex;
     flex-shrink: 0;
     align-items: center;
@@ -10098,7 +10098,7 @@
     color: var(--accent);
   }
 
-  .ai-graph-plan-card-main {
+  .ai-workflow-plan-card-main {
     display: flex;
     min-width: 0;
     flex: 1;
@@ -10106,13 +10106,13 @@
     gap: 5px;
   }
 
-  .ai-graph-plan-card-title-row {
+  .ai-workflow-plan-card-title-row {
     display: flex;
     align-items: center;
     gap: 8px;
   }
 
-  .ai-graph-plan-card-title {
+  .ai-workflow-plan-card-title {
     min-width: 0;
     flex: 1;
     overflow: hidden;
@@ -10123,7 +10123,7 @@
     white-space: nowrap;
   }
 
-  .ai-graph-plan-card-summary {
+  .ai-workflow-plan-card-summary {
     display: -webkit-box;
     overflow: hidden;
     font-size: 12px;
@@ -10133,33 +10133,33 @@
     -webkit-line-clamp: 2;
   }
 
-  .ai-graph-plan-card-footer {
+  .ai-workflow-plan-card-footer {
     display: flex;
     align-items: center;
     gap: 10px;
   }
 
-  .ai-graph-plan-card-meta {
+  .ai-workflow-plan-card-meta {
     flex: 1;
     font-size: 11px;
     color: var(--text-hint);
   }
 
-  .ai-graph-drawer-title-row {
+  .ai-workflow-drawer-title-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
 
-  .ai-graph-drawer-duration {
+  .ai-workflow-drawer-duration {
     display: inline-flex;
     align-items: center;
     gap: 4px;
   }
 
   /* 头部上下文占用 chip：与耗时 chip 同形，突出可读性 */
-  .ai-graph-drawer-usage {
+  .ai-workflow-drawer-usage {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -10169,7 +10169,7 @@
   }
 
   /* 执行时间线中的运行通知行（上下文压缩 / 自动重试） */
-  .ai-graph-notice-row {
+  .ai-workflow-notice-row {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -10181,33 +10181,33 @@
   }
 
   /* 进行中（started/updated 归一为 running）：accent 描边区别于已完成/失败。 */
-  .ai-graph-notice-row--running {
+  .ai-workflow-notice-row--running {
     border-color: rgb(var(--accent-rgb) / 0.5);
     color: var(--accent);
   }
 
-  .ai-graph-notice-row--failed {
+  .ai-workflow-notice-row--failed {
     border-color: var(--danger);
     color: var(--danger);
   }
 
-  .ai-graph-notice-icon {
+  .ai-workflow-notice-icon {
     width: 12px;
     height: 12px;
     flex-shrink: 0;
   }
 
-  .ai-graph-notice-title {
+  .ai-workflow-notice-title {
     flex-shrink: 0;
   }
 
-  .ai-graph-notice-detail {
+  .ai-workflow-notice-detail {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .ai-graph-harness-editor {
+  .ai-workflow-harness-editor {
     display: grid;
     gap: 8px;
     padding: 12px;
@@ -10216,7 +10216,7 @@
     background: var(--bg-subtle);
   }
 
-  .ai-graph-expected-files {
+  .ai-workflow-expected-files {
     width: 100%;
     padding: 6px 8px;
     border: 1px solid var(--border-accent);
@@ -10227,12 +10227,12 @@
     line-height: 1.4;
   }
 
-  .ai-graph-expected-files:focus {
+  .ai-workflow-expected-files:focus {
     outline: none;
     border-color: var(--accent);
   }
 
-  .ai-graph-catalog-diagnostics {
+  .ai-workflow-catalog-diagnostics {
     border-left: 2px solid var(--warning);
     padding-left: 8px;
     color: var(--warning);
@@ -10240,12 +10240,12 @@
     line-height: 1.5;
   }
 
-  .ai-graph-output-section {
+  .ai-workflow-output-section {
     position: relative;
   }
 
-  /* 详情态一级视图切换（执行图 | 执行结果）：与头部自绘按钮同一形态语言 */
-  .ai-graph-view-switch {
+  /* 详情态一级视图切换（工作流 | 执行结果）：与头部自绘按钮同一形态语言 */
+  .ai-workflow-view-switch {
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
@@ -10256,7 +10256,7 @@
     background: var(--bg-subtle);
   }
 
-  .ai-graph-view-switch-tab {
+  .ai-workflow-view-switch-tab {
     border: 0;
     border-radius: 6px;
     padding: 3px 10px;
@@ -10267,11 +10267,11 @@
     cursor: pointer;
   }
 
-  .ai-graph-view-switch-tab:hover {
+  .ai-workflow-view-switch-tab:hover {
     color: var(--text-primary);
   }
 
-  .ai-graph-view-switch-tab.is-active {
+  .ai-workflow-view-switch-tab.is-active {
     background: var(--bg-card);
     color: var(--text-primary);
     box-shadow: 0 1px 2px rgb(23 32 29 / 0.08);
@@ -10279,13 +10279,13 @@
 
   /* 已产出执行结果的「执行结果」页签：非活动态以 accent 点亮，
      运行完成后结果是最值得看的落点（用户可见的强调） */
-  .ai-graph-view-switch-tab.has-result:not(.is-active) {
+  .ai-workflow-view-switch-tab.has-result:not(.is-active) {
     color: var(--accent);
     font-weight: 600;
   }
 
   /* 列表行右侧「结果」直达按钮 */
-  .ai-graph-list-result-btn {
+  .ai-workflow-list-result-btn {
     flex-shrink: 0;
     width: 36px;
     border: 1px solid var(--border-dim);
@@ -10296,13 +10296,13 @@
     cursor: pointer;
   }
 
-  .ai-graph-list-result-btn:hover {
+  .ai-workflow-list-result-btn:hover {
     border-color: rgb(var(--accent-rgb) / 0.5);
     background: rgb(var(--accent-rgb) / 0.08);
   }
 
   /* 执行结果视图（详情态一级视图）：结论 md + 修改文件清单 */
-  .ai-graph-result {
+  .ai-workflow-result {
     display: flex;
     min-height: 0;
     flex: 1;
@@ -10312,26 +10312,26 @@
     overflow-y: auto;
   }
 
-  .ai-graph-result-meta {
+  .ai-workflow-result-meta {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
   }
 
-  .ai-graph-result-chips {
+  .ai-workflow-result-chips {
     display: inline-flex;
     align-items: center;
     gap: 8px;
   }
 
-  .ai-graph-result-meta-text {
+  .ai-workflow-result-meta-text {
     font-size: 12px;
     color: var(--text-muted);
   }
 
   /* 验收理由正文：按结论状态着色的左边条引用块 */
-  .ai-graph-result-verdict {
+  .ai-workflow-result-verdict {
     margin: 0;
     padding: 8px 12px;
     border-left: 3px solid var(--border-strong);
@@ -10344,25 +10344,25 @@
     word-break: break-word;
   }
 
-  .ai-graph-result-verdict[data-status="pass"] {
+  .ai-workflow-result-verdict[data-status="pass"] {
     border-left-color: var(--success);
   }
 
-  .ai-graph-result-verdict[data-status="partial"] {
+  .ai-workflow-result-verdict[data-status="partial"] {
     border-left-color: var(--warning);
   }
 
-  .ai-graph-result-verdict[data-status="fail"] {
+  .ai-workflow-result-verdict[data-status="fail"] {
     border-left-color: var(--danger);
   }
 
-  .ai-graph-result-section {
+  .ai-workflow-result-section {
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
 
-  .ai-graph-result-section-label {
+  .ai-workflow-result-section-label {
     display: flex;
     align-items: baseline;
     gap: 8px;
@@ -10371,13 +10371,13 @@
     color: var(--text-primary);
   }
 
-  .ai-graph-result-hint {
+  .ai-workflow-result-hint {
     font-size: 11px;
     font-weight: 400;
     color: var(--text-hint);
   }
 
-  .ai-graph-result-empty {
+  .ai-workflow-result-empty {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -10389,7 +10389,7 @@
   }
 
   /* 结果视图整页空态（未运行 / 运行中 / 历史运行无结果） */
-  .ai-graph-result-blank {
+  .ai-workflow-result-blank {
     display: flex;
     flex: 1;
     flex-direction: column;
@@ -10400,13 +10400,13 @@
     color: var(--text-hint);
   }
 
-  .ai-graph-result-blank-title {
+  .ai-workflow-result-blank-title {
     margin: 0;
     font-size: 13px;
     color: var(--text-muted);
   }
 
-  .ai-graph-result-blank-hint {
+  .ai-workflow-result-blank-hint {
     margin: 0;
     max-width: 320px;
     text-align: center;
@@ -10415,7 +10415,7 @@
     color: var(--text-hint);
   }
 
-  .ai-graph-result-files {
+  .ai-workflow-result-files {
     display: flex;
     flex-direction: column;
     margin: 0;
@@ -10426,7 +10426,7 @@
     overflow: hidden;
   }
 
-  .ai-graph-result-file {
+  .ai-workflow-result-file {
     display: flex;
     width: 100%;
     align-items: center;
@@ -10439,27 +10439,27 @@
     cursor: pointer;
   }
 
-  .ai-graph-result-file:last-child {
+  .ai-workflow-result-file:last-child {
     border-bottom: 0;
   }
 
-  .ai-graph-result-file:hover:not(:disabled) {
+  .ai-workflow-result-file:hover:not(:disabled) {
     background: var(--bg-hover);
   }
 
   /* 工作区外路径（审计前缀）：不可打开，弱化且保留说明 */
-  .ai-graph-result-file:disabled {
+  .ai-workflow-result-file:disabled {
     cursor: default;
     opacity: 0.75;
   }
 
-  .ai-graph-result-file-name {
+  .ai-workflow-result-file-name {
     flex-shrink: 0;
     font-size: 12px;
     color: var(--text-primary);
   }
 
-  .ai-graph-result-file-dir {
+  .ai-workflow-result-file-dir {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -10469,7 +10469,7 @@
   }
 
   /* 节点输出 markdown 渲染态与「渲染/原文」切换 */
-  .ai-graph-drawer-output-toggle {
+  .ai-workflow-drawer-output-toggle {
     border: 0;
     padding: 1px 6px;
     background: transparent;
@@ -10479,36 +10479,36 @@
     cursor: pointer;
   }
 
-  .ai-graph-drawer-output-toggle:hover {
+  .ai-workflow-drawer-output-toggle:hover {
     color: var(--accent);
     background: var(--bg-subtle);
   }
 
-  .ai-graph-drawer-output-md {
+  .ai-workflow-drawer-output-md {
     display: flex;
     flex-direction: column;
     gap: 6px;
   }
 
-  .ai-graph-drawer-output-omitted {
+  .ai-workflow-drawer-output-omitted {
     margin: 0;
     font-size: 10px;
     color: var(--text-hint);
   }
 
-  .ai-graph-drawer-output-empty {
+  .ai-workflow-drawer-output-empty {
     margin: 0;
     font-size: 11px;
     color: var(--text-muted);
   }
 
-  .ai-graph-tool-shell {
+  .ai-workflow-tool-shell {
     display: flex;
     flex-direction: column;
     gap: 6px;
   }
 
-  .ai-graph-follow-toggle {
+  .ai-workflow-follow-toggle {
     display: inline-flex;
     align-self: flex-end;
     align-items: center;
@@ -10521,25 +10521,25 @@
     cursor: pointer;
   }
 
-  .ai-graph-tool-empty {
+  .ai-workflow-tool-empty {
     margin: 0;
     border: 1px dashed var(--border-dim);
     border-radius: 8px;
     padding: 8px 10px;
   }
 
-  .ai-graph-tool-scroll {
+  .ai-workflow-tool-scroll {
     position: relative;
     height: min(400px, 44vh);
     overflow-y: auto;
   }
 
-  .ai-graph-tool-virtual {
+  .ai-workflow-tool-virtual {
     position: relative;
     width: 100%;
   }
 
-  .ai-graph-tool-row {
+  .ai-workflow-tool-row {
     position: absolute;
     top: 0;
     left: 0;
@@ -10548,7 +10548,7 @@
   }
 
   /* 工具调用卡片：折叠态单行摘要（名称/状态/字符数），展开态格式化输入/输出 */
-  .ai-graph-tool-card {
+  .ai-workflow-tool-card {
     overflow: hidden;
     border: 1px solid var(--border-dim);
     border-radius: 8px;
@@ -10556,15 +10556,15 @@
     transition: border-color 120ms ease-out;
   }
 
-  .ai-graph-tool-card--open {
+  .ai-workflow-tool-card--open {
     border-color: var(--border-strong);
   }
 
-  .ai-graph-tool-card--failed {
+  .ai-workflow-tool-card--failed {
     border-color: rgb(var(--danger-rgb) / 0.4);
   }
 
-  .ai-graph-tool-card-head {
+  .ai-workflow-tool-card-head {
     display: flex;
     width: 100%;
     align-items: center;
@@ -10578,18 +10578,18 @@
     cursor: pointer;
   }
 
-  .ai-graph-tool-card-head:hover {
+  .ai-workflow-tool-card-head:hover {
     background: var(--bg-subtle);
   }
 
-  .ai-graph-tool-card-icon {
+  .ai-workflow-tool-card-icon {
     height: 12px;
     width: 12px;
     flex-shrink: 0;
     color: var(--text-hint);
   }
 
-  .ai-graph-tool-card-name {
+  .ai-workflow-tool-card-name {
     overflow: hidden;
     min-width: 0;
     flex-shrink: 1;
@@ -10600,7 +10600,7 @@
     white-space: nowrap;
   }
 
-  .ai-graph-tool-status {
+  .ai-workflow-tool-status {
     flex-shrink: 0;
     border-radius: 999px;
     padding: 1px 7px;
@@ -10609,22 +10609,22 @@
     white-space: nowrap;
   }
 
-  .ai-graph-tool-status--running {
+  .ai-workflow-tool-status--running {
     background: rgb(var(--accent-rgb) / 0.12);
     color: var(--accent);
   }
 
-  .ai-graph-tool-status--succeeded {
+  .ai-workflow-tool-status--succeeded {
     background: rgb(var(--success-rgb) / 0.12);
     color: var(--success);
   }
 
-  .ai-graph-tool-status--failed {
+  .ai-workflow-tool-status--failed {
     background: rgb(var(--danger-rgb) / 0.12);
     color: var(--danger);
   }
 
-  .ai-graph-tool-card-chars {
+  .ai-workflow-tool-card-chars {
     margin-left: auto;
     flex-shrink: 0;
     color: var(--text-hint);
@@ -10633,7 +10633,7 @@
     white-space: nowrap;
   }
 
-  .ai-graph-tool-card-duration {
+  .ai-workflow-tool-card-duration {
     flex-shrink: 0;
     color: var(--text-hint);
     font-size: 10px;
@@ -10641,7 +10641,7 @@
     white-space: nowrap;
   }
 
-  .ai-graph-tool-card-body {
+  .ai-workflow-tool-card-body {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -10650,7 +10650,7 @@
     padding: 8px 9px 9px;
   }
 
-  .ai-graph-tool-block-label {
+  .ai-workflow-tool-block-label {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -10661,7 +10661,7 @@
     color: var(--text-muted);
   }
 
-  .ai-graph-tool-pre {
+  .ai-workflow-tool-pre {
     max-height: 220px;
     overflow: auto;
     margin: 0;
@@ -10676,13 +10676,13 @@
     word-break: break-word;
   }
 
-  .ai-graph-tool-truncated {
+  .ai-workflow-tool-truncated {
     margin-top: 4px;
     font-size: 10px;
     color: var(--text-hint);
   }
 
-  .ai-graph-tool-block-empty {
+  .ai-workflow-tool-block-empty {
     border: 1px dashed var(--border-dim);
     border-radius: 6px;
     padding: 6px 10px;

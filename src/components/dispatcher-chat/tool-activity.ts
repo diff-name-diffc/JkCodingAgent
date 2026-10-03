@@ -182,7 +182,7 @@ export type ToolVerbCategory =
   | "subagent"
   | "browser"
   | "image"
-  | "graph"
+  | "workflow"
   | "program"
   | "mcp"
   | "other";
@@ -200,7 +200,7 @@ const TOOL_VERB_MAP: Record<string, ToolVerbCategory> = {
   grep: "search",
   glob: "search",
   call_sub_agent: "subagent",
-  submit_graph: "graph",
+  submit_workflow: "workflow",
   run_tool_program: "program",
   generate_image: "image",
   edit_image: "image",
@@ -258,7 +258,7 @@ const CATEGORY_ORDER: readonly ToolVerbCategory[] = [
   "subagent",
   "browser",
   "image",
-  "graph",
+  "workflow",
   "program",
   "mcp",
   "other",
@@ -272,7 +272,7 @@ const CATEGORY_TEXT: Record<ToolVerbCategory, (count: number) => string> = {
   subagent: (n) => `子智能体 ${n}`,
   browser: (n) => `浏览器 ${n}`,
   image: (n) => `图像 ${n}`,
-  graph: (n) => `执行图 ${n}`,
+  workflow: (n) => `工作流 ${n}`,
   program: (n) => `程序 ${n}`,
   mcp: (n) => `MCP ${n}`,
   other: (n) => `其他 ${n}`,

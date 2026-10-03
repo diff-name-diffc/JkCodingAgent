@@ -70,7 +70,7 @@ export const DEFAULT_CHAT_CATEGORY_SYSTEM_PROMPT = `# 普通聊天
 
 // ── 模块级单例状态 ────────────────────────────────────────────────────────────
 // 设置弹窗可随多个 keep-alive 项目页同时挂载、也会随项目关闭被连带卸载，
-// 因此状态与保存管线放模块级（模式参照 graph-store.ts）：
+// 因此状态与保存管线放模块级（模式参照 workflow-store.ts）：
 // 弹窗卸载不中断 debounce/保存，多个弹窗实例共享同一份状态、编辑互相同步。
 
 let settings: AhaSettingsV2 | null = null;

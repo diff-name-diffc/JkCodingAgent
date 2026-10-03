@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { isImeComposing } from "../../lib/keyboard-bindings";
 import { buildSiblingPath, getRelativePathDisplay } from "../../utils/filePaths";
@@ -92,7 +93,11 @@ export function FileExplorerRenameDialog({
     void onSubmit(trimmedName);
   };
 
-  return (
+  // portal 到 body：本弹窗内联渲染在文件浏览器（导航栏槽位）内，而
+  // `.ai-project-shell > *` 会给每个布局槽位建 position:relative;z-index:1 的
+  // 层叠上下文——主区（会话窗口）在 DOM 序上位于导航栏之后，会把导航栏子树内
+  // 的 overlay 整体压在下面（z-index:100 跳不出父级层叠上下文）。
+  return createPortal(
     <div
       className="ai-dialog-overlay"
       onClick={() => {
@@ -175,7 +180,8 @@ export function FileExplorerRenameDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

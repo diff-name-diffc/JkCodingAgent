@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Plug, Plus, RefreshCw } from "lucide-react";
@@ -7,11 +7,9 @@ import { cn } from "../../../lib/cn";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import { Section } from "../Section";
-import { toast } from "../../Toast";
-import { publishSaveSource, registerSaveSource } from "../save-sources";
+import { useAutoSaveSource } from "../use-auto-save-source";
 import { McpServerCard } from "./McpServerCard";
 import {
-  AUTOSAVE_DELAY_MS,
   EMPTY_SERVER,
   nextServerName,
   parseConfigText,
@@ -34,17 +32,11 @@ export function McpServersPage() {
   const [entries, setEntries] = useState<McpEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null);
   const [mode, setMode] = useState<EditorMode>("form");
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
-
-  const entriesRef = useRef(entries);
-  entriesRef.current = entries;
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const savingRef = useRef(false);
 
   const loadConfig = useCallback(async (): Promise<McpConfig | null> => {
     setLoading(true);
@@ -61,75 +53,20 @@ export function McpServersPage() {
     }
   }, []);
 
-  const saveNow = useCallback(async () => {
-    if (savingRef.current) return;
-    savingRef.current = true;
-    publishSaveSource("mcp-servers", {
-      mode: "auto",
-      dirty: false,
-      saving: true,
-      hasError: false,
-    });
-    try {
+  const { scheduleSave, flush, cancelPending, error: saveError } = useAutoSaveSource({
+    id: "mcp-servers",
+    read: () => entries,
+    save: async (next) => {
       const saved = await invoke<McpConfig>("mcp_global_config_save", {
-        config: toConfig(entriesRef.current),
+        config: toConfig(next),
       });
       setEntries(toEntries(saved));
-      setSaveError(null);
-      publishSaveSource("mcp-servers", {
-        mode: "auto",
-        dirty: false,
-        saving: false,
-        hasError: false,
-      });
-    } catch (err) {
-      setSaveError(String(err));
-      publishSaveSource("mcp-servers", {
-        mode: "auto",
-        dirty: false,
-        saving: false,
-        hasError: true,
-      });
-      toast.error(`保存失败：${String(err)}`);
-    } finally {
-      savingRef.current = false;
-    }
-  }, []);
-
-  const scheduleSave = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    publishSaveSource("mcp-servers", {
-      mode: "auto",
-      dirty: true,
-      saving: false,
-      hasError: false,
-    });
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      void saveNow();
-    }, AUTOSAVE_DELAY_MS);
-  }, [saveNow]);
-
-  /** 立即落盘：清 debounce timer 后保存（注册表 flush / 表单→JSON 切换 / 卸载共用）。 */
-  const flushPending = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    return saveNow();
-  }, [saveNow]);
+    },
+  });
 
   useEffect(() => {
     loadConfig();
-    const unregister = registerSaveSource("mcp-servers", flushPending);
-    return () => {
-      unregister();
-      // flush-then-clear（UI-21 遗留）：卸载（切导航页）前把 debounce 窗口内的
-      // 待保存编辑落盘——saveNow 经 entriesRef 读最新值，组件销毁后的 setState
-      // 为 no-op，不影响落库。此前 cleanup 只 clearTimeout，会丢 400ms 内编辑。
-      if (timerRef.current) void flushPending();
-    };
-  }, [loadConfig, flushPending]);
+  }, [loadConfig]);
 
   function updateEntry(index: number, updater: (entry: McpEntry) => McpEntry) {
     setEntries((prev) => prev.map((entry, i) => (i === index ? updater(entry) : entry)));
@@ -173,8 +110,8 @@ export function McpServersPage() {
   /** 表单 → JSON：先把未落盘的表单编辑保存出去，再序列化当前条目。 */
   function switchToJson() {
     if (mode === "json") return;
-    void flushPending();
-    setJsonText(serializeConfig(toConfig(entriesRef.current)));
+    void flush();
+    setJsonText(serializeConfig(toConfig(entries)));
     setJsonError(null);
     setMode("json");
   }
@@ -203,10 +140,7 @@ export function McpServersPage() {
     } else {
       // 无效 JSON 不进条目、不触发保存：上一份有效配置仍然生效。
       setJsonError(parsed.error);
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
+      cancelPending();
     }
   }
 
@@ -271,7 +205,7 @@ export function McpServersPage() {
           </div>
 
           {loadError && <p className="ai-set-field-error">{loadError}</p>}
-          {saveError && <p className="ai-set-field-error">{saveError}</p>}
+          {saveError && <p className="ai-set-field-error">{saveError.message}</p>}
 
           {loading ? (
             <div className="ai-settings-empty">加载中...</div>

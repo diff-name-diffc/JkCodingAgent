@@ -14,222 +14,150 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// Qdrant 连接配置（外部独立部署的向量库实例）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// 默认值唯一事实源是手写 `Default` impl；结构级 `#[serde(default)]` 让
+/// 反序列化缺失字段时直接取自 `Self::default()`（不再逐字段声明 default fn）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct QdrantConfig {
     /// Qdrant HTTP 端点，例如 `http://127.0.0.1:6333`。
-    #[serde(default = "default_qdrant_url")]
     pub url: String,
     /// Qdrant API Key，可空。
-    #[serde(default)]
     pub api_key: String,
     /// collection 命名前缀，用于多项目/多租户隔离。
-    #[serde(default = "default_collection_prefix")]
     pub collection_prefix: String,
     /// 请求超时（秒）。
-    #[serde(default = "default_timeout")]
     pub timeout: f64,
     /// Qdrant 命名稠密向量。
-    #[serde(default = "default_dense_vector_name")]
     pub dense_vector_name: String,
     /// Qdrant 命名稀疏向量。
-    #[serde(default = "default_sparse_vector_name")]
     pub sparse_vector_name: String,
 }
 
 impl Default for QdrantConfig {
     fn default() -> Self {
         Self {
-            url: default_qdrant_url(),
+            url: "http://127.0.0.1:6333".to_string(),
             api_key: String::new(),
-            collection_prefix: default_collection_prefix(),
-            timeout: default_timeout(),
-            dense_vector_name: default_dense_vector_name(),
-            sparse_vector_name: default_sparse_vector_name(),
+            collection_prefix: "jk_".to_string(),
+            timeout: 10.0,
+            dense_vector_name: "dense".to_string(),
+            sparse_vector_name: "sparse".to_string(),
         }
     }
 }
 
-fn default_qdrant_url() -> String {
-    "http://127.0.0.1:6333".to_string()
-}
-fn default_collection_prefix() -> String {
-    "jk_".to_string()
-}
-fn default_timeout() -> f64 {
-    10.0
-}
-fn default_dense_vector_name() -> String {
-    "dense".to_string()
-}
-fn default_sparse_vector_name() -> String {
-    "sparse".to_string()
-}
-
 /// Embedding 模型配置（走 OpenAI 兼容 API，复用宿主已有 LLM 配置）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct EmbeddingConfig {
-    #[serde(default = "default_provider")]
     pub provider: String,
     /// OpenAI 兼容的 embedding 接口地址。
-    #[serde(default)]
     pub base_url: String,
-    #[serde(default)]
     pub api_key: String,
-    #[serde(default = "default_embedding_model")]
     pub model: String,
-    #[serde(default = "default_dimension")]
     pub dimension: u32,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            provider: default_provider(),
+            provider: "openai_compatible".to_string(),
             base_url: String::new(),
             api_key: String::new(),
-            model: default_embedding_model(),
-            dimension: default_dimension(),
+            model: "text-embedding-3-small".to_string(),
+            dimension: 1536,
         }
     }
 }
 
-fn default_provider() -> String {
-    "openai_compatible".to_string()
-}
-fn default_embedding_model() -> String {
-    "text-embedding-3-small".to_string()
-}
-fn default_dimension() -> u32 {
-    1536
-}
-
 /// 稀疏向量模型配置。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct SparseEmbeddingConfig {
-    #[serde(default = "default_sparse_provider")]
     pub provider: String,
-    #[serde(default = "default_sparse_model")]
     pub model: String,
 }
 
 impl Default for SparseEmbeddingConfig {
     fn default() -> Self {
         Self {
-            provider: default_sparse_provider(),
-            model: default_sparse_model(),
+            provider: "fastembed".to_string(),
+            model: "Qdrant/bm25".to_string(),
         }
     }
 }
 
-fn default_sparse_provider() -> String {
-    "fastembed".to_string()
-}
-fn default_sparse_model() -> String {
-    "Qdrant/bm25".to_string()
-}
-
 /// 父子分片配置。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ChunkingConfig {
-    #[serde(default = "default_parent_chunk_size")]
     pub parent_chunk_size: u32,
-    #[serde(default = "default_parent_chunk_overlap")]
     pub parent_chunk_overlap: u32,
-    #[serde(default = "default_child_chunk_size")]
     pub child_chunk_size: u32,
-    #[serde(default = "default_child_chunk_overlap")]
     pub child_chunk_overlap: u32,
-    #[serde(default = "default_chunk_separators")]
     pub separators: Vec<String>,
 }
 
 impl Default for ChunkingConfig {
     fn default() -> Self {
         Self {
-            parent_chunk_size: default_parent_chunk_size(),
-            parent_chunk_overlap: default_parent_chunk_overlap(),
-            child_chunk_size: default_child_chunk_size(),
-            child_chunk_overlap: default_child_chunk_overlap(),
-            separators: default_chunk_separators(),
+            parent_chunk_size: 2000,
+            parent_chunk_overlap: 200,
+            child_chunk_size: 400,
+            child_chunk_overlap: 80,
+            separators: ["\n\n", "\n", "。", "；", ". ", " ", ""]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         }
     }
 }
 
-fn default_parent_chunk_size() -> u32 {
-    2000
-}
-fn default_parent_chunk_overlap() -> u32 {
-    200
-}
-fn default_child_chunk_size() -> u32 {
-    400
-}
-fn default_child_chunk_overlap() -> u32 {
-    80
-}
-fn default_chunk_separators() -> Vec<String> {
-    ["\n\n", "\n", "。", "；", ". ", " ", ""]
-        .iter()
-        .map(|value| value.to_string())
-        .collect()
-}
-
 /// OCR 配置。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct OcrConfig {
-    #[serde(default = "default_ocr_enabled")]
     pub enabled: bool,
-    #[serde(default)]
     pub use_cuda: bool,
-    #[serde(default = "default_pdf_image_ratio")]
     pub pdf_image_width_ratio: f64,
-    #[serde(default = "default_pdf_image_ratio")]
     pub pdf_image_height_ratio: f64,
 }
 
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
-            enabled: default_ocr_enabled(),
+            enabled: true,
             use_cuda: false,
-            pdf_image_width_ratio: default_pdf_image_ratio(),
-            pdf_image_height_ratio: default_pdf_image_ratio(),
+            pdf_image_width_ratio: 0.6,
+            pdf_image_height_ratio: 0.6,
         }
     }
 }
 
-fn default_ocr_enabled() -> bool {
-    true
-}
-fn default_pdf_image_ratio() -> f64 {
-    0.6
-}
-
 /// RAG 知识库的完整运行时配置。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct RagKbConfig {
-    #[serde(default)]
     pub qdrant: QdrantConfig,
-    #[serde(default)]
     pub embedding: EmbeddingConfig,
-    #[serde(default)]
     pub sparse_embedding: SparseEmbeddingConfig,
-    #[serde(default)]
     pub chunking: ChunkingConfig,
-    #[serde(default)]
     pub ocr: OcrConfig,
-    #[serde(default = "default_log_level")]
     pub log_level: String,
 }
 
-fn default_log_level() -> String {
-    "INFO".to_string()
+impl Default for RagKbConfig {
+    fn default() -> Self {
+        Self {
+            qdrant: QdrantConfig::default(),
+            embedding: EmbeddingConfig::default(),
+            sparse_embedding: SparseEmbeddingConfig::default(),
+            chunking: ChunkingConfig::default(),
+            ocr: OcrConfig::default(),
+            log_level: "INFO".to_string(),
+        }
+    }
 }
 
 impl RagKbConfig {
@@ -353,5 +281,59 @@ impl RagConfigStore {
     /// 用一份新配置替换内存快照（不落库、不通知 sidecar，由调用方组合）。
     pub fn replace(&self, config: RagKbConfig) {
         *self.inner.lock() = Some(config);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_json_fills_defaults_from_struct_default() {
+        let config: RagKbConfig =
+            serde_json::from_str(r#"{"qdrant":{"url":"http://qdrant:6333"}}"#).unwrap();
+        assert_eq!(config.qdrant.url, "http://qdrant:6333");
+        assert_eq!(config.qdrant.collection_prefix, "jk_");
+        assert_eq!(config.qdrant.timeout, 10.0);
+        assert_eq!(config.embedding.model, "text-embedding-3-small");
+        assert_eq!(config.chunking.parent_chunk_size, 2000);
+        assert!(config.ocr.enabled);
+        assert_eq!(config.log_level, "INFO");
+    }
+
+    #[test]
+    fn partial_json_within_subconfig_keeps_sibling_defaults() {
+        let config: RagKbConfig =
+            serde_json::from_str(r#"{"chunking":{"childChunkSize":128},"logLevel":"DEBUG"}"#)
+                .unwrap();
+        assert_eq!(config.chunking.child_chunk_size, 128);
+        assert_eq!(config.chunking.child_chunk_overlap, 80);
+        assert_eq!(config.log_level, "DEBUG");
+        assert_eq!(config.sparse_embedding.provider, "fastembed");
+    }
+
+    #[test]
+    fn serialize_emits_all_fields_and_roundtrips() {
+        let config = RagKbConfig::default();
+        let body = serde_json::to_string(&config).unwrap();
+        for field in [
+            "\"url\"",
+            "\"collectionPrefix\"",
+            "\"dimension\"",
+            "\"parentChunkSize\"",
+            "\"pdfImageWidthRatio\"",
+            "\"logLevel\"",
+        ] {
+            assert!(body.contains(field), "缺少字段 {field}：{body}");
+        }
+        let parsed: RagKbConfig = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.chunking.separators, config.chunking.separators);
+        assert_eq!(parsed.qdrant.timeout, config.qdrant.timeout);
+    }
+
+    #[test]
+    fn empty_object_yields_full_defaults() {
+        let config: RagKbConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config, RagKbConfig::default());
     }
 }

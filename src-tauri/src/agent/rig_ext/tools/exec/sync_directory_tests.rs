@@ -9,6 +9,7 @@
 use super::*;
 use crate::ssh_tool::SshDb;
 use serde_json::json;
+use std::sync::Arc;
 
 struct Fixture {
     root: PathBuf,

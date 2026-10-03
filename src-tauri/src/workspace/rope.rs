@@ -4,6 +4,9 @@ use ropey::Rope;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use super::validate_path_within;
+use std::io::Write;
+
 use crate::shared::error::{CommandResult, IntoCommandResult};
 
 const MAX_UNDO_STACK: usize = 10;
@@ -35,14 +38,40 @@ pub enum RopeError {
     TauriJoin(#[from] tauri::Error),
 }
 
+impl crate::shared::io_error::PathIoError for RopeError {
+    fn path_io(action: &'static str, path: PathBuf, source: std::io::Error) -> Self {
+        RopeError::Io {
+            action,
+            path,
+            source,
+        }
+    }
+}
+
+/// io 错误闭包的类型钉住适配器：构造逻辑在 `shared::io_error`，此处固定
+/// 目标错误类型（`?` 经 From 转换的调用点无法唯一推断泛型 E）。
 fn io_error(
     action: &'static str,
     path: impl Into<PathBuf>,
 ) -> impl FnOnce(std::io::Error) -> RopeError {
-    move |source| RopeError::Io {
-        action,
-        path: path.into(),
-        source,
+    crate::shared::io_error::io_error(action, path)
+}
+
+impl From<super::PathValidationError> for RopeError {
+    fn from(error: super::PathValidationError) -> Self {
+        match error {
+            super::PathValidationError::NotAbsolute => RopeError::PathNotAbsolute,
+            super::PathValidationError::OutsideAllowed => RopeError::OutsideAllowedDirectory,
+            super::PathValidationError::Io {
+                action,
+                path,
+                source,
+            } => RopeError::Io {
+                action,
+                path,
+                source,
+            },
+        }
     }
 }
 
@@ -130,28 +159,6 @@ impl RopeManager {
             sessions: Mutex::new(HashMap::new()),
         }
     }
-}
-
-fn validate_path_within(target: &str, allowed_root: &str) -> RopeResult<PathBuf> {
-    let target = Path::new(target);
-    let root = Path::new(allowed_root);
-
-    if !target.is_absolute() {
-        return Err(RopeError::PathNotAbsolute);
-    }
-
-    let canonical_target = target
-        .canonicalize()
-        .map_err(io_error("解析目标路径", target))?;
-    let canonical_root = root
-        .canonicalize()
-        .map_err(io_error("解析项目根目录", root))?;
-
-    if !canonical_target.starts_with(&canonical_root) {
-        return Err(RopeError::OutsideAllowedDirectory);
-    }
-
-    Ok(canonical_target)
 }
 
 fn ensure_session_in_project(session_path: &Path, project_path: &str) -> RopeResult<()> {
@@ -409,6 +416,44 @@ fn rope_replace_line_impl(
     })
 }
 
+/// Rope 会话原子落盘：先写同目录唯一临时文件（流式写出，避免整文件内容在
+/// 内存翻倍驻留），失败即清理；成功后同步目标已有权限位并 rename 替换。
+/// 写一半崩溃/掉电只留下临时文件残骸，不会截断原文件——与
+/// `project::storage::atomic_write` 及 `fs::write_file_content` 策略一致。
+fn atomic_rope_save(path: &Path, rope: &Rope) -> RopeResult<()> {
+    let uid = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let tmp = path.with_file_name(format!(".{file_name}.{uid}.tmp"));
+    let write = |target: &Path| -> RopeResult<()> {
+        let file = std::fs::File::create(target).map_err(io_error("创建 Rope 临时文件", target))?;
+        let mut writer = std::io::BufWriter::with_capacity(256 * 1024, file);
+        rope.write_to(&mut writer)
+            .map_err(io_error("写入 Rope 文件", target))?;
+        writer.flush().map_err(io_error("落盘 Rope 文件", target))
+    };
+    if let Err(error) = write(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    // 覆盖已有文件时保留其权限位：临时文件按默认权限（受 umask 影响）创建，
+    // rename 直接替换目录项，不恢复会丢失既有文件的可执行位等特殊权限。
+    if let Ok(metadata) = std::fs::metadata(path) {
+        std::fs::set_permissions(&tmp, metadata.permissions())
+            .map_err(io_error("恢复文件权限", &tmp))?;
+    }
+    std::fs::rename(&tmp, path).map_err(io_error("替换目标文件", path))
+}
+
 #[tauri::command]
 pub async fn rope_save(
     state: tauri::State<'_, RopeManager>,
@@ -436,11 +481,7 @@ async fn rope_save_impl(
     };
 
     tauri::async_runtime::spawn_blocking(move || -> RopeResult<()> {
-        let file = std::fs::File::create(&path).map_err(io_error("创建 Rope 文件", &path))?;
-        let writer = std::io::BufWriter::with_capacity(256 * 1024, file);
-        rope_clone
-            .write_to(writer)
-            .map_err(io_error("写入 Rope 文件", &path))
+        atomic_rope_save(&path, &rope_clone)
     })
     .await??;
 
@@ -522,4 +563,56 @@ fn rope_redo_impl(
     session.dirty = session.revision != session.saved_revision;
 
     Ok(session.meta())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("rope-save-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_save_replaces_content_preserves_permissions_no_tmp_left() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = Temp::new();
+        let path = tmp.0.join("big.txt");
+        std::fs::write(&path, "old\ncontent\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let rope = Rope::from_str("new\n\u{4e2d}\u{6587} multiline\ncontent\n");
+        atomic_rope_save(&path, &rope).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), rope.to_string());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "已有文件权限位应保留");
+        let leftovers: Vec<String> = std::fs::read_dir(&tmp.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, vec!["big.txt".to_string()], "不应残留临时文件");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_save_on_missing_target_creates_file() {
+        let tmp = Temp::new();
+        let path = tmp.0.join("fresh.txt");
+        let rope = Rope::from_str("hello\n");
+        atomic_rope_save(&path, &rope).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\n");
+    }
 }

@@ -106,7 +106,7 @@ pub(super) async fn run_python_file_streaming(
     let stderr_task = tokio::spawn(async move { read_limited(stderr).await });
 
     let (status_code, timed_out, cancelled) = tokio::select! {
-        _ = wait_for_cancellation(stop_rx) => {
+        _ = crate::shared::cancel::wait_for_cancel(Some(stop_rx.clone())) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
             (None, false, true)
@@ -195,7 +195,7 @@ pub(super) async fn run_command(
     let stderr_task = tokio::spawn(async move { read_limited(stderr).await });
 
     let (status_code, timed_out, cancelled) = tokio::select! {
-        _ = wait_for_cancellation(stop_rx) => {
+        _ = crate::shared::cancel::wait_for_cancel(Some(stop_rx.clone())) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
             (None, false, true)
@@ -258,11 +258,4 @@ pub(super) fn code_hash(code: &str) -> String {
 
 pub(super) fn cancellation_requested(stop_rx: &watch::Receiver<bool>) -> bool {
     *stop_rx.borrow()
-}
-
-pub(super) async fn wait_for_cancellation(stop_rx: &mut watch::Receiver<bool>) {
-    if *stop_rx.borrow() {
-        return;
-    }
-    let _ = stop_rx.changed().await;
 }

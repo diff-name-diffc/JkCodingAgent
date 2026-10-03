@@ -41,15 +41,23 @@ pub enum RagCommandError {
     TauriJoin(#[from] tauri::Error),
 }
 
+impl crate::shared::io_error::PathIoError for RagCommandError {
+    fn path_io(action: &'static str, path: PathBuf, source: std::io::Error) -> Self {
+        RagCommandError::Io {
+            action,
+            path,
+            source,
+        }
+    }
+}
+
+/// io 错误闭包的类型钉住适配器：构造逻辑在 `shared::io_error`，此处固定
+/// 目标错误类型（`?` 经 From 转换的调用点无法唯一推断泛型 E）。
 fn io_error(
     action: &'static str,
     path: impl Into<PathBuf>,
 ) -> impl FnOnce(std::io::Error) -> RagCommandError {
-    move |source| RagCommandError::Io {
-        action,
-        path: path.into(),
-        source,
-    }
+    crate::shared::io_error::io_error(action, path)
 }
 
 /// `rag_status` / `rag_restart` 返回 DTO（UI-22c 遗留登记）：内联透出最近

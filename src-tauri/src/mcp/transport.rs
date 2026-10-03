@@ -9,10 +9,12 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use reqwest::header::{HeaderName, HeaderValue};
+use rmcp::service::RunningService;
 use rmcp::transport::{
     streamable_http_client::StreamableHttpClientTransportConfig, ConfigureCommandExt,
-    StreamableHttpClientTransport, TokioChildProcess,
+    IntoTransport, StreamableHttpClientTransport, TokioChildProcess,
 };
+use rmcp::{RoleClient, ServiceExt};
 use tokio::io::AsyncReadExt;
 
 use super::{McpServerState, ResolvedMcpServerConfig, ResolvedMcpTransport};
@@ -267,6 +269,32 @@ fn is_npx_command(command: &str) -> bool {
         || normalized.ends_with("\\npx")
         || normalized.ends_with("npx.cmd")
         || normalized.ends_with("npx.exe")
+}
+
+/// serve 握手（初始化）的统一封装：超时与失败显式分类，供 registry 调用与
+/// 连通性检查两条路径复用（原两处三 transport 分支的样板收敛点）。
+#[derive(Debug)]
+pub(crate) enum ServeHandshakeError {
+    /// 初始化握手在给定时限内未完成。
+    Timeout,
+    /// 握手失败（serve 返回错误），内含原始错误文案。
+    Failed(String),
+}
+
+/// 建立 MCP client 并完成初始化握手，整体受 `timeout` 约束。
+pub(crate) async fn serve_with_timeout<T, E, A>(
+    transport: T,
+    timeout: Duration,
+) -> Result<RunningService<RoleClient, ()>, ServeHandshakeError>
+where
+    T: IntoTransport<RoleClient, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    match tokio::time::timeout(timeout, ().serve(transport)).await {
+        Ok(Ok(client)) => Ok(client),
+        Ok(Err(error)) => Err(ServeHandshakeError::Failed(error.to_string())),
+        Err(_) => Err(ServeHandshakeError::Timeout),
+    }
 }
 
 pub(crate) async fn timeout_server_check<F, T>(

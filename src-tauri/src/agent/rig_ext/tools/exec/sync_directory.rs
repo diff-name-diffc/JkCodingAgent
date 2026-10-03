@@ -2,10 +2,9 @@
 //! 迁移自旧自实现工具层（已随迁移删除）；rsync 编排保留在 `ssh_tool::sync`。
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::sync::watch;
 
 use super::super::common::resolve_path;
@@ -22,7 +21,7 @@ pub(super) fn sync_directory_tool(
     workspace_id: String,
     restrict_to_workspace: bool,
     extra_allowed_dirs: Vec<PathBuf>,
-    app_handle: Option<AppHandle>,
+    _app_handle: Option<AppHandle>,
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
@@ -46,12 +45,9 @@ pub(super) fn sync_directory_tool(
             let workspace = workspace.clone();
             let workspace_id = workspace_id.clone();
             let extra_allowed_dirs = extra_allowed_dirs.clone();
-            let app_handle = app_handle.clone();
             let db = db.clone();
             let cancel_rx = cancel_rx.clone();
             let review_context = review_context.clone();
-            let tool_call_id = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
-                .map(|context| context.tool_call_id);
             Box::pin(async move {
                 let cancelled = cancel_rx.clone();
                 match execute_inner(
@@ -61,11 +57,9 @@ pub(super) fn sync_directory_tool(
                     workspace_id,
                     restrict_to_workspace,
                     extra_allowed_dirs,
-                    app_handle,
                     db,
                     cancel_rx,
                     review_context,
-                    tool_call_id,
                 )
                 .await
                 {
@@ -162,11 +156,9 @@ async fn execute_inner(
     workspace_id: String,
     restrict_to_workspace: bool,
     extra_allowed_dirs: Vec<PathBuf>,
-    app_handle: Option<AppHandle>,
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
-    tool_call_id: Option<String>,
 ) -> Result<String, SyncFailure> {
     let mut request: SyncDirectory = serde_json::from_value(args.clone())
         .map_err(|e| SyncFailure::Recoverable(format!("错误：同步参数无效：{e}")))?;
@@ -235,25 +227,8 @@ async fn execute_inner(
         .await
         .unwrap_or_default();
 
-    let profile = server.id.clone();
-    let progress_workspace_id = workspace_id.clone();
-    let progress = Arc::new(move |p: crate::ssh_tool::sync::SyncProgress| {
-        if let Some(app) = &app_handle {
-            // 调用入口捕获独立 ID，异步进度始终关联原调用（类型见
-            // `src/types/ssh-sync.ts`；UI 消费方待接入时直接可用）。
-            if let Err(error) = app.emit(
-                "ssh-sync-progress",
-                json!({
-                    "workspaceId": progress_workspace_id, "toolCallId": tool_call_id,
-                    "sshProfile": profile, "progress": p
-                }),
-            ) {
-                eprintln!("[sync_directory] 发送进度事件失败：{error}");
-            }
-        }
-    });
     let result = manager
-        .sync_directory(server, request.clone(), source, cancel_rx, progress)
+        .sync_directory(server, request.clone(), source, cancel_rx)
         .await;
     let record = audit_record(
         &workspace,

@@ -18,14 +18,14 @@ use super::super::common::{
     with_compression_parameters, DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
 };
 use super::super::deps::RigToolDeps;
-use super::{cancellation_requested, image_media_type_for_mime, vision_complete_image};
+use super::{cancellation_requested, vision_complete_image};
+use crate::agent::rig_ext::message::{
+    image_media_type_for_mime, ImageMimeAllowlist, MAX_INLINE_IMAGE_BYTES,
+};
 use crate::chat_images::{resolve_chat_image_id_async, CHAT_IMAGE_PROTOCOL};
 
 /// 单次调用最多分析的图片数量（与参数 schema 的 maxItems 一致）。
 const MAX_IMAGES: usize = 8;
-/// 单张图片大小上限（与 `rig_ext::message::MAX_INLINE_IMAGE_BYTES` 对齐——
-/// 那里是私有常量，故在此声明副本并保持同步）。
-const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// 单张图片的视觉模型调用超时（秒）。整体超时由工具自管（runtime 挂载结果
 /// 策略时不应为 analyze_image 设置低于「最坏 8 张 × 180s」的统一超时）。
 const PER_IMAGE_LLM_TIMEOUT_SECS: u64 = 180;
@@ -186,7 +186,7 @@ async fn analyze_single_image(
         Err(message) => return error_outcome(message),
     };
 
-    let Some(media_type) = image_media_type_for_mime(mime) else {
+    let Some(media_type) = image_media_type_for_mime(mime, ImageMimeAllowlist::VisionInputs) else {
         return error_outcome(format!("错误：不支持的图片类型：{mime}"));
     };
     let image = Image {
@@ -276,17 +276,17 @@ fn stream_local_image_to_base64(path: &Path) -> Result<(&'static str, String), S
     if !metadata.is_file() {
         return Err(format!("错误：图片路径不是文件：{}", path.display()));
     }
-    if metadata.len() > MAX_IMAGE_BYTES {
+    if metadata.len() > MAX_INLINE_IMAGE_BYTES {
         return Err(format!(
             "错误：图片文件过大（{} 字节），超过 {} MB 限制",
             metadata.len(),
-            MAX_IMAGE_BYTES / 1024 / 1024
+            MAX_INLINE_IMAGE_BYTES / 1024 / 1024
         ));
     }
     let mime = image_mime_from_path(path)?;
 
     let file = std::fs::File::open(path).map_err(|e| format!("错误：打开图片失败：{e}"))?;
-    let mut reader = std::io::BufReader::new(std::io::Read::take(file, MAX_IMAGE_BYTES));
+    let mut reader = std::io::BufReader::new(std::io::Read::take(file, MAX_INLINE_IMAGE_BYTES));
 
     let mut encoded: Vec<u8> = Vec::new();
     {
@@ -347,10 +347,10 @@ async fn download_image_to_base64(
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| format!("错误：下载图片失败：{e}"))?;
             received = received.saturating_add(chunk.len() as u64);
-            if received > MAX_IMAGE_BYTES {
+            if received > MAX_INLINE_IMAGE_BYTES {
                 return Err(format!(
                     "错误：图片超过 {} MB 限制，已终止下载",
-                    MAX_IMAGE_BYTES / 1024 / 1024
+                    MAX_INLINE_IMAGE_BYTES / 1024 / 1024
                 ));
             }
             encoder

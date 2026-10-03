@@ -1,18 +1,15 @@
-//! 工具调用台账（`dispatcher_tool_runs`）与参数准备。
+//! 工具调用的参数准备（schema 默认值注入 + Draft 2020-12 校验）。
 //!
-//! 迁移自旧自实现工具层（已随迁移删除）的 `create_and_start_tool_run_with_trace`
-//! / `finish_tool_run` 与 `prepare_input`（schema 默认值注入 + Draft 2020-12
-//! 校验），但不再经旧注册表：策略来源改为工具名
-//! （`crate::agent::rig_ext::tools::spec::ToolSpec` 策略表），参数校验直接对
-//! `PortableDynamicTool` 的 definition 做。
+//! 台账（`dispatcher_tool_runs`）不再经本模块写入：登记唯一走调度器
+//! `enqueue` 的准入批次（`register_tool_task_batch`），终态唯一走 worker 的
+//! `settle_tool_completion`——单写路径（P0-3）。本模块此前的
+//! `create_and_start_tool_run_with_trace` / `finish_tool_run` 裸路径
+//! （无 `ToolInvocationContext` 时由策略层 `before_call` 触发，产出
+//! agent_run_id 为 NULL 的孤儿行）已随协议批免台账短路一并退役。
+//! 策略来源为工具名（`crate::agent::rig_ext::tools::spec::ToolSpec`
+//! 策略表），参数校验直接对 `PortableDynamicTool` 的 definition 做。
 
-use serde_json::{json, Value};
-use tauri::ipc::Channel;
-
-use crate::agent::common::emit;
-use crate::agent::db::{DispatcherDb, FinishToolRun, NewToolRun, ToolRunTraceContext};
-use crate::agent::rig_ext::events::AgentEvent;
-use crate::agent::rig_ext::tools::spec::ToolSpec;
+use serde_json::Value;
 
 /// 校验错误摘要最多列出的条数（对齐旧实现的同名常量）。
 const MAX_SUMMARIZED_ERRORS: usize = 8;
@@ -34,8 +31,8 @@ pub(crate) struct ArgumentError {
 
 /// 参数准备：schema 默认值注入 + Draft 2020-12 校验。每调用只执行一次：
 /// 调度器路径在 enqueue 准入时产出 effective 值，随 `ToolInvocationContext`
-/// 流入 worker，台账、before_call 门禁与 execute 共用；裸路径（顺序批/无
-/// 上下文）由策略层回退计算。工具闭包收到的即 effective 参数，闭包内的
+/// 流入 worker，before_call 门禁与 execute 共用；无上下文的调用由策略层
+/// 回退计算。工具闭包收到的即 effective 参数，闭包内的
 /// `unwrap_or(default)` 只在 schema 未声明 default 时兜底。
 pub(crate) fn prepare_arguments(
     tool_name: &str,
@@ -143,166 +140,6 @@ fn describe_validation_error(error: &jsonschema::ValidationError<'_>) -> String 
     } else {
         detail
     }
-}
-
-// ─── 台账（dispatcher_tool_runs） ────────────────────────────────────────────
-
-/// 台账写入上下文。
-#[derive(Clone, Copy)]
-pub(crate) struct RigToolRunContext<'a> {
-    pub db: &'a DispatcherDb,
-    pub workspace_id: &'a str,
-    pub on_event: &'a Channel<AgentEvent>,
-}
-
-/// 已开始的工具运行句柄（收尾时消费）。
-#[derive(Clone, Debug)]
-pub(crate) struct RigToolRun {
-    pub run_id: String,
-}
-
-/// 台账元数据：`registered=true` 时带策略字段；未注册（模型幻觉）工具名
-/// 显式标记 `registered=false`，避免审计误以为该调用经过真实策略评估。
-fn run_metadata_json(spec: &ToolSpec, registered: bool) -> String {
-    let value = if registered {
-        json!({
-            "registered": true,
-            "safety": spec.safety,
-            "access": spec.access,
-            "execution": spec.execution,
-            "resultPolicy": spec.result_policy,
-        })
-    } else {
-        json!({ "registered": false })
-    };
-    serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
-}
-
-/// 创建并标记启动一次工具运行（对齐旧
-/// `create_and_start_tool_run_with_trace`）：创建 + 广播 → 标记 started +
-/// 广播；标记失败时把记录收敛为 internal_error 终态，避免悬挂中间态。
-pub(crate) async fn start_tool_run(
-    context: RigToolRunContext<'_>,
-    spec: &ToolSpec,
-    registered: bool,
-    tool_call_id: &str,
-    arguments: &Value,
-    effective_arguments: &Value,
-    trace: ToolRunTraceContext,
-) -> anyhow::Result<RigToolRun> {
-    let metadata_json = run_metadata_json(spec, registered);
-    let run = context
-        .db
-        .create_tool_run_with_trace_async(
-            NewToolRun {
-                workspace_id: context.workspace_id.to_string(),
-                tool_call_id: tool_call_id.to_string(),
-                tool_name: spec.name.clone(),
-                provider: spec.provider.clone(),
-                category: spec.category.as_str().to_string(),
-                arguments_json: serde_json::to_string(arguments)?,
-                effective_arguments_json: serde_json::to_string(effective_arguments)?,
-                metadata_json,
-            },
-            trace,
-        )
-        .await?;
-    emit(
-        context.on_event,
-        AgentEvent::ToolRunUpdated {
-            run: Box::new(run.clone()),
-        },
-    );
-
-    let started = match context.db.mark_tool_run_started_async(&run.id).await {
-        Ok(started) => started,
-        Err(error) => {
-            if let Ok(finished) = context
-                .db
-                .finish_tool_run_async(
-                    &run.id,
-                    FinishToolRun {
-                        status: "internal_error".to_string(),
-                        result_mode: None,
-                        message_id: None,
-                        error_kind: Some("internal".to_string()),
-                        error_message: Some(format!("标记工具运行启动失败：{error}")),
-                        metadata_json: None,
-                    },
-                )
-                .await
-            {
-                emit(
-                    context.on_event,
-                    AgentEvent::ToolRunUpdated {
-                        run: Box::new(finished),
-                    },
-                );
-            }
-            return Err(error);
-        }
-    };
-    emit(
-        context.on_event,
-        AgentEvent::ToolRunUpdated {
-            run: Box::new(started.clone()),
-        },
-    );
-    Ok(RigToolRun { run_id: started.id })
-}
-
-/// 台账收尾更新（对齐旧实现的 `finish_tool_run`）：无 message_id 时广播自身；
-/// 有 message_id 时把该消息挂上工具运行树并广播整棵树。
-pub(crate) struct RigToolRunFinish<'a> {
-    pub status: &'a str,
-    pub result_mode: Option<&'a str>,
-    pub message_id: Option<&'a str>,
-    pub error_kind: Option<&'a str>,
-    pub error_message: Option<&'a str>,
-    pub metadata_json: Option<&'a str>,
-}
-
-pub(crate) async fn finish_tool_run(
-    context: RigToolRunContext<'_>,
-    run: &RigToolRun,
-    update: RigToolRunFinish<'_>,
-) -> anyhow::Result<()> {
-    let finished = context
-        .db
-        .finish_tool_run_async(
-            &run.run_id,
-            FinishToolRun {
-                status: update.status.to_string(),
-                result_mode: update.result_mode.map(str::to_string),
-                message_id: update.message_id.map(str::to_string),
-                error_kind: update.error_kind.map(str::to_string),
-                error_message: update.error_message.map(str::to_string),
-                metadata_json: update.metadata_json.map(str::to_string),
-            },
-        )
-        .await?;
-    if let Some(message_id) = update.message_id {
-        let tree = context
-            .db
-            .attach_tool_run_tree_message_async(&finished.id, message_id)
-            .await?;
-        for run in tree {
-            emit(
-                context.on_event,
-                AgentEvent::ToolRunUpdated {
-                    run: Box::new(run),
-                },
-            );
-        }
-    } else {
-        emit(
-            context.on_event,
-            AgentEvent::ToolRunUpdated {
-                run: Box::new(finished),
-            },
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use super::*;
 impl DispatcherDb {
     pub(crate) fn latest_user_request_anchor(&self, workspace_id: &str) -> Result<Option<String>> {
         self.conn()?.query_row(
-            "SELECT id FROM dispatcher_messages WHERE workspace_id=?1 AND role='user' AND visible=1 ORDER BY rowid DESC LIMIT 1",
+            "SELECT id FROM dispatcher_messages WHERE workspace_id=?1 AND role='user' ORDER BY rowid DESC LIMIT 1",
             [workspace_id], |row| row.get(0),
         ).optional().context("查询真实用户请求锚点")
     }
@@ -16,7 +16,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_task_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND visible = 1
+             WHERE workspace_id = ?1
              ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(params![workspace_id], map_dispatcher_message_record)?;
@@ -31,7 +31,7 @@ impl DispatcherDb {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM dispatcher_messages
-                 WHERE workspace_id = ?1 AND visible = 1",
+                 WHERE workspace_id = ?1",
                 params![workspace_id],
                 |row| row.get(0),
             )
@@ -55,7 +55,6 @@ impl DispatcherDb {
             "SELECT id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_task_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              FROM dispatcher_messages
              WHERE workspace_id = ?1
-               AND visible = 1
                AND rowid >= ?2
              ORDER BY created_at ASC, rowid ASC",
         )?;
@@ -82,7 +81,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT role, segments_json, context_payload, tool_call_id, tool_name, tool_calls_json, thinking_content, id
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND rowid >= ?2 AND visible = 1
+             WHERE workspace_id = ?1 AND rowid >= ?2
              ORDER BY rowid ASC",
         )?;
         let rows = stmt.query_map(params![workspace_id, cutoff_rowid], |row| {
@@ -145,7 +144,7 @@ impl DispatcherDb {
         conn.query_row(
             "SELECT segments_json
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1
+             WHERE workspace_id = ?1 AND role = 'user'
              ORDER BY rowid DESC
              LIMIT 1",
             params![workspace_id],
@@ -167,7 +166,7 @@ impl DispatcherDb {
         conn.query_row(
             "SELECT segments_json
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND id = ?2 AND visible = 1
+             WHERE workspace_id = ?1 AND id = ?2
              LIMIT 1",
             params![workspace_id, message_id],
             |row| {
@@ -193,7 +192,6 @@ impl DispatcherDb {
             "SELECT role, segments_json
              FROM dispatcher_messages
              WHERE workspace_id = ?1
-               AND visible = 1
                AND role IN ('user', 'assistant')
              ORDER BY rowid DESC
              LIMIT ?2",

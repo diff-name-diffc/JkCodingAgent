@@ -146,21 +146,16 @@ impl DispatcherDb {
         usage: &LlmUsage,
         context_window_capacity: Option<u64>,
     ) -> Result<DispatcherSessionTokenUsageRecord> {
-        let db = self.clone();
         let wid = workspace_id.to_string();
         let model = model.to_string();
         let usage = usage.clone();
-        tokio::task::spawn_blocking(move || {
-            db.upsert_session_token_usage(
-                &wid,
-                &model,
-                source_kind,
-                &usage,
-                context_window_capacity,
-            )
-        })
+        self.blocking(
+            "upsert_session_token_usage spawn_blocking",
+            move |db| {
+                db.upsert_session_token_usage(&wid, &model, source_kind, &usage, context_window_capacity)
+            },
+        )
         .await
-        .context("upsert_session_token_usage spawn_blocking")?
     }
 }
 

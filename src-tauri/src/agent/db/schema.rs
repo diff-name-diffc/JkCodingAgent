@@ -1,9 +1,8 @@
 //! 数据库 schema 初始化与版本管理（PRAGMA user_version 方案）。
 //!
-//! 当前基线为 **v10**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
+//! 当前基线为 **v14**（历史 v0→v33 迁移链已按产品决策清除）。`init()` 的
 //! 路径：同版本库直接复用；低于基线但存在迁移块的版本逐级前向迁移
-//! （当前为 v1→v2、v2→v3、v3→v4、v4→v5、v5→v6、v6→v7、v7→v8、v8→v9、
-//! v9→v10）；再早的旧开发库一律拒绝打开
+//! （当前为 v1→v2、…、v13→v14）；再早的旧开发库一律拒绝打开
 //! （提示运行 `scripts/reset-dev-data.sh`）；user_version=0 且无表则按
 //! 基线全新建库。
 //!
@@ -45,7 +44,16 @@ use super::DispatcherDb;
 /// v11：graph_runs 新增执行结果列（conclusion_node_id / conclusion_md /
 /// result_kind / modified_files_json）——run 收尾把「结论节点输出 + 修改文件
 /// 并集 + 结果类型」结构化落库，供图面板结果视图与列表轻量摘要读取。
-pub(crate) const SCHEMA_VERSION: i32 = 11;
+/// v12：dispatcher_settings 由 20 列宽表收敛为 `(id, settings_json)`——
+/// 整对象 JSON 序列化 AhaSettingsV2（落库形态沿用既有「剥离库引用凭据」
+/// 约定），消除 19 参 upsert 与列序索引交错的静默错位面。
+/// v13：删除 chat_sessions / project_sessions 两张列表读模型子表——写入
+/// 路径双写收敛为单写 dispatcher_sessions（先做防孤儿回填再 DROP），
+/// 两类列表改查统一表（kind 区分），并补 kind+category+updated_at 索引。
+/// v14：删除三个无读写方的死列（dispatcher_messages.visible——写侧恒 1、
+/// dispatcher_tool_runs.action_kind、graph_node_runs.special_tools_json），
+/// 读侧 `visible = 1` 谓词随列一并移除。
+pub(crate) const SCHEMA_VERSION: i32 = 14;
 
 mod runtime;
 
@@ -135,6 +143,15 @@ impl DispatcherDb {
         }
         if current_version < 11 {
             self.migrate_v10_to_v11(&mut conn)?;
+        }
+        if current_version < 12 {
+            self.migrate_v11_to_v12(&mut conn)?;
+        }
+        if current_version < 13 {
+            self.migrate_v12_to_v13(&mut conn)?;
+        }
+        if current_version < 14 {
+            self.migrate_v13_to_v14(&mut conn)?;
             return Ok(());
         }
 
@@ -613,6 +630,224 @@ impl DispatcherDb {
             .context("advance user_version to 11")?;
         tx.commit().context("commit v10→v11 migration")
     }
+
+    /// v11 → v12：dispatcher_settings 由 20 列宽表收敛为 `(id, settings_json)`
+    /// 单行 JSON——整对象序列化 stored-form `AhaSettingsV2`（列→字段映射与
+    /// 「剥离库引用凭据」的既有落库约定一致，读取路径照旧由库条目回填）。
+    /// 消除 19 参 upsert 与「列序调整即 row.get(N) 静默错位」的脆弱面。
+    ///
+    /// 旧行按列名容错读取（v3 前无 theme、v10 前无 verifier 列的更旧库沿
+    /// 迁移链到达本块时已是 20 列，但防御性按名兜底不依赖该前提）。
+    /// DROP 属破坏性变更：迁移前按规范 VACUUM INTO 整库快照（不能在事务内
+    /// 执行），备份失败只留痕不阻断。幂等可重试：settings_json 列已存在
+    /// （或表本就不存在/已是新形态）则只建表/推进版本号。
+    fn migrate_v11_to_v12(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v12-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v11→v12 迁移前整库快照失败（数据经映射全量保留，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v11→v12 migration transaction")?;
+        let settings_table_exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dispatcher_settings'",
+            [],
+            |row| row.get(0),
+        )?;
+        if settings_table_exists == 0 {
+            tx.execute_batch(
+                "CREATE TABLE dispatcher_settings (
+                    id TEXT PRIMARY KEY DEFAULT 'default',
+                    settings_json TEXT NOT NULL
+                );",
+            )
+            .context("create dispatcher_settings json table")?;
+        } else {
+            let json_shape: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings')
+                 WHERE name = 'settings_json'",
+                [],
+                |row| row.get(0),
+            )?;
+            if json_shape == 0 {
+                // 旧行 → stored-form AhaSettingsV2 → 整对象 JSON。
+                let legacy_row: Option<super::settings::AhaSettingsV2> = tx
+                    .query_row(
+                        "SELECT * FROM dispatcher_settings WHERE id = 'default'",
+                        [],
+                        super::settings::legacy_settings_from_row,
+                    )
+                    .optional()
+                    .context("load legacy dispatcher settings for v12 migration")?;
+                tx.execute_batch(
+                    "CREATE TABLE dispatcher_settings_v12 (
+                        id TEXT PRIMARY KEY DEFAULT 'default',
+                        settings_json TEXT NOT NULL
+                    );",
+                )
+                .context("create dispatcher_settings_v12 table")?;
+                if let Some(settings) = legacy_row {
+                    let json = serde_json::to_string(&settings)
+                        .context("serialize legacy dispatcher settings to json")?;
+                    tx.execute(
+                        "INSERT INTO dispatcher_settings_v12 (id, settings_json)
+                         VALUES ('default', ?1)",
+                        params![&json],
+                    )
+                    .context("insert migrated dispatcher settings json")?;
+                }
+                tx.execute_batch(
+                    "DROP TABLE dispatcher_settings;
+                     ALTER TABLE dispatcher_settings_v12 RENAME TO dispatcher_settings;",
+                )
+                .context("replace legacy dispatcher_settings with json table")?;
+            }
+        }
+        tx.pragma_update(None, "user_version", 12)
+            .context("advance user_version to 12")?;
+        tx.commit().context("commit v11→v12 migration")
+    }
+
+    /// v12 → v13：删除 chat_sessions / project_sessions 两张列表读模型子表，
+    /// 会话写入路径的双写收敛为单写 dispatcher_sessions。DROP 前对统一表做
+    /// 防孤儿回填（INSERT OR IGNORE：id 已存在的行保留统一表版本），子表独有
+    /// 的孤儿行得以保留而非随表丢弃。破坏性变更，迁移前 VACUUM INTO 整库
+    /// 快照，备份失败只留痕不阻断。幂等可重试：表已不存在则跳过该表。
+    fn migrate_v12_to_v13(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v13-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v12→v13 迁移前整库快照失败（子表数据经回填保留，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v12→v13 migration transaction")?;
+        let chat_table_exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'chat_sessions'",
+            [],
+            |row| row.get(0),
+        )?;
+        if chat_table_exists > 0 {
+            tx.execute(
+                "INSERT OR IGNORE INTO dispatcher_sessions
+                     (id, project_id, kind, title, category, created_at, updated_at)
+                 SELECT id, '__global_chat__', 'chat', title, category, created_at, updated_at
+                 FROM chat_sessions",
+                [],
+            )
+            .context("backfill chat sessions into dispatcher_sessions")?;
+            tx.execute_batch("DROP TABLE chat_sessions;")
+                .context("drop chat_sessions read model")?;
+        }
+        let project_table_exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'project_sessions'",
+            [],
+            |row| row.get(0),
+        )?;
+        if project_table_exists > 0 {
+            tx.execute(
+                "INSERT OR IGNORE INTO dispatcher_sessions
+                     (id, project_id, kind, title, category, created_at, updated_at)
+                 SELECT id, project_id, 'project', title, '', created_at, updated_at
+                 FROM project_sessions",
+                [],
+            )
+            .context("backfill project sessions into dispatcher_sessions")?;
+            tx.execute_batch("DROP TABLE project_sessions;")
+                .context("drop project_sessions read model")?;
+        }
+        // 极简/异常库形态（如测试夹具手工建的最小会话表）可能缺 kind 列：
+        // 按列存在性守卫，缺列时跳过建索引——真实 v12 库的 dispatcher_sessions
+        // 必有 kind（v1 基线起就存在）。
+        let kind_column_exists: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('dispatcher_sessions')
+                 WHERE name = 'kind'",
+                [],
+                |row| row.get(0),
+            )
+            .context("inspect dispatcher_sessions.kind column")?;
+        if kind_column_exists > 0 {
+            tx.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_dispatcher_sessions_kind_category_updated
+                 ON dispatcher_sessions(kind, category, updated_at DESC, id DESC);",
+            )
+            .context("create dispatcher sessions listing index")?;
+        }
+        tx.pragma_update(None, "user_version", 13)
+            .context("advance user_version to 13")?;
+        tx.commit().context("commit v12→v13 migration")
+    }
+
+    /// v13 → v14：删除三个无读写方的死列——dispatcher_messages.visible
+    /// （写侧恒 1、读侧谓词恒真）、dispatcher_tool_runs.action_kind、
+    /// graph_node_runs.special_tools_json（后两者 v8/v4 起零引用）。
+    /// 三列均无索引/触发器/CHECK/FK 牵连，ALTER TABLE DROP COLUMN（SQLite
+    /// ≥ 3.35）即可，无需 v6→v7 式表重建。破坏性变更，迁移前 VACUUM INTO
+    /// 整库快照，备份失败只留痕不阻断。幂等可重试：列已不存在则跳过。
+    fn migrate_v13_to_v14(&self, conn: &mut Connection) -> Result<()> {
+        let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f");
+        let file_stem = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("jkbot.sqlite3");
+        let backup_path = self
+            .path
+            .with_file_name(format!("{file_stem}.pre-v14-backup-{stamp}"));
+        if let Err(error) = conn.execute(
+            "VACUUM INTO ?1",
+            params![backup_path.to_string_lossy().to_string()],
+        ) {
+            eprintln!("v13→v14 迁移前整库快照失败（纯删死列，继续）：{error}");
+        }
+
+        let tx = conn
+            .transaction()
+            .context("begin v13→v14 migration transaction")?;
+        for (table, column) in [
+            ("dispatcher_messages", "visible"),
+            ("dispatcher_tool_runs", "action_kind"),
+            ("graph_node_runs", "special_tools_json"),
+        ] {
+            let column_exists: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                params![table, column],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("inspect {table}.{column} before drop"))?;
+            if column_exists > 0 {
+                tx.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
+                    .with_context(|| format!("drop dead column {table}.{column}"))?;
+            }
+        }
+        tx.pragma_update(None, "user_version", 14)
+            .context("advance user_version to 14")?;
+        tx.commit().context("commit v13→v14 migration")
+    }
 }
 
 /// 全新建库：单事务内执行基线 DDL + 领域建表助手 + 内置种子数据，
@@ -691,7 +926,6 @@ CREATE TABLE IF NOT EXISTS dispatcher_messages (
     tool_artifacts_json TEXT,
     tool_calls_json TEXT,
     usage_stats_json TEXT,
-    visible INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dispatcher_messages_workspace_created
@@ -738,8 +972,6 @@ CREATE TABLE IF NOT EXISTS dispatcher_tool_runs (
     message_id TEXT,
     error_kind TEXT,
     error_message TEXT,
-    -- 历史列（v8 引入后从未有写入方，Rust 读写照已移除；列保留仅为免迁移）。
-    action_kind TEXT,
     started_at TEXT,
     finished_at TEXT,
     duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -779,27 +1011,11 @@ ON dispatcher_tool_artifacts(message_id);
 CREATE INDEX IF NOT EXISTS idx_dispatcher_tool_artifacts_run
 ON dispatcher_tool_artifacts(tool_run_id, created_at);
 
+-- v12 起：单行 JSON 形态——整对象序列化 AhaSettingsV2（落库剥离库引用凭据，
+-- 读取由库条目回填）。列形态变更见 migrate_v11_to_v12。
 CREATE TABLE IF NOT EXISTS dispatcher_settings (
     id TEXT PRIMARY KEY DEFAULT 'default',
-    shared_vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    shared_image_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    shared_image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    shared_asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    shared_tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    shared_embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    project_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    project_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    project_verifier_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    project_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
-    chat_agent_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    chat_agent_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
-    chat_agent_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
-    context_debug INTEGER NOT NULL DEFAULT 0,
-    review_model_config_json TEXT NOT NULL DEFAULT '',
-    review_system_prompt TEXT NOT NULL DEFAULT '',
-    model_library_json TEXT NOT NULL DEFAULT '[]',
-    graph_execution_config_json TEXT NOT NULL DEFAULT '{}',
-    theme TEXT NOT NULL DEFAULT 'system'
+    settings_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS dispatcher_session_token_usage (
@@ -840,29 +1056,10 @@ CREATE TABLE IF NOT EXISTS python_code_runs (
 CREATE INDEX IF NOT EXISTS idx_python_code_runs_workspace_updated
 ON python_code_runs(workspace_id, updated_at DESC);
 
--- 会话读模型：dispatcher_sessions 是统一锚点（消息/关键词/轨迹的外键目标），
--- chat_sessions / project_sessions 为两类会话的列表读模型，写入路径双写。
-CREATE TABLE IF NOT EXISTS chat_sessions (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT 'tech',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated
-ON chat_sessions(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_chat_sessions_category_updated
-ON chat_sessions(category, updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS project_sessions (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_project_sessions_project_updated
-ON project_sessions(project_id, updated_at DESC);
+-- 会话统一锚点（v13 起单表）：消息/关键词/轨迹的外键目标，两类会话列表
+-- 直接按 kind 过滤读取（chat 列表走下方 kind+category 索引做 keyset 分页）。
+CREATE INDEX IF NOT EXISTS idx_dispatcher_sessions_kind_category_updated
+ON dispatcher_sessions(kind, category, updated_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS session_keywords (
     session_id TEXT NOT NULL,
@@ -929,8 +1126,6 @@ CREATE TABLE IF NOT EXISTS graph_node_runs (
     model_label TEXT NOT NULL,
     model_category TEXT NOT NULL,
     base_tool_group TEXT NOT NULL,
-    -- 历史列（v4 起图定义无 specialTools，Rust 读写照已移除；列保留仅为免迁移）。
-    special_tools_json TEXT NOT NULL DEFAULT '[]',
     input_text TEXT NOT NULL DEFAULT '',
     output_text TEXT NOT NULL DEFAULT '',
     error_text TEXT,
@@ -1061,20 +1256,24 @@ pub(super) fn default_chat_category_agent_config_tx(
     tx: &rusqlite::Transaction<'_>,
     category_id: &str,
 ) -> Result<(String, String)> {
-    let row = tx
+    // v12 起 dispatcher_settings 为整对象 JSON：默认聊天工具面从
+    // chat.allowed_tools 读取（无设置行/解析失败回落空清单——与旧列形态
+    // 「无行回落 '[]'」语义一致）。
+    let raw: Option<String> = tx
         .query_row(
-            "
-            SELECT chat_agent_allowed_tools_json
-            FROM dispatcher_settings
-            WHERE id = 'default'
-            ",
+            "SELECT settings_json FROM dispatcher_settings WHERE id = 'default'",
             [],
-            |row| row.get::<_, String>(0),
+            |row| row.get(0),
         )
         .optional()
         .context("load default chat agent config")?;
-
-    let allowed_tools_json = row.unwrap_or_else(|| "[]".to_string());
+    let allowed_tools_json = raw
+        .and_then(|json| serde_json::from_str::<super::settings::AhaSettingsV2>(&json).ok())
+        .map(|settings| {
+            serde_json::to_string(&settings.chat.allowed_tools)
+                .unwrap_or_else(|_| "[]".to_string())
+        })
+        .unwrap_or_else(|| "[]".to_string());
     if let Some(default) = scenario_chat_category_agent_config(category_id) {
         return Ok((
             serde_json::to_string(default.tools)
@@ -1215,13 +1414,38 @@ fn scenario_chat_category_agent_config(
 
 #[cfg(test)]
 mod tests {
-    // 旧迁移夹具仅建被测表；补齐 v8 依赖的既有表，不覆盖旧表形态。
+    /// v9 形态的 dispatcher_settings 宽表（19 列，含 theme、无 v10 验收槽位
+    /// 列）：版本号 ≤ v9 的夹具沿链需真实走到 v9→v10 加列与 v11→v12 的
+    /// JSON 化迁移。基线 DDL 已是 (id, settings_json) 形态，不能再从基线提取。
+    const LEGACY_SETTINGS_DDL_V9: &str = "CREATE TABLE IF NOT EXISTS dispatcher_settings (
+        id TEXT PRIMARY KEY DEFAULT 'default',
+        shared_vision_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        shared_image_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        shared_image_edit_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        shared_asr_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        shared_tts_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        shared_embedding_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        project_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        project_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        project_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+        chat_agent_chat_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        chat_agent_summary_model_configs_json TEXT NOT NULL DEFAULT '[]',
+        chat_agent_allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+        context_debug INTEGER NOT NULL DEFAULT 0,
+        review_model_config_json TEXT NOT NULL DEFAULT '',
+        review_system_prompt TEXT NOT NULL DEFAULT '',
+        model_library_json TEXT NOT NULL DEFAULT '[]',
+        graph_execution_config_json TEXT NOT NULL DEFAULT '{}',
+        theme TEXT NOT NULL DEFAULT 'system'
+    );";
+
+    // 旧迁移夹具仅建被测表；补齐迁移链依赖的既有表，不覆盖旧表形态。
     fn complete_runtime_fixture(path: &std::path::Path) {
         let conn = rusqlite::Connection::open(path).unwrap();
         for table in [
+            "dispatcher_sessions",
             "dispatcher_messages",
             "dispatcher_tool_runs",
-            "dispatcher_settings",
             "graph_runs",
         ] {
             let prefix = format!("CREATE TABLE IF NOT EXISTS {table} (");
@@ -1230,25 +1454,10 @@ mod tests {
             let end = tail.find("\n);").unwrap() + 3;
             conn.execute_batch(&tail[..end]).unwrap();
         }
-        // dispatcher_settings 建成 v9 形态（删掉 v10 新增的验收槽位列）：
-        // 这些 fixture 的版本号 ≤ v9，打开时需能走到 v9→v10 的加列迁移。
-        // 旧版本 fixture 手写的 dispatcher_settings（v1/v2 形态）本就无该列，
-        // 按列存在性幂等跳过。
-        let verifier_column: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings')
-                 WHERE name = 'project_verifier_model_configs_json'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        if verifier_column > 0 {
-            conn.execute_batch(
-                "ALTER TABLE dispatcher_settings
-                   DROP COLUMN project_verifier_model_configs_json;",
-            )
-            .unwrap();
-        }
+        // dispatcher_settings 建成 v9 形态宽表：这些 fixture 的版本号 ≤ v9，
+        // 打开时需能走到 v9→v10 加列迁移与 v11→v12 JSON 化迁移。旧版本
+        // fixture 手写的 dispatcher_settings（v1/v2 形态）IF NOT EXISTS 跳过。
+        conn.execute_batch(LEGACY_SETTINGS_DDL_V9).unwrap();
         // graph_runs 建成 v10 形态（删掉 v11 新增的执行结果列）：迁移链现在
         // 触及该表，fixture 版本号 ≤ v10，打开时需能走到 v10→v11 的加列迁移。
         revert_v11_graph_run_columns(&conn);
@@ -1477,14 +1686,9 @@ mod tests {
             assert_eq!(message_id.as_deref(), Some("msg-1"));
             assert_eq!(legacy_column, 0, "未用列应随 v2 迁移移除");
 
-            // v2→v3：旧主题搬移进 dispatcher_settings.theme，旧键删除。
-            let theme: String = conn
-                .query_row(
-                    "SELECT theme FROM dispatcher_settings WHERE id = 'default'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
+            // v2→v3：旧主题搬移进设置（v12 起整对象存 settings_json），
+            // 旧键删除。
+            let theme = db.get_settings_v2().unwrap().theme;
             assert_eq!(theme, "dark", "旧 app_config 主题应搬移进设置");
             let legacy_rows: i64 = conn
                 .query_row(
@@ -1512,7 +1716,11 @@ mod tests {
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
                     || name.contains("pre-v9-backup")
-                    || name.contains("pre-v10-backup"))
+                    || name.contains("pre-v10-backup")
+                    || name.contains("pre-v11-backup")
+                    || name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1579,7 +1787,11 @@ mod tests {
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
                     || name.contains("pre-v9-backup")
-                    || name.contains("pre-v10-backup"))
+                    || name.contains("pre-v10-backup")
+                    || name.contains("pre-v11-backup")
+                    || name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1663,7 +1875,11 @@ mod tests {
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
                     || name.contains("pre-v9-backup")
-                    || name.contains("pre-v10-backup"))
+                    || name.contains("pre-v10-backup")
+                    || name.contains("pre-v11-backup")
+                    || name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1732,7 +1948,11 @@ mod tests {
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
                     || name.contains("pre-v9-backup")
-                    || name.contains("pre-v10-backup"))
+                    || name.contains("pre-v10-backup")
+                    || name.contains("pre-v11-backup")
+                    || name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1844,7 +2064,226 @@ mod tests {
                 && (name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
                     || name.contains("pre-v9-backup")
-                    || name.contains("pre-v10-backup"))
+                    || name.contains("pre-v10-backup")
+                    || name.contains("pre-v11-backup")
+                    || name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// v11 库（settings 宽表 + chat/project 双读模型子表 + 三个死列就位）沿链
+    /// 迁移到 v14：settings 整对象 JSON 化、两类会话并入统一表（含子表孤儿行
+    /// 回填）、死列删除；列表读取与新建写入路径照常工作。
+    #[test]
+    fn v11_database_migrates_settings_sessions_and_dead_columns() {
+        let path = temp_db_path("v11-to-v14");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            conn.execute_batch(
+                "CREATE TABLE dispatcher_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'project',
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_sessions
+                    (id, project_id, kind, title, category, created_at, updated_at)
+                VALUES ('chat-1', '__global_chat__', 'chat', '同步过的会话', 'tech',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                CREATE TABLE chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'tech',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO chat_sessions (id, title, category, created_at, updated_at)
+                VALUES ('chat-1', '同步过的会话', 'tech',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                -- 子表孤儿行：统一表缺失该 id，v13 回填必须保留。
+                INSERT INTO chat_sessions (id, title, category, created_at, updated_at)
+                VALUES ('chat-orphan', '孤儿会话', 'tech',
+                        '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z');
+                CREATE TABLE project_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO project_sessions (id, project_id, title, created_at, updated_at)
+                VALUES ('proj-1', 'p-1', '项目会话',
+                        '2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z');
+                CREATE TABLE dispatcher_messages (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    segments_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    visible INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO dispatcher_messages (id, workspace_id, role, segments_json, created_at)
+                VALUES ('m-1', 'chat-1', 'user', '[]', '2026-01-01T00:00:00Z');
+                CREATE TABLE dispatcher_tool_runs (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    action_kind TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO dispatcher_tool_runs
+                    (id, workspace_id, tool_call_id, tool_name, provider, category, status,
+                     created_at, updated_at)
+                VALUES ('run-1', 'chat-1', 'call-1', 'read_file', 'builtin', 'fs', 'succeeded',
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                CREATE TABLE graph_node_runs (
+                    run_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    phase TEXT NOT NULL DEFAULT 'starting',
+                    model_ref TEXT NOT NULL,
+                    model_label TEXT NOT NULL,
+                    model_category TEXT NOT NULL,
+                    base_tool_group TEXT NOT NULL,
+                    special_tools_json TEXT NOT NULL DEFAULT '[]',
+                    input_text TEXT NOT NULL DEFAULT '',
+                    output_text TEXT NOT NULL DEFAULT '',
+                    error_text TEXT,
+                    PRIMARY KEY(run_id, node_id)
+                );
+                -- 列表读取路径（list_*_sessions_paginated）会按会话批量查关键字，
+                -- 夹具补上最小形态的 session_keywords 表。
+                CREATE TABLE session_keywords (
+                    session_id TEXT NOT NULL,
+                    keyword TEXT NOT NULL,
+                    weight REAL NOT NULL DEFAULT 1.0,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, keyword)
+                );
+                PRAGMA user_version = 11;",
+            )
+            .unwrap();
+            // v11 形态 settings = v9 宽表 + v10 验收槽位列。
+            conn.execute_batch(LEGACY_SETTINGS_DDL_V9).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE dispatcher_settings
+                   ADD COLUMN project_verifier_model_configs_json TEXT NOT NULL DEFAULT '[]';
+                 INSERT INTO dispatcher_settings (id, theme, context_debug, project_chat_model_configs_json)
+                 VALUES ('default', 'dark', 1,
+                         '[{\"url\":\"https://api.example.com/v1\",\"apiKey\":\"k\",\"model\":\"m\",\"active\":true}]');",
+            )
+            .unwrap();
+        }
+
+        let db = DispatcherDb::new(path.clone()).unwrap();
+        {
+            let conn = db.conn().unwrap();
+            let version: i32 =
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap();
+            assert_eq!(version, super::SCHEMA_VERSION);
+
+            // 两张读模型子表删除；统一表 = 双写行 + 子表孤儿回填。
+            for table in ["chat_sessions", "project_sessions"] {
+                let exists: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(exists, 0, "{table} 应随 v13 迁移删除");
+            }
+            let sessions: i64 = conn
+                .query_row("SELECT COUNT(*) FROM dispatcher_sessions", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(sessions, 3, "双写行 + 子表孤儿回填共 3 行");
+
+            // 三个死列全部删除。
+            for (table, column) in [
+                ("dispatcher_messages", "visible"),
+                ("dispatcher_tool_runs", "action_kind"),
+                ("graph_node_runs", "special_tools_json"),
+            ] {
+                let left: i64 = conn
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"
+                        ),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(left, 0, "{table}.{column} 死列应随 v14 删除");
+            }
+
+            // settings：宽表行已收敛为 settings_json 单列。
+            let json_columns: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings')
+                     WHERE name = 'settings_json'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(json_columns, 1, "v12 后应只剩 settings_json 数据列");
+        }
+        let settings = db.get_settings_v2().unwrap();
+        assert_eq!(settings.theme, "dark", "宽表 theme 应随 JSON 化保留");
+        assert!(settings.context_debug);
+        assert_eq!(settings.project.chat_model_configs.len(), 1);
+        assert_eq!(settings.project.chat_model_configs[0].model, "m");
+
+        // 列表读取走统一表：默认列表按分类过滤、包含回填的孤儿行。
+        let page = db
+            .list_chat_sessions_paginated(Some("tech"), None, 20)
+            .unwrap();
+        assert_eq!(page.total, 2);
+        let titles: Vec<&str> = page.items.iter().map(|s| s.title.as_str()).collect();
+        assert!(titles.contains(&"同步过的会话"));
+        assert!(titles.contains(&"孤儿会话"));
+        let project_page = db.list_project_sessions_paginated("p-1", 0, 20).unwrap();
+        assert_eq!(project_page.total, 1);
+        assert_eq!(project_page.items[0].id, "proj-1");
+
+        // 新建会话走单写统一表路径。
+        let created = db.create_chat_session("新建会话", Some("tech")).unwrap();
+        let conn = db.conn().unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dispatcher_sessions WHERE id = ?1",
+                [&created.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        drop(conn);
+        drop(db);
+        cleanup_db_files(&path);
+        let dir = path.parent().unwrap();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("v11-to-v14-")
+                && (name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1908,16 +2347,11 @@ mod tests {
                 .unwrap();
             assert_eq!(version, super::SCHEMA_VERSION);
 
-            // 既有行保留原值，只追加 theme；旧键删除。
-            let (theme, context_debug): (String, i64) = conn
-                .query_row(
-                    "SELECT theme, context_debug FROM dispatcher_settings WHERE id = 'default'",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
-            assert_eq!(theme, "light", "旧主题应搬移进既有设置行");
-            assert_eq!(context_debug, 1, "迁移不应改动其它列");
+            // 既有行保留原值，只追加 theme（v12 起整对象存 settings_json）；
+            // 旧键删除。
+            let settings = db.get_settings_v2().unwrap();
+            assert_eq!(settings.theme, "light", "旧主题应搬移进既有设置行");
+            assert!(settings.context_debug, "迁移不应改动其它设置");
             let legacy_rows: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM app_config WHERE key = 'app_settings'",
@@ -1941,7 +2375,11 @@ mod tests {
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
                     || name.contains("pre-v9-backup")
-                    || name.contains("pre-v10-backup"))
+                    || name.contains("pre-v10-backup")
+                    || name.contains("pre-v11-backup")
+                    || name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1972,15 +2410,16 @@ mod tests {
         complete_runtime_fixture(&path);
         let db = DispatcherDb::new(path.clone()).unwrap();
         let conn = db.conn().unwrap();
-        let theme_default: String = conn
+        // v12 起表为 (id, settings_json) 单行 JSON 形态。
+        let json_columns: i64 = conn
             .query_row(
-                "SELECT dflt_value FROM pragma_table_info('dispatcher_settings')
-                 WHERE name = 'theme'",
+                "SELECT COUNT(*) FROM pragma_table_info('dispatcher_settings')
+                 WHERE name = 'settings_json'",
                 [],
-                |row| row.get::<_, String>(0),
+                |row| row.get(0),
             )
-            .expect("theme 列应存在");
-        assert_eq!(theme_default, "'system'", "新增列默认值应为 system");
+            .expect("settings_json 列应存在");
+        assert_eq!(json_columns, 1);
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM dispatcher_settings", [], |row| {
                 row.get(0)
@@ -1988,6 +2427,11 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0, "无旧主题时迁移不应创建设置行");
         drop(conn);
+        assert_eq!(
+            db.get_settings_v2().unwrap().theme,
+            "system",
+            "无设置行时读取回落默认主题"
+        );
         drop(db);
         cleanup_db_files(&path);
         let dir = path.parent().unwrap();
@@ -2002,7 +2446,11 @@ mod tests {
                     || name.contains("pre-v7-backup")
                     || name.contains("pre-v8-backup")
                     || name.contains("pre-v9-backup")
-                    || name.contains("pre-v10-backup"))
+                    || name.contains("pre-v10-backup")
+                    || name.contains("pre-v11-backup")
+                    || name.contains("pre-v12-backup")
+                    || name.contains("pre-v13-backup")
+                    || name.contains("pre-v14-backup"))
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -2126,11 +2574,14 @@ mod tests {
         tx.commit().unwrap();
         conn.execute_batch(
             "DROP INDEX idx_tool_completions_delivery;
-             ALTER TABLE dispatcher_settings
-               DROP COLUMN project_verifier_model_configs_json;
+             DROP TABLE dispatcher_settings;
              PRAGMA user_version = 8;",
         )
         .unwrap();
+        // v8 形态 settings = 19 列宽表（含 theme、无 v10 验收槽位列）：
+        // 基线已是 (id, settings_json) JSON 形态，重建旧宽表供迁移链走
+        // v9→v10 加列与 v11→v12 JSON 化。
+        conn.execute_batch(LEGACY_SETTINGS_DDL_V9).unwrap();
         revert_v11_graph_run_columns(&conn);
     }
 
@@ -2283,18 +2734,19 @@ mod tests {
         cleanup_db_files(&path);
     }
 
-    /// 造一个 v9 形态的库：基线表删掉 v10 新增的验收槽位列、版本号置 9，
-    /// 并预置一行带既有设置的 dispatcher_settings（验证迁移零数据丢失）。
+    /// 造一个 v9 形态的库：settings 换回 19 列宽表（基线已是 JSON 单列形态）
+    /// 、graph_runs 摘掉 v11 新列、版本号置 9，并预置一行带既有设置的
+    /// dispatcher_settings（验证迁移零数据丢失）。
     fn write_v9_settings_fixture(path: &std::path::Path) {
         let mut conn = rusqlite::Connection::open(path).unwrap();
         conn.execute_batch(super::BASELINE_DDL).unwrap();
         let tx = conn.transaction().unwrap();
         super::runtime::extend_schema(&tx).unwrap();
         tx.commit().unwrap();
+        conn.execute_batch("DROP TABLE dispatcher_settings;").unwrap();
+        conn.execute_batch(LEGACY_SETTINGS_DDL_V9).unwrap();
         conn.execute_batch(
-            "ALTER TABLE dispatcher_settings
-               DROP COLUMN project_verifier_model_configs_json;
-             INSERT INTO dispatcher_settings (id, project_summary_model_configs_json)
+            "INSERT INTO dispatcher_settings (id, project_summary_model_configs_json)
                VALUES ('default', '[{\"url\":\"http://u\",\"apiKey\":\"k\",\"model\":\"m\",\"active\":true}]');
              PRAGMA user_version = 9;",
         )
@@ -2316,21 +2768,22 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(version, super::SCHEMA_VERSION);
-            let (verifier, summary): (String, String) = conn
-                .query_row(
-                    "SELECT project_verifier_model_configs_json,
-                            project_summary_model_configs_json
-                     FROM dispatcher_settings WHERE id = 'default'",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
-            assert_eq!(verifier, "[]", "新列默认空槽位");
-            assert!(
-                summary.contains("http://u"),
-                "既有摘要槽位设置应全量保留：{summary}"
-            );
         }
+        // v9→v10 补验收槽位（默认空）；v11→v12 JSON 化后经读取面验证既有
+        // 摘要槽位设置全量保留。
+        let settings = db.get_settings_v2().unwrap();
+        assert!(
+            settings.project.verifier_model_configs.is_empty(),
+            "新验收槽位默认为空"
+        );
+        assert!(
+            settings
+                .project
+                .summary_model_configs
+                .iter()
+                .any(|config| config.url == "http://u" && config.model == "m"),
+            "既有摘要槽位设置应全量保留"
+        );
         drop(db);
 
         let backups = backup_files(&path, "pre-v10-backup");

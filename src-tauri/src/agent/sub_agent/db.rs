@@ -391,8 +391,9 @@ impl SubAgentDb {
         let conn = self.conn()?;
         // 启用来源（并集）：
         //   1. global_sub_agents —— 全局级，对所有会话（项目 + 聊天）生效
-        //   2. chat 分类级 —— 通过 chat_sessions.category → chat_category_agent_configs
-        //                      .sub_agent_ids_json 解析，让不同聊天分类加载不同子智能体。
+        //   2. chat 分类级 —— 通过 dispatcher_sessions.category
+        //                      → chat_category_agent_configs.sub_agent_ids_json
+        //                      解析，让不同聊天分类加载不同子智能体。
         let mut stmt = conn
             .prepare(
                 "SELECT DISTINCT sa.id FROM sub_agents sa
@@ -401,12 +402,12 @@ impl SubAgentDb {
                      sa.id IN (SELECT sub_agent_id FROM global_sub_agents)
                      OR EXISTS (
                          SELECT 1
-                         FROM chat_sessions s
+                         FROM dispatcher_sessions s
                          INNER JOIN chat_category_agent_configs cfg
                              ON cfg.category_id = s.category
                             AND json_valid(cfg.sub_agent_ids_json)
                          CROSS JOIN json_each(cfg.sub_agent_ids_json) AS je
-                         WHERE s.id = ?1 AND je.value = sa.id
+                         WHERE s.id = ?1 AND s.kind = 'chat' AND je.value = sa.id
                      )
                  )
                  ORDER BY sa.created_at",

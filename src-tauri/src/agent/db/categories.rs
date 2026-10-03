@@ -43,7 +43,8 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT c.id, c.name, c.icon, c.color, c.sort_order, COUNT(s.id), c.created_at, c.updated_at
              FROM chat_categories c
-             LEFT JOIN chat_sessions s ON s.category = c.id
+             LEFT JOIN dispatcher_sessions s
+                    ON s.category = c.id AND s.kind = 'chat'
              GROUP BY c.id, c.name, c.icon, c.color, c.sort_order, c.created_at, c.updated_at
              ORDER BY c.sort_order ASC, c.created_at ASC",
         )?;
@@ -179,7 +180,8 @@ impl DispatcherDb {
         conn.query_row(
             "SELECT c.id, c.name, c.icon, c.color, c.sort_order, COUNT(s.id), c.created_at, c.updated_at
              FROM chat_categories c
-             LEFT JOIN chat_sessions s ON s.category = c.id
+             LEFT JOIN dispatcher_sessions s
+                    ON s.category = c.id AND s.kind = 'chat'
              WHERE c.id = ?1
              GROUP BY c.id, c.name, c.icon, c.color, c.sort_order, c.created_at, c.updated_at",
             params![category_id],
@@ -223,11 +225,6 @@ impl DispatcherDb {
             params![category_id, now_val],
         )
         .context("reassign uncategorized dispatcher sessions")?;
-        tx.execute(
-            "UPDATE chat_sessions SET category = '', updated_at = ?2 WHERE category = ?1",
-            params![category_id, now_val],
-        )
-        .context("reassign uncategorized chat sessions")?;
         tx.execute(
             "DELETE FROM chat_categories WHERE id = ?1",
             params![category_id],
@@ -324,9 +321,9 @@ impl DispatcherDb {
             .query_row(
                 "SELECT EXISTS(
                      SELECT 1
-                     FROM chat_sessions s
+                     FROM dispatcher_sessions s
                      INNER JOIN chat_categories c ON c.id = s.category
-                     WHERE s.id = ?1 AND s.category != ''
+                     WHERE s.id = ?1 AND s.kind = 'chat' AND s.category != ''
                  )",
                 params![session_id],
                 |row| row.get(0),
@@ -368,10 +365,10 @@ fn read_chat_session_category_agent_config(
 ) -> Result<Option<ChatCategoryAgentConfig>> {
     conn.query_row(
         "SELECT c.id, c.name, cfg.allowed_tools_json, cfg.sub_agent_ids_json, cfg.system_prompt, cfg.created_at, cfg.updated_at
-         FROM chat_sessions s
+         FROM dispatcher_sessions s
          INNER JOIN chat_categories c ON c.id = s.category
          INNER JOIN chat_category_agent_configs cfg ON cfg.category_id = c.id
-         WHERE s.id = ?1 AND s.category != ''",
+         WHERE s.id = ?1 AND s.kind = 'chat' AND s.category != ''",
         params![session_id],
         map_chat_category_agent_config,
     )

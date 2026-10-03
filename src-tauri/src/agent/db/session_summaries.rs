@@ -94,11 +94,11 @@ impl super::DispatcherDb {
         &self,
         workspace_id: &str,
     ) -> Result<Option<SessionSummaryRecord>> {
-        let db = self.clone();
         let wid = workspace_id.to_string();
-        tokio::task::spawn_blocking(move || db.valid_session_summary(&wid))
-            .await
-            .context("valid_session_summary spawn_blocking")?
+        self.blocking("valid_session_summary spawn_blocking", move |db| {
+            db.valid_session_summary(&wid)
+        })
+        .await
     }
 
     pub async fn upsert_session_summary_async(
@@ -107,12 +107,12 @@ impl super::DispatcherDb {
         summary: &str,
         covered_through_message_id: &str,
     ) -> Result<()> {
-        let db = self.clone();
         let wid = workspace_id.to_string();
         let summary = summary.to_string();
         let anchor = covered_through_message_id.to_string();
-        tokio::task::spawn_blocking(move || db.upsert_session_summary(&wid, &summary, &anchor))
-            .await
-            .context("upsert_session_summary spawn_blocking")?
+        self.blocking("upsert_session_summary spawn_blocking", move |db| {
+            db.upsert_session_summary(&wid, &summary, &anchor)
+        })
+        .await
     }
 }

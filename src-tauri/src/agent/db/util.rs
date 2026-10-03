@@ -18,6 +18,22 @@ pub(super) fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+/// 在 Rust 侧由 RFC3339 文本时间戳计算工具运行时长（毫秒）——台账 finish
+/// 与完成事件结算的单一出处（不依赖 SQL julianday 解析文本时间戳）。
+/// started_at 缺失、任一时间戳无法解析时容错为 0，不产生 NULL。
+pub(super) fn duration_since_started_ms(started_at: Option<&str>, finished_at: &str) -> i64 {
+    let Some(started_at) = started_at else {
+        return 0;
+    };
+    let (Ok(started), Ok(finished)) = (
+        chrono::DateTime::parse_from_rfc3339(started_at),
+        chrono::DateTime::parse_from_rfc3339(finished_at),
+    ) else {
+        return 0;
+    };
+    (finished - started).num_milliseconds().max(0)
+}
+
 // ── 行映射器 ──────────────────────────────────────────────────
 // 这些映射器被 messages 等多个子模块共用，放在领域无关的此处。
 

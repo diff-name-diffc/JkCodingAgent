@@ -165,10 +165,6 @@ impl DispatcherDb {
                 image_dirs.push(dir);
             }
             tx.execute(
-                "DELETE FROM project_sessions WHERE id = ?1",
-                params![workspace_id],
-            )?;
-            tx.execute(
                 "DELETE FROM dispatcher_sessions WHERE id = ?1",
                 params![workspace_id],
             )?;
@@ -283,12 +279,6 @@ mod tests {
             conn.execute(
                 "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
                  VALUES (?1, ?2, 'project', 't', '', '2026-01-01', '2026-01-01')",
-                params![session, project],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO project_sessions (id, project_id, title, created_at, updated_at)
-                 VALUES (?1, ?2, 't', '2026-01-01', '2026-01-01')",
                 params![session, project],
             )
             .unwrap();

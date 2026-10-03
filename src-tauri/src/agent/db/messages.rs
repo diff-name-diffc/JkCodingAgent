@@ -116,7 +116,6 @@ struct NewDispatcherMessage<'a> {
     tool_calls: Option<&'a [OutboundToolCall]>,
     tool_artifacts: &'a [ToolArtifactDraft],
     usage_stats: Option<&'a DispatcherMessageUsageStats>,
-    visible: bool,
 }
 
 impl DispatcherDb {
@@ -140,7 +139,6 @@ impl DispatcherDb {
             tool_calls: None,
             tool_artifacts: &[],
             usage_stats: None,
-            visible: true,
         })
     }
 
@@ -184,7 +182,6 @@ impl DispatcherDb {
             tool_calls: None,
             tool_artifacts: &[],
             usage_stats: Some(usage_stats),
-            visible: true,
         })
     }
 
@@ -215,7 +212,6 @@ impl DispatcherDb {
             tool_calls,
             tool_artifacts: &[],
             usage_stats: None,
-            visible: true,
         })
     }
 
@@ -244,7 +240,6 @@ impl DispatcherDb {
             tool_calls: None,
             tool_artifacts,
             usage_stats: None,
-            visible: true,
         })
     }
 
@@ -295,14 +290,6 @@ impl DispatcherDb {
             "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
             params![&record.created_at, &record.workspace_id],
         )?;
-        tx.execute(
-            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&record.created_at, &record.workspace_id],
-        )?;
-        tx.execute(
-            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&record.created_at, &record.workspace_id],
-        )?;
 
         let thinking_elapsed_ms = record
             .thinking_elapsed_ms
@@ -312,9 +299,9 @@ impl DispatcherDb {
 
         tx.execute(
             "INSERT INTO dispatcher_messages (
-                id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, visible, created_at
+                id, workspace_id, role, segments_json, thinking_content, thinking_elapsed_ms, context_payload, tool_call_id, tool_name, tool_result_mode, tool_artifacts_json, tool_calls_json, usage_stats_json, created_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 &record.id,
                 &record.workspace_id,
@@ -329,7 +316,6 @@ impl DispatcherDb {
                 Option::<String>::None,
                 &record.tool_calls_json,
                 &usage_stats_json,
-                if params.visible { 1 } else { 0 },
                 &record.created_at
             ],
         )

@@ -8,9 +8,10 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use uuid::Uuid;
 
 use super::{
-    load_tool_run_on_conn, DispatcherToolRunRecord, FinishToolRun, NewToolRun, ToolRunTraceContext,
+    is_terminal_run_status, load_tool_run_on_conn, DispatcherToolRunRecord, FinishToolRun,
+    NewToolRun, ToolRunTraceContext, TERMINAL_RUN_STATUSES,
 };
-use crate::agent::db::util::now;
+use crate::agent::db::util::{duration_since_started_ms, now};
 use crate::agent::db::DispatcherDb;
 
 impl DispatcherDb {
@@ -84,23 +85,26 @@ impl DispatcherDb {
         let duration_ms = duration_since_started_ms(started_at.as_deref(), &finished_at);
         // 可选字段统一 COALESCE 保留语义：未提供新值时保留既有值，
         // 避免重复/乱序 finish 清空已落定的字段。
+        // 终态清单编译期拼入 SQL（词表常量，无注入面），与 is_terminal_run_status
+        // 同源，两份清单不会漂移。
+        let sql = format!(
+            "UPDATE dispatcher_tool_runs
+             SET status = ?1,
+                 result_mode = COALESCE(?2, result_mode),
+                 message_id = COALESCE(?3, message_id),
+                 error_kind = COALESCE(?4, error_kind),
+                 error_message = COALESCE(?5, error_message),
+                 finished_at = ?6,
+                 duration_ms = ?7,
+                 metadata_json = COALESCE(?8, metadata_json),
+                 updated_at = ?6
+             WHERE id = ?9
+               AND status NOT IN ('{}')",
+            TERMINAL_RUN_STATUSES.join("', '")
+        );
         let changed = tx
             .execute(
-                "UPDATE dispatcher_tool_runs
-                 SET status = ?1,
-                     result_mode = COALESCE(?2, result_mode),
-                     message_id = COALESCE(?3, message_id),
-                     error_kind = COALESCE(?4, error_kind),
-                     error_message = COALESCE(?5, error_message),
-                     finished_at = ?6,
-                     duration_ms = ?7,
-                     metadata_json = COALESCE(?8, metadata_json),
-                     updated_at = ?6
-                 WHERE id = ?9
-                   AND status NOT IN (
-                       'succeeded', 'recoverable_error', 'fatal_error', 'cancelled',
-                       'failed', 'internal_error'
-                   )",
+                &sql,
                 params![
                     &finish.status,
                     &finish.result_mode,
@@ -128,34 +132,6 @@ impl DispatcherDb {
         let conn = self.conn()?;
         load_tool_run_on_conn(&conn, id)
     }
-}
-
-/// 运行到达这些状态后生命周期即结束，不得被后续 finish 覆盖（单向推进）。
-fn is_terminal_run_status(status: &str) -> bool {
-    matches!(
-        status,
-        "succeeded"
-            | "recoverable_error"
-            | "fatal_error"
-            | "cancelled"
-            | "failed"
-            | "internal_error"
-    )
-}
-
-/// 在 Rust 侧由 RFC3339 文本时间戳计算时长（毫秒）。
-/// started_at 缺失、任一时间戳无法解析时容错为 0，不产生 NULL。
-fn duration_since_started_ms(started_at: Option<&str>, finished_at: &str) -> i64 {
-    let Some(started_at) = started_at else {
-        return 0;
-    };
-    let (Ok(started), Ok(finished)) = (
-        chrono::DateTime::parse_from_rfc3339(started_at),
-        chrono::DateTime::parse_from_rfc3339(finished_at),
-    ) else {
-        return 0;
-    };
-    (finished - started).num_milliseconds().max(0)
 }
 
 // 单调用与批次登记共享同一个事务内插入路径。

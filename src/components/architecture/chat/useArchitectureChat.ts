@@ -25,10 +25,10 @@ import {
   getDispatcherSessionRunning,
   nextDispatcherActiveRunId,
   notifyDispatcherMessages,
+  reconcileSessionMessages,
 } from "../../dispatcherSessionStore";
 import {
   createDispatcherEventChannel,
-  reconcileSessionMessages,
   type DispatcherEventChannelDeps,
 } from "../../dispatcher-chat/event-channel";
 import {

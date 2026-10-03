@@ -7,7 +7,6 @@ import { useUIStore } from "../../stores/ui-store";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { DetailSection } from "../detail/DetailSection";
 import { OutputBlock } from "../detail/OutputBlock";
 import { renderArtifactContent } from "./artifact-renderers";
@@ -16,10 +15,9 @@ import { SubAgentExecutionCard } from "../SubAgentExecutionView";
 /**
  * Optional right-side detail panel for the refactored chat surface.
  *
- * Reserved for: agent tool-call detail, generated document/code preview,
- * citation sources, file preview, task execution trace. Today it renders a
- * generic tabbed shell; concrete content is passed in as children/props by
- * the orchestrator.
+ * 渲染内容按优先级：子智能体执行轨迹（含加载/错误态）→ 工具产物详情。
+ * 唯一消费方 chat-shell 以「无选中详情不挂面板」门控，不存在通用
+ * tabs / children / 空态内容路径。
  */
 export interface ArtifactPanelProps {
   title?: string;
@@ -28,10 +26,6 @@ export interface ArtifactPanelProps {
   subAgentSession?: SubAgentSession | null;
   traceLoading?: boolean;
   traceError?: string | null;
-  /** Tab labels → content. */
-  tabs?: { label: string; value: string; content: React.ReactNode }[];
-  /** If no tabs are provided, render this single content node. */
-  children?: React.ReactNode;
   className?: string;
 }
 
@@ -42,8 +36,6 @@ export function ArtifactPanel({
   subAgentSession,
   traceLoading = false,
   traceError,
-  tabs,
-  children,
   className,
 }: ArtifactPanelProps) {
   const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen);
@@ -125,24 +117,7 @@ export function ArtifactPanel({
               loading={loading}
               error={error}
             />
-          ) : tabs && tabs.length > 0 ? (
-            <Tabs defaultValue={tabs[0].value} className="w-full">
-              <TabsList className="mb-3">
-                {tabs.map((tab) => (
-                  <TabsTrigger key={tab.value} value={tab.value}>
-                    {tab.label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-              {tabs.map((tab) => (
-                <TabsContent key={tab.value} value={tab.value}>
-                  {tab.content}
-                </TabsContent>
-              ))}
-            </Tabs>
-          ) : (
-            children ?? <ArtifactEmptyState />
-          )}
+          ) : null}
         </div>
       </ScrollArea>
     </div>
@@ -209,18 +184,6 @@ function ToolArtifactContent({
       )}
 
       {loadedArtifact && renderArtifactContent(loadedArtifact)}
-    </div>
-  );
-}
-
-function ArtifactEmptyState() {
-  return (
-    <div className="flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center">
-      <FileSearch className="mb-2 h-5 w-5 text-muted-foreground" />
-      <div className="text-sm font-medium text-foreground">暂无详情</div>
-      <div className="mt-1 text-xs text-muted-foreground">
-        从工具调用中打开详细结果后会显示在这里。
-      </div>
     </div>
   );
 }

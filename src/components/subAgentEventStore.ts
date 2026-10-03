@@ -103,6 +103,17 @@ function ensureSessionMap(sessionId: string): SessionMap {
 }
 
 /**
+ * 提交某会话的新一代 SessionMap。存储的 map 一经提交永不原位变异——后续
+ * 事件写入都以「浅拷贝 + 单条替换」生成新 map，notify 只需对顶层 store 做
+ * 一次浅快照即可分发（替代旧的逐事件 structuredClone 全量深克隆）。
+ * 容量上限由 ensureSessionMap 在新建会话槽位时统一执行。
+ */
+function commitSessionMap(sessionId: string, next: SessionMap): void {
+  touchSession(sessionId);
+  store[sessionId] = next;
+}
+
+/**
  * LRU 刷新：把会话键移到对象末尾（对象键按插入序）。写路径经
  * ensureSessionMap 刷新；读路径（面板正在展示的会话）也必须刷新，
  * 否则「已完成、不再产生事件但正被查看」的会话会停留在最早位置，
@@ -125,8 +136,10 @@ function snapshotForSession(sessionId: string): SessionMap {
 }
 
 function notify(): void {
+  // 顶层浅快照：会话级 map 已是写时替换（见 commitSessionMap），无需深克隆。
+  const snapshot = { ...store };
   for (const sub of subscribers) {
-    sub(structuredClone(store));
+    sub(snapshot);
   }
 }
 
@@ -164,8 +177,8 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     const agentId = data.agentId ?? "unknown";
     const now = payload.timestampMs || Date.now();
 
-    const sessionMap = ensureSessionMap(sessionId);
-    const existing = sessionMap[toolCallId];
+    ensureSessionMap(sessionId);
+    const existing = store[sessionId][toolCallId];
     const storeKey = keyFor(sessionId, toolCallId);
 
     let name: string;
@@ -300,24 +313,27 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
           ? []
           : existing?.progressMessages ?? [];
 
-    sessionMap[toolCallId] = {
-      agentId,
-      name,
-      task,
-      model,
-      responseText,
-      progressMessages,
-      events,
-      elapsed,
-      status,
-      phase,
-      toolCalls,
-      finishedResult,
-      finishedError,
-      tokenUsage,
-      usageReceivedAt,
-      iterations,
-    };
+    commitSessionMap(sessionId, {
+      ...store[sessionId],
+      [toolCallId]: {
+        agentId,
+        name,
+        task,
+        model,
+        responseText,
+        progressMessages,
+        events,
+        elapsed,
+        status,
+        phase,
+        toolCalls,
+        finishedResult,
+        finishedError,
+        tokenUsage,
+        usageReceivedAt,
+        iterations,
+      },
+    });
     if (notifyAfter) notify();
 }
 
@@ -363,8 +379,11 @@ export function hydrateSubAgentTrace(
   events: SubAgentEvent[],
   model?: string | null,
 ): SubAgentSession | null {
-  const sessionMap = ensureSessionMap(sessionId);
-  delete sessionMap[toolCallId];
+  ensureSessionMap(sessionId);
+  // 回放前移除旧轨迹：与 ensure 一样走写时替换，不原位 delete。
+  const replayBase = { ...store[sessionId] };
+  delete replayBase[toolCallId];
+  commitSessionMap(sessionId, replayBase);
   delete starts[keyFor(sessionId, toolCallId)];
   for (const event of events) {
     applySubAgentEvent({ sessionId, toolCallId, timestampMs: Date.now(), ...event }, false);
@@ -372,8 +391,13 @@ export function hydrateSubAgentTrace(
   // trace 表 model 列为回放权威源：长任务中 Started 事件会被容量裁剪
   // 逐出（G1-20），此时事件流拿不到模型，用列值覆盖（UI-14 遗留）。
   if (model != null) {
-    const session = sessionMap[toolCallId];
-    if (session) session.model = model;
+    const session = store[sessionId]?.[toolCallId];
+    if (session) {
+      commitSessionMap(sessionId, {
+        ...store[sessionId],
+        [toolCallId]: { ...session, model },
+      });
+    }
   }
   notify();
   return getSubAgentSession(sessionId, toolCallId);

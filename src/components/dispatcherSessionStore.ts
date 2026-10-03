@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { DispatcherMessage, DispatcherMessageWire } from "../types";
 import type { AssistantThinkingBlock, AssistantTurnSegment } from "./dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
@@ -132,6 +133,34 @@ export function subscribeDispatcherMessages(
       cleanupIdleUnobservedSession(sessionId);
     }
   };
+}
+
+/**
+ * 运行收尾/会话记录变更的全量消息对账：拉全量消息经订阅通道分发（消费方
+ * 以 mergeDispatcherMessages 合并）。此前 finished / failed / 发送 reject、
+ * 断连释放与 dispatcher-session-updated 重载各自实现一份 fetch+merge，
+ * 现统一为本函数单一管线。
+ *
+ * 竞态守卫：list_messages 在途期间若已开启新 run，过期全量快照不得推送
+ * （merge 只增不删，可能把已删消息加回来）。
+ */
+export function reconcileSessionMessages(
+  targetSessionId: string,
+  expectedCount?: number,
+): void {
+  void invoke<DispatcherMessageWire[]>("dispatcher_list_messages", {
+    workspaceId: targetSessionId,
+  })
+    .then((fresh) => {
+      if (getDispatcherActiveRunId(targetSessionId) !== undefined) return;
+      if (expectedCount !== undefined && fresh.length !== expectedCount) {
+        console.warn(
+          `Finished 对账不一致：后端 ${expectedCount} 条，拉取到 ${fresh.length} 条`,
+        );
+      }
+      notifyDispatcherMessages(targetSessionId, fresh);
+    })
+    .catch((err) => console.error("运行收尾对账消息失败:", err));
 }
 
 export function cleanupDispatcherSession(sessionId: string) {

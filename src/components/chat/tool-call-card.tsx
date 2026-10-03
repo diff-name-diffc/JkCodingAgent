@@ -1,11 +1,12 @@
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Bot, Check, ChevronDown, Clock3, FileSearch, Loader2, X } from "lucide-react";
-import type { ToolActivityItem, ToolCallStatus } from "../dispatcher-chat/tool-activity";
 import {
   formatToolActivitySummary,
   summarizeToolActivity,
-} from "../dispatcher-chat/tool-activity-summary";
+  type ToolActivityItem,
+  type ToolCallStatus,
+} from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef, ModelCategory } from "../../types";
 import {
   inferModelNotConfiguredCategory,

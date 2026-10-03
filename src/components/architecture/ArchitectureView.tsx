@@ -60,7 +60,6 @@ const ArchitectureCanvas = memo(function ArchitectureCanvas({
   onBlockState: (info: CanvasBlockInfo | null) => void;
   onSceneChange: (elements: readonly ExcalidrawElement[]) => void;
 }) {
-  const [blocked, setBlocked] = useState<CanvasBlockInfo | null>(null);
   const [remountKey, setRemountKey] = useState(0);
   const persisterRef = useRef(createScenePersister());
   const dark = useIsDarkTheme();
@@ -91,42 +90,37 @@ const ArchitectureCanvas = memo(function ArchitectureCanvas({
 
   // 崩溃重试：重挂载 Excalidraw（持久化场景在 initialData 恢复，内容无损）。
   const retryRemount = useCallback(() => {
-    setBlocked(null);
     onBlockState(null);
     setRemountKey((key) => key + 1);
   }, [onBlockState]);
 
   return (
     <div className="ai-arch-canvas">
-      {blocked ? (
-        <CanvasBlockedPanel info={blocked} onRetry={retryRemount} />
-      ) : (
-        <ErrorBoundary
-          label="架构画布"
-          fallback={(error, reset) => (
-            <CanvasBlockedPanel
-              info={{ kind: "crash", message: error.message, stack: error.stack }}
-              onRetry={() => {
-                reset();
-                retryRemount();
-              }}
-              onShown={onBlockState}
-            />
-          )}
-        >
-          <div className="ai-arch-excalidraw-host">
-            <Excalidraw
-              key={remountKey}
-              initialData={initialData}
-              excalidrawAPI={handleApi}
-              // theme prop 是响应式的（内部 updateScene），切换主题不重建画布。
-              theme={resolveCanvasTheme(dark)}
-              langCode="zh-CN"
-              onChange={handleChange}
-            />
-          </div>
-        </ErrorBoundary>
-      )}
+      <ErrorBoundary
+        label="架构画布"
+        fallback={(error, reset) => (
+          <CanvasBlockedPanel
+            info={{ kind: "crash", message: error.message, stack: error.stack }}
+            onRetry={() => {
+              reset();
+              retryRemount();
+            }}
+            onShown={onBlockState}
+          />
+        )}
+      >
+        <div className="ai-arch-excalidraw-host">
+          <Excalidraw
+            key={remountKey}
+            initialData={initialData}
+            excalidrawAPI={handleApi}
+            // theme prop 是响应式的（内部 updateScene），切换主题不重建画布。
+            theme={resolveCanvasTheme(dark)}
+            langCode="zh-CN"
+            onChange={handleChange}
+          />
+        </div>
+      </ErrorBoundary>
     </div>
   );
 });

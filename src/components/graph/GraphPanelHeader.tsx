@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useRef } from "react";
-import { ArrowLeft, Maximize2, Minimize2, Play, RefreshCw, RotateCcw, Square, X } from "lucide-react";
+import { ArrowLeft, Play, RefreshCw, RotateCcw, Square, X } from "lucide-react";
 import type { GraphDefinition, GraphNodeStatus, GraphPlanRecord, GraphPlanStatus } from "../../types";
 import type { GraphPanelView } from "../project/main-tabs";
 import { cn } from "../../lib/cn";
 import { isRovingKey, nextRovingIndex } from "../../lib/roving-index";
 import { Button } from "../ui/button";
 import { StatusPill } from "../detail/StatusPill";
+import { ExpandMainAreaButton } from "./ExpandMainAreaButton";
 import { PLAN_STATUS_META, computeGraphLayers } from "./graph-utils";
 
 interface GraphPanelHeaderProps {
@@ -285,19 +286,7 @@ export function GraphPanelHeader({
           </Button>
         )}
         {onExpandMainArea && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={mainAreaExpanded ? "还原双栏布局" : "扩大占满主区"}
-            title={mainAreaExpanded ? "还原双栏布局" : "扩大占满主区"}
-            onClick={onExpandMainArea}
-          >
-            {mainAreaExpanded ? (
-              <Minimize2 className="h-4 w-4" />
-            ) : (
-              <Maximize2 className="h-4 w-4" />
-            )}
-          </Button>
+          <ExpandMainAreaButton expanded={mainAreaExpanded} onClick={onExpandMainArea} />
         )}
         <Button variant="ghost" size="icon-sm" aria-label="关闭执行图标签" onClick={onClose}>
           <X className="h-4 w-4" />

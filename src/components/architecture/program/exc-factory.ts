@@ -238,7 +238,7 @@ export function borderPointToward(
 }
 
 /** 容器内绑定文本：水平按对齐、垂直居中地放进容器包围盒。 */
-export function positionContainerText(container: MutableElement, text: MutableTextElement): void {
+function positionContainerText(container: MutableElement, text: MutableTextElement): void {
   const pad = 8;
   const innerW = Math.max(container.width - pad * 2, 1);
   const x =

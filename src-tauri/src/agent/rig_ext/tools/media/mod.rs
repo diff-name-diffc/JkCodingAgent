@@ -17,11 +17,14 @@ mod generate;
 mod image_api;
 
 use rig::completion::{CompletionModel, Message};
-use rig::message::{AssistantContent, DocumentSourceKind, Image, ImageMediaType, UserContent};
+use rig::message::{AssistantContent, Image, UserContent};
 use rig::tool::PortableDynamicTool;
 
 use super::super::model::{build_completion_request, completions_model, PurposeModelSpec};
 use super::RigToolDeps;
+use crate::agent::rig_ext::message::{
+    data_url_to_image as data_url_to_image_with_allowlist, ImageMimeAllowlist,
+};
 
 pub(crate) fn media_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     let mut tools = vec![
@@ -40,35 +43,12 @@ fn cancellation_requested(cancel_rx: &tokio::sync::watch::Receiver<bool>) -> boo
     *cancel_rx.borrow() || cancel_rx.has_changed().is_err()
 }
 
-/// mime 字符串 → rig `ImageMediaType`（对齐 `rig_ext::message` 私有同名表；
-/// 该函数不导出，本层按图片工具实际支持的四种格式维护副本）。
-fn image_media_type_for_mime(mime: &str) -> Option<ImageMediaType> {
-    match mime.to_ascii_lowercase().as_str() {
-        "image/png" => Some(ImageMediaType::PNG),
-        "image/jpeg" => Some(ImageMediaType::JPEG),
-        "image/gif" => Some(ImageMediaType::GIF),
-        "image/webp" => Some(ImageMediaType::WEBP),
-        _ => None,
-    }
-}
-
-/// `data:image/...;base64,...` → rig `Image`（校验口径同 `rig_ext::message`
-/// 的 data URL 解析：必须 image 前缀 + base64 段 + 受支持类型）。
+/// `data:image/...;base64,...` → rig `Image`：委托 `rig_ext::message` 的唯一
+/// 实现，图片工具固定视觉输入档（位图 4 类，拒 svg/heic/heif）。本层不再
+/// 维护 mime 表/data URL 解析副本（子模块的 mime 映射同样直接用 message
+/// 导出的 `image_media_type_for_mime` + `ImageMimeAllowlist::VisionInputs`）。
 fn data_url_to_image(data_url: &str) -> Result<Image, String> {
-    let Some(rest) = data_url.strip_prefix("data:image/") else {
-        return Err("data URL 必须以 data:image/ 开头".to_string());
-    };
-    let Some((mime, data)) = rest.split_once(";base64,") else {
-        return Err("data URL 缺少 ;base64, 数据段".to_string());
-    };
-    let media_type = image_media_type_for_mime(&format!("image/{mime}"))
-        .ok_or_else(|| format!("不支持的图片类型：image/{mime}"))?;
-    Ok(Image {
-        data: DocumentSourceKind::Base64(data.to_string()),
-        media_type: Some(media_type),
-        detail: None,
-        additional_params: None,
-    })
+    data_url_to_image_with_allowlist(data_url, ImageMimeAllowlist::VisionInputs)
 }
 
 /// 视觉槽位一次性图片问答：系统提示词 + 用户指令 + 单张图片 → 文本结果。

@@ -25,7 +25,9 @@ where
     // 上下文整形预算（统一整形层）：容量源为 hooks.context_window（三条
     // 装配路径均已以槽位规格回填）；上下文超限错误（400）时预算减半重试，
     // 故为循环变量而非常量。
-    let agent_run_id = uuid::Uuid::new_v4().to_string();
+    // run 身份唯一化为调度器的 run_id（TaskScheduler::new：顶层新 uuid、
+    // 子 scope 继承父 agent_run_id）——不再另造 uuid，保证按 agent_run_id
+    // 查运行树不漏行。
     let (anchor_db, anchor_workspace) = (db.clone(), workspace_id.to_string());
     let root_request_anchor = tokio::task::spawn_blocking(move || {
         anchor_db.latest_user_request_anchor(&anchor_workspace)
@@ -372,25 +374,22 @@ where
                     "tools_ready"
                 })
             };
-            let mut results = Vec::new();
-            let mut last_result_id = None;
-            for call in &tool_calls {
-                let text = serde_json::json!({"reason":reason,"task_ids":coordinator.tasks.ready.values().map(|r| &r.tool_run_id).collect::<Vec<_>>()}).to_string();
-                let record = db
-                    .add_visible_tool_result_async(
-                        workspace_id,
-                        &text,
-                        &text,
-                        Some(call.wire_call_id()),
-                        Some(&call.function.name),
-                        Some("raw"),
-                        &[],
-                    )
-                    .await?;
-                // 与 coordinator::dispatch 同一约定：锚点取本批最后一条落库 id。
-                last_result_id = Some(record.id);
-                results.push(coordinator::tool_reply(call, &text));
-            }
+            let text = serde_json::json!({
+                "reason": reason,
+                "task_ids": coordinator
+                    .tasks
+                    .ready
+                    .values()
+                    .map(|r| &r.tool_run_id)
+                    .collect::<Vec<_>>(),
+            })
+            .to_string();
+            // 与 coordinator::dispatch 的拒绝路径同一收口：落库 + ToolFinished
+            // 事件（控制类调用不发 ToolStarted，与立即应答语义一致），保证
+            // 已发的 ToolPlanned 必有终态，前端不悬挂幽灵卡片。
+            let (results, last_result_id) = coordinator
+                .settle_unexecuted_batch(&tool_calls, &text, on_event)
+                .await?;
             messages.push(Message::User { content: results });
             message_ids.push(last_result_id);
             if let Some(error) = wait_error {
@@ -421,6 +420,12 @@ where
             continue;
         }
 
+        // is_protocol 已保证 handler 存在；协议批直接收 handler（免台账短路，
+        // 见 batch::execute_tool_calls 的文档）。
+        let protocol_handler = hooks
+            .protocol_handler
+            .as_ref()
+            .expect("is_protocol 分支已保证协议处理器存在");
         let batch = execute_tool_calls(
             db,
             workspace_id,
@@ -428,15 +433,10 @@ where
             &tool_calls,
             &outbound_calls,
             surface,
-            tool_policy,
+            protocol_handler.as_ref(),
             summary,
             usage_tracker,
             &cancel_rx,
-            hooks,
-            &agent_run_id,
-            root_request_anchor
-                .as_deref()
-                .unwrap_or(&tool_calls_record.id),
         )
         .await?;
         let Some(result_contents) = batch.contents else {

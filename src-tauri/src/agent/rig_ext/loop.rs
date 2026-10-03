@@ -50,7 +50,7 @@ const MIN_CONTEXT_BUDGET_CHARS: usize = 16_000;
 
 pub use app_policy::{AppToolExecutionPolicy, AppToolPolicyConfig};
 pub use protocol::{ProtocolToolHandler, RigProtocolAction, RigProtocolResult};
-pub use surface::{RigToolSurface, ToolCallOutcome, ToolExecutionPolicy};
+pub use surface::{RigToolSurface, ToolExecutionPolicy};
 
 use stream::{consume_stream, StreamProgress};
 use support::{

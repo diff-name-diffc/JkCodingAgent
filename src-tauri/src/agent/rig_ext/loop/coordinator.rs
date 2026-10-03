@@ -129,7 +129,11 @@ impl Coordinator {
         Ok(())
     }
 
-    async fn reject_batch(
+    /// 整批不执行、统一文本立即应答：逐调用落库 + 发 `ToolFinished`（G9-07：
+    /// 已发 `ToolPlanned` 的调用必须可达终态，否则前端 live-tool-activity
+    /// 悬挂幽灵卡片）+ 回灌 rig 消息。既用于 dispatch 的准入/登记拒绝，
+    /// 也用于决策层的控制类调用（wait_for_tools / 混批与独占批拒绝）。
+    pub(super) async fn settle_unexecuted_batch(
         &self,
         calls: &[ToolCall],
         text: &str,
@@ -165,7 +169,7 @@ impl Coordinator {
             .find(|call| surface.find(&call.function.name).is_none())
         {
             let text = format!("错误：未注册的工具：{}；本批未执行", call.function.name);
-            return self.reject_batch(calls, &text, events).await;
+            return self.settle_unexecuted_batch(calls, &text, events).await;
         }
         let tools = calls
             .iter()
@@ -189,11 +193,11 @@ impl Coordinator {
             Ok(ids) => ids,
             Err(error) if error.is::<super::budgets::AdmissionError>() => {
                 return self
-                    .reject_batch(calls, &format!("错误：{error}；本批未执行"), events)
+                    .settle_unexecuted_batch(calls, &format!("错误：{error}；本批未执行"), events)
                     .await;
             }
             Err(error) => {
-                self.reject_batch(
+                self.settle_unexecuted_batch(
                     calls,
                     &format!("错误：工具批次登记失败，本批未执行：{error}"),
                     events,

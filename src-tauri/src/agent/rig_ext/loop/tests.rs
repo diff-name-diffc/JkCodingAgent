@@ -20,12 +20,14 @@ use super::surface::{DirectToolExecution, RigToolSurface};
 use super::*;
 use crate::agent::db::{DispatcherDb, DispatcherSessionTokenUsageSource};
 
-/// 事件通道捕获：把每个事件的 `event` 标签与正文 delta 收集起来。
+/// 事件通道捕获：把每个事件的 `event` 标签与正文 delta 收集起来；
+/// 工具事件额外记 `(tag, toolCallId)` 对（G9-07 配对断言用）。
 #[derive(Default)]
 struct CapturedEvents {
     tags: Vec<String>,
     text_deltas: Vec<String>,
     finished_message_count: Option<usize>,
+    tool_events: Vec<(String, String)>,
 }
 
 fn capture_channel(captured: Arc<Mutex<CapturedEvents>>) -> Channel<AgentEvent> {
@@ -54,6 +56,18 @@ fn capture_channel(captured: Arc<Mutex<CapturedEvents>>) -> Channel<AgentEvent> 
                 .and_then(|data| data.get("messageCount"))
                 .and_then(|count| count.as_u64())
                 .map(|count| count as usize);
+        }
+        if matches!(
+            tag.as_str(),
+            "toolPlanned" | "toolStarted" | "toolFinished" | "toolAccepted"
+        ) {
+            let call_id = value
+                .get("data")
+                .and_then(|data| data.get("toolCallId").or_else(|| data.get("taskId")))
+                .and_then(|id| id.as_str())
+                .unwrap_or_default()
+                .to_string();
+            captured.lock().tool_events.push((tag.clone(), call_id));
         }
         captured.lock().tags.push(tag);
         Ok(())
@@ -1028,5 +1042,289 @@ async fn cancel_during_wait_after_reply_keeps_the_persisted_reply() {
             .iter()
             .any(|message| message.plain_text().contains("本轮聊天已停止")),
         "答复已落库后不得再写「已停止」stub"
+    );
+}
+
+// ─── 控制分支事件链（P0-4：Planned 必须可达终态，无幽灵卡片） ─────────────
+
+/// 无未决任务时单独调用 wait_for_tools：立即以 no_pending_tasks 应答。
+/// 该控制分支不经工具执行，事件链为 Planned → Finished（无 Started，与
+/// dispatch 拒绝路径的立即应答同口径）——修复前只落库不发终态事件，
+/// 前端 live-tool-activity 的 pending 卡片永久悬挂。
+#[tokio::test]
+async fn wait_without_pending_tasks_emits_tool_finished_for_the_planned_call() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("wait-1", "wait_for_tools", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("无事可等，直接答复"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let surface = Fixture::surface();
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    let (_cancel, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = UsageTracker::new();
+    let reply = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("等待")],
+        vec![],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("控制工具应正常应答并继续循环");
+    assert_eq!(reply.plain_text().trim(), "无事可等，直接答复");
+
+    let events = captured.lock();
+    let position = |tag: &str| {
+        events
+            .tool_events
+            .iter()
+            .position(|(event, id)| event == tag && id == "wait-1")
+    };
+    let planned = position("toolPlanned").expect("wait 调用必须先发 toolPlanned");
+    let finished = position("toolFinished").expect("修复后必须补发 toolFinished");
+    assert!(
+        planned < finished,
+        "toolFinished 必须晚于 toolPlanned：{:?}",
+        events.tool_events
+    );
+    assert_eq!(
+        position("toolStarted"),
+        None,
+        "立即应答的控制调用不发 toolStarted（与拒绝路径同口径）"
+    );
+    drop(events);
+
+    let tool_message = list_visible(&fixture)
+        .into_iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("wait-1"))
+        .expect("wait 结果应落库");
+    assert!(
+        tool_message.plain_text().contains("no_pending_tasks"),
+        "应答携带 no_pending_tasks：{}",
+        tool_message.plain_text()
+    );
+}
+
+/// 混批拒绝（协议工具 + 业务工具同批）：两类调用都必须得到落库结果 +
+/// ToolFinished 终态事件——修复前该分支只落库不发事件，两 calling 卡片悬挂。
+#[tokio::test]
+async fn mixed_protocol_batch_rejection_finishes_every_planned_call() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::text("混着调"),
+            MockStreamEvent::tool_call("call-e1", "echo", serde_json::json!({"value": "x"})),
+            MockStreamEvent::tool_call("call-p1", "finish_tool", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(2),
+        ],
+        vec![
+            MockStreamEvent::text("已改为分开调用"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let surface = protocol_surface();
+    let mut hooks = hook_with_protocol();
+    let (_cancel, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = UsageTracker::new();
+    let reply = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("混批")],
+        vec![],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("混批拒绝应回灌错误并继续循环");
+    assert_eq!(reply.plain_text().trim(), "已改为分开调用");
+
+    let events = captured.lock();
+    for call_id in ["call-e1", "call-p1"] {
+        assert!(
+            events
+                .tool_events
+                .iter()
+                .any(|(event, id)| event == "toolPlanned" && id == call_id),
+            "{call_id} 应有 toolPlanned"
+        );
+        assert!(
+            events
+                .tool_events
+                .iter()
+                .any(|(event, id)| event == "toolFinished" && id == call_id),
+            "修复后 {call_id} 必须有 toolFinished（否则前端幽灵卡片）：{:?}",
+            events.tool_events
+        );
+    }
+    drop(events);
+
+    let messages = list_visible(&fixture);
+    for call_id in ["call-e1", "call-p1"] {
+        let row = messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(call_id))
+            .unwrap_or_else(|| panic!("{call_id} 的拒绝结果应落库"));
+        assert!(
+            row.plain_text().contains("协议工具不能与业务工具混批"),
+            "{}：{}",
+            call_id,
+            row.plain_text()
+        );
+    }
+}
+
+// ─── 协议批免台账短路（P0-3：宿主缺口不得进入策略层/裸台账） ────────────────
+
+/// 桩：`gap_tool` 被 handles 声明但 handle 返回 None（模拟宿主实现缺口）。
+struct GapProtocolHandler;
+
+#[async_trait::async_trait]
+impl ProtocolToolHandler for GapProtocolHandler {
+    fn handles(&self, name: &str) -> bool {
+        matches!(name, "gap_tool")
+    }
+    async fn handle(
+        &self,
+        _tool_name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Option<RigProtocolResult> {
+        None
+    }
+    async fn render_outcome(
+        &self,
+        _actions: &[RigProtocolAction],
+        _final_message: Option<&str>,
+    ) -> Option<String> {
+        None
+    }
+}
+
+/// 记录型策略：任何 before_call / execute 触达都计数——协议批（含宿主缺口）
+/// 不得进入策略层，否则会走无上下文的裸台账路径（agent_run_id NULL 孤儿行）。
+#[derive(Clone, Default)]
+struct RecordingPolicy {
+    before_calls: Arc<std::sync::atomic::AtomicUsize>,
+    executes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutionPolicy for RecordingPolicy {
+    async fn before_call(
+        &self,
+        _tool: &PortableDynamicTool,
+        _call: &rig::message::ToolCall,
+    ) -> super::surface::ToolCallGuard {
+        self.before_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        super::surface::ToolCallGuard { rejection: None }
+    }
+    async fn execute(
+        &self,
+        tool: &PortableDynamicTool,
+        call: &rig::message::ToolCall,
+    ) -> Result<ToolOutput, rig::tool::ToolExecutionError> {
+        self.executes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tool.execute(call.function.arguments.clone()).await
+    }
+}
+
+/// handles 命中但 handle 未拦截（宿主缺口）：直接短路为可恢复错误——
+/// 不执行壳回调、不经策略层（零 before_call / 零 execute / 零台账行），
+/// run 继续循环由模型自修复。
+#[tokio::test]
+async fn protocol_host_gap_short_circuits_without_entering_the_policy_layer() {
+    let fixture = Fixture::new();
+    let captured = Arc::new(Mutex::new(CapturedEvents::default()));
+    let on_event = capture_channel(Arc::clone(&captured));
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("call-g1", "gap_tool", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("改用普通方式完成"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let surface = RigToolSurface::new(vec![]);
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    hooks.protocol_handler = Some(Arc::new(GapProtocolHandler));
+    let policy = RecordingPolicy::default();
+    let (_cancel, cancel_rx) = watch::channel(false);
+    let mut usage_tracker = UsageTracker::new();
+    let reply = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("缺口")],
+        vec![],
+        &surface,
+        &policy,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &on_event,
+        cancel_rx,
+        &mut usage_tracker,
+    )
+    .await
+    .expect("宿主缺口应短路回灌并继续循环");
+    assert_eq!(reply.plain_text().trim(), "改用普通方式完成");
+    assert_eq!(model.request_count(), 2);
+
+    use std::sync::atomic::Ordering;
+    assert_eq!(
+        policy.before_calls.load(Ordering::SeqCst),
+        0,
+        "协议批不得进入策略层 before_call（裸台账路径入口）"
+    );
+    assert_eq!(
+        policy.executes.load(Ordering::SeqCst),
+        0,
+        "协议批不得执行壳工具回调"
+    );
+
+    let events = captured.lock();
+    assert!(events
+        .tool_events
+        .iter()
+        .any(|(event, id)| event == "toolStarted" && id == "call-g1"));
+    assert!(events
+        .tool_events
+        .iter()
+        .any(|(event, id)| event == "toolFinished" && id == "call-g1"));
+    drop(events);
+
+    let tool_message = list_visible(&fixture)
+        .into_iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-g1"))
+        .expect("短路错误应落库");
+    assert!(
+        tool_message.plain_text().contains("未被宿主拦截"),
+        "短路文案：{}",
+        tool_message.plain_text()
     );
 }

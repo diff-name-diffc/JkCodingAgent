@@ -1,17 +1,19 @@
-//! 应用级工具执行策略：审查门禁 + 参数准备 + 台账 + 统一超时。
+//! 应用级工具执行策略：审查门禁 + 参数准备 + 统一超时。
 //!
 //! 迁移自旧 `CapabilityBroker` 的策略层（`tools/broker.rs` 的 authorize/
 //! 参数准备/执行包装与 `tools/runtime.rs` 的台账）。设计上不再有「能力仲裁」
 //! 与「spec hash 注入」——rig 工具面本身即授权集（工具面在组装期按允许列表
-//! 收敛），台账元数据由工具名对应的 `ToolSpec` 策略表派生。
+//! 收敛）。台账不经本层：登记唯一走调度器 `enqueue` 的准入批次（本层
+//! `before_call` 在 `ToolInvocationContext` 作用域内运行，复用准入产物），
+//! 终态唯一走 worker 的 `settle_tool_completion`——单写路径，不再有
+//! `run_record` 裸路径的 NULL agent_run_id 孤儿行（P0-3）。
 //!
-//! 门禁顺序（对齐旧 broker）：
-//! 1. 台账创建 + started（无论后续是否被拒绝，先落痕迹，避免审计缺口）；
-//! 2. 取消检查；
-//! 3. 参数准备（schema 默认值注入 + Draft 2020-12 校验；调度器路径复用
-//!    enqueue 准入产出的 effective 值，裸路径在此计算一次）；
-//! 4. `ToolSafety::Dangerous` 直接拒绝；
-//! 5. `ReviewRequired && !review_self_managed` 走通用审查（未配置审查
+//! 门禁顺序（对齐旧 broker，台账步骤已并入调度器准入）：
+//! 1. 取消检查；
+//! 2. 参数准备（schema 默认值注入 + Draft 2020-12 校验；调度器路径复用
+//!    enqueue 准入产出的 effective 值，无上下文回退在此计算一次）；
+//! 3. `ToolSafety::Dangerous` 直接拒绝；
+//! 4. `ReviewRequired && !review_self_managed` 走通用审查（未配置审查
 //!    fail-closed 拒绝）；自管审查的工具（local_zsh / ssh_exec /
 //!    sync_directory / MCP 桥）在工具内部完成审查，此处放行。
 
@@ -26,15 +28,12 @@ use tauri::ipc::Channel;
 use tokio::sync::watch;
 
 use super::scheduler::SETTLE_CEILING;
-use super::surface::{ToolCallGuard, ToolCallOutcome, ToolCallTrace, ToolExecutionPolicy};
+use super::surface::{ToolCallGuard, ToolExecutionPolicy};
 use crate::agent::common::cancellation_requested;
 use crate::agent::db::{DispatcherDb, ToolRunTraceContext};
 use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::review::RigReviewContext;
-use crate::agent::rig_ext::tools::run_record::{
-    finish_tool_run, prepare_arguments, start_tool_run, RigToolRun, RigToolRunContext,
-    RigToolRunFinish,
-};
+use crate::agent::rig_ext::tools::run_record::prepare_arguments;
 use crate::agent::rig_ext::tools::spec::{ToolSafety, ToolSpec};
 use crate::mcp::registry::MCP_TOOL_NAME_PREFIX;
 
@@ -51,48 +50,37 @@ pub struct AppToolPolicyConfig {
     pub trace: ToolRunTraceContext,
 }
 
-/// 应用级执行策略：借用 DB 与事件通道，持有门禁输入。
+/// 应用级执行策略：门禁输入；策略层不再持有 DB / 事件通道——台账单写路径
+/// （调度器 enqueue 登记 + settle 收口，P0-3）后无策略侧台账消费者。
+/// `new` 保留 db / on_event 参数以兼容各装配点签名（合并节点可统一收敛）。
 #[derive(Clone)]
 pub struct AppToolExecutionPolicy {
-    db: DispatcherDb,
-    on_event: Channel<AgentEvent>,
     config: AppToolPolicyConfig,
 }
 
 impl AppToolExecutionPolicy {
     pub fn new(
-        db: &DispatcherDb,
-        on_event: &Channel<AgentEvent>,
+        _db: &DispatcherDb,
+        _on_event: &Channel<AgentEvent>,
         config: AppToolPolicyConfig,
     ) -> Self {
-        Self {
-            db: db.clone(),
-            on_event: on_event.clone(),
-            config,
-        }
+        Self { config }
     }
 
     /// 工具名 → 策略规格：MCP 工具用 `ToolSpec::mcp`（自管审查 + 网络外部效应），
     /// 其余按策略表查（未收录的名字由 `ToolSpec::new` 走 fail-closed 兜底）。
-    fn spec_for(&self, tool: &PortableDynamicTool) -> (ToolSpec, bool) {
+    fn spec_for(&self, tool: &PortableDynamicTool) -> ToolSpec {
         let name = tool.name();
         if name.starts_with(MCP_TOOL_NAME_PREFIX) {
             let definition = tool.definition();
-            return (
-                ToolSpec::mcp(
-                    name.to_string(),
-                    definition.description,
-                    definition.parameters,
-                ),
-                true,
+            return ToolSpec::mcp(
+                name.to_string(),
+                definition.description,
+                definition.parameters,
             );
         }
         let definition = tool.definition();
-        let registered = crate::agent::rig_ext::tools::spec::is_registered_tool_name(name);
-        (
-            ToolSpec::new(name, &definition.description, definition.parameters),
-            registered,
-        )
+        ToolSpec::new(name, &definition.description, definition.parameters)
     }
 }
 
@@ -106,70 +94,12 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
     }
 
     async fn before_call(&self, tool: &PortableDynamicTool, call: &ToolCall) -> ToolCallGuard {
-        let (spec, registered) = self.spec_for(tool);
-        let tool_call_id = call.wire_call_id().to_string();
-        let run_context = RigToolRunContext {
-            db: &self.db,
-            workspace_id: &self.config.workspace_id,
-            on_event: &self.on_event,
-        };
-
-        // 1. 台账创建 + started：无效参数同样先进入台账（旧实现口径）。
-        let registered_context = super::invocation::ToolInvocationContext::current();
-        // 参数准备（默认注入 + 校验）每调用只做一次：调度器路径复用 enqueue
-        // 准入产出的 effective 值（同一纯函数、同一不可变输入，准入已校验）；
-        // 裸路径在此计算，台账与第 3 步校验共用同一结果。
-        let prepared_result = match registered_context
-            .as_ref()
-            .and_then(|context| context.prepared_arguments.clone())
-        {
-            Some(effective) => Ok(effective),
-            None => prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments),
-        };
-        let trace = if let Some(context) = registered_context {
-            Some(ToolCallTrace {
-                run_id: Some(context.task_id),
-            })
-        } else {
-            let effective_arguments = match &prepared_result {
-                Ok(effective) => effective.clone(),
-                Err(_) => call.function.arguments.clone(),
-            };
-            match start_tool_run(
-                run_context,
-                &spec,
-                registered,
-                &tool_call_id,
-                &call.function.arguments,
-                &effective_arguments,
-                self.config.trace.clone(),
-            )
-            .await
-            {
-                Ok(run) => Some(ToolCallTrace {
-                    run_id: Some(run.run_id),
-                }),
-                Err(error) => {
-                    return ToolCallGuard {
-                        trace: None,
-                        rejection: Some(
-                            ToolExecutionError::other(format!(
-                                "错误：创建工具运行记录失败（工具 {}），未执行工具：{error}",
-                                spec.name
-                            ))
-                            .with_code("fatal"),
-                        ),
-                    };
-                }
-            }
-        };
-
+        let spec = self.spec_for(tool);
         let reject_with = |error: ToolExecutionError| ToolCallGuard {
-            trace: trace.clone(),
             rejection: Some(error),
         };
 
-        // 2. 取消检查：run 级取消优先，尚未执行即收口。
+        // 1. 取消检查：run 级取消优先，尚未执行即收口。
         if self
             .config
             .cancel_rx
@@ -182,16 +112,24 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
             )));
         }
 
-        // 3. 参数准备：schema 默认值注入 + 校验（失败回灌可恢复错误）。
-        // 调度器路径的 prepared 来自 enqueue 准入（已校验）直接放行；裸路径
-        // 复用第 1 步的计算结果，不再重算。
-        if let Err(error) = prepared_result {
+        // 2. 参数准备：schema 默认值注入 + 校验（失败回灌可恢复错误）。
+        //    调度器路径的 prepared 来自 enqueue 准入（已用同一纯函数对同一
+        //    不可变输入校验）直接放行；无 `ToolInvocationContext` 的调用在此
+        //    回退计算一次。
+        let prepared = match super::invocation::ToolInvocationContext::current()
+            .as_ref()
+            .and_then(|context| context.prepared_arguments.clone())
+        {
+            Some(effective) => Ok(effective),
+            None => prepare_arguments(&spec.name, &spec.parameters, &call.function.arguments),
+        };
+        if let Err(error) = prepared {
             return reject_with(
                 ToolExecutionError::other(error.message).with_code(error.code.to_string()),
             );
         }
 
-        // 4. 策略标记为 dangerous 的工具：运行时默认拒绝。
+        // 3. 策略标记为 dangerous 的工具：运行时默认拒绝。
         if spec.safety == ToolSafety::Dangerous {
             return reject_with(ToolExecutionError::other(format!(
                 "错误：工具 '{}' 被策略标记为 dangerous，运行时默认拒绝执行。",
@@ -199,17 +137,14 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
             )));
         }
 
-        // 5. ReviewRequired 且非自管审查：通用审查（未配置审查 fail-closed）。
+        // 4. ReviewRequired 且非自管审查：通用审查（未配置审查 fail-closed）。
         if spec.safety == ToolSafety::ReviewRequired && !spec.review_self_managed {
             if let Err(rejection) = self.generic_review(&spec, call).await {
                 return reject_with(rejection);
             }
         }
 
-        ToolCallGuard {
-            trace,
-            rejection: None,
-        }
+        ToolCallGuard { rejection: None }
     }
 
     async fn execute(
@@ -217,7 +152,7 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
         tool: &PortableDynamicTool,
         call: &ToolCall,
     ) -> Result<ToolOutput, ToolExecutionError> {
-        let (spec, _) = self.spec_for(tool);
+        let spec = self.spec_for(tool);
         let invocation = super::invocation::ToolInvocationContext::current();
         // 调度器路径复用 enqueue 准入产出的 effective 值（默认注入 + 已校验）；
         // 裸路径（顺序批/无上下文）回退计算一次。
@@ -317,42 +252,6 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
                     ))),
                 }
             }
-        }
-    }
-
-    async fn after_call(
-        &self,
-        trace: Option<&ToolCallTrace>,
-        _call: &ToolCall,
-        outcome: ToolCallOutcome<'_>,
-    ) {
-        let Some(run_id) = trace.and_then(|trace| trace.run_id.as_deref()) else {
-            return;
-        };
-        let run = RigToolRun {
-            run_id: run_id.to_string(),
-        };
-        let update = RigToolRunFinish {
-            status: outcome.status,
-            result_mode: outcome.result_mode,
-            message_id: outcome.message_id,
-            error_kind: outcome.error_kind,
-            error_message: outcome.error_message,
-            metadata_json: None,
-        };
-        if let Err(error) = finish_tool_run(
-            RigToolRunContext {
-                db: &self.db,
-                workspace_id: &self.config.workspace_id,
-                on_event: &self.on_event,
-            },
-            &run,
-            update,
-        )
-        .await
-        {
-            // 结果已落库、台账收尾失败仅告警（对齐旧 finish_tool_run 的告警语义）。
-            eprintln!("错误：工具运行记录 {run_id} 收尾失败（结果已持久化）：{error}");
         }
     }
 }
@@ -633,8 +532,8 @@ mod tests {
         );
     }
 
-    /// 调度器路径：before_call 复用 enqueue 准入结果——台账复用登记的
-    /// task_id、校验门不再重查（准入已用同一纯函数对同一不可变输入校验）。
+    /// 调度器路径：before_call 复用 enqueue 准入结果——校验门不再重查
+    /// （准入已用同一纯函数对同一不可变输入校验）。
     #[tokio::test]
     async fn before_call_reuses_prepared_arguments_without_recompute() {
         use super::super::invocation::ToolInvocationContext;
@@ -668,19 +567,13 @@ mod tests {
         let guard = context.scope(policy.before_call(&tool, &call)).await;
         assert!(guard.rejection.is_none(), "已准入参数不应被门禁拒绝");
         assert_eq!(
-            guard.trace.and_then(|trace| trace.run_id),
-            Some("task".to_string()),
-            "调度器路径应复用登记的 task_id"
-        );
-        assert_eq!(
             PREPARE_ARGUMENTS_CALLS.with(std::cell::Cell::get),
             0,
             "before_call 应复用 context 携带的 prepared 参数，不得重算"
         );
     }
 
-    /// 裸路径（顺序批/无上下文）：before_call 的台账与校验门共用同一次
-    /// 参数准备（原实现各算一次）。
+    /// 无上下文调用：before_call 的校验门只做一次参数准备（原实现各算一次）。
     #[tokio::test]
     async fn bare_before_call_prepares_arguments_exactly_once() {
         use crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS;

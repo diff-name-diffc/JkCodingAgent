@@ -29,7 +29,7 @@ use crate::agent::db::{
 const CHAT_IMAGE_ID_PARAM: &str = "chatImageId";
 
 /// 与旧客户端层一致的内联图片体积上限（20 MB）。
-const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
 /// DB 历史（`DispatcherDb::load_llm_history_async` 的产物）→ rig 消息序列。
 /// 运行时循环的上下文起点（记录解析与过滤已在 DB 侧完成）。
@@ -188,7 +188,9 @@ async fn resolve_image_source(
     source: &ChatMessageImageSource,
 ) -> std::result::Result<Image, String> {
     match source {
-        ChatMessageImageSource::DataUrl { data_url } => data_url_to_image(data_url),
+        ChatMessageImageSource::DataUrl { data_url } => {
+            data_url_to_image(data_url, ImageMimeAllowlist::ChatAttachments)
+        }
         ChatMessageImageSource::ChatImage { image_id } => {
             let reference = format!("chat-image://{image_id}");
             let resolved = crate::chat_images::resolve_chat_image_id_async(image_id.clone())
@@ -217,16 +219,30 @@ fn chat_image(data: String, media_type: ImageMediaType, image_id: &str) -> Image
     }
 }
 
+/// 图片 MIME 白名单档位：本模块是 mime → `ImageMediaType` 映射的**唯一实现**，
+/// 两侧消费方口径的差异显式化为参数（此前 message / tools/media 各持一份
+/// 副本且口径漂移：7 类 vs 4 类）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageMimeAllowlist {
+    /// 聊天附件 / 会话图片库口径：位图 4 类 + svg/heic/heif（共 7 类）。
+    ChatAttachments,
+    /// 视觉模型输入口径：仅主流位图 4 类（svg/heic/heif 不被视觉端点支持）。
+    VisionInputs,
+}
+
 /// `data:image/...;base64,...` → rig `Image`。非 image data URL 视为丢失
 /// （与旧 `image_source_for_api` 的 DataUrl 校验文案一致）。
-fn data_url_to_image(data_url: &str) -> std::result::Result<Image, String> {
+pub(crate) fn data_url_to_image(
+    data_url: &str,
+    allow: ImageMimeAllowlist,
+) -> std::result::Result<Image, String> {
     let Some(rest) = data_url.strip_prefix("data:image/") else {
         return Err("data URL 必须以 data:image/ 开头".to_string());
     };
     let Some((mime, data)) = rest.split_once(";base64,") else {
         return Err("data URL 缺少 ;base64, 数据段".to_string());
     };
-    let media_type = image_media_type_for_mime(&format!("image/{mime}"))
+    let media_type = image_media_type_for_mime(&format!("image/{mime}"), allow)
         .ok_or_else(|| format!("不支持的图片类型：image/{mime}"))?;
     Ok(Image {
         data: DocumentSourceKind::Base64(data.to_string()),
@@ -257,7 +273,7 @@ fn local_image_to_base64(path: &Path) -> Result<(String, ImageMediaType)> {
         .unwrap_or_default();
     let mime = crate::chat_images::mime_for_ext(ext)
         .ok_or_else(|| anyhow::anyhow!("不支持的图片格式：{}", path.display()))?;
-    let media_type = image_media_type_for_mime(mime)
+    let media_type = image_media_type_for_mime(mime, ImageMimeAllowlist::ChatAttachments)
         .ok_or_else(|| anyhow::anyhow!("不支持的图片类型：{mime}"))?;
     let bytes = std::fs::read(path).with_context(|| format!("读取图片失败：{}", path.display()))?;
     Ok((
@@ -266,15 +282,20 @@ fn local_image_to_base64(path: &Path) -> Result<(String, ImageMediaType)> {
     ))
 }
 
-fn image_media_type_for_mime(mime: &str) -> Option<ImageMediaType> {
+/// mime → rig `ImageMediaType`（唯一实现；白名单档位见 [`ImageMimeAllowlist`]）。
+pub(crate) fn image_media_type_for_mime(
+    mime: &str,
+    allow: ImageMimeAllowlist,
+) -> Option<ImageMediaType> {
+    let chat_only = allow == ImageMimeAllowlist::ChatAttachments;
     match mime.to_ascii_lowercase().as_str() {
         "image/png" => Some(ImageMediaType::PNG),
         "image/jpeg" => Some(ImageMediaType::JPEG),
         "image/gif" => Some(ImageMediaType::GIF),
         "image/webp" => Some(ImageMediaType::WEBP),
-        "image/svg+xml" => Some(ImageMediaType::SVG),
-        "image/heic" => Some(ImageMediaType::HEIC),
-        "image/heif" => Some(ImageMediaType::HEIF),
+        "image/svg+xml" => chat_only.then_some(ImageMediaType::SVG),
+        "image/heic" => chat_only.then_some(ImageMediaType::HEIC),
+        "image/heif" => chat_only.then_some(ImageMediaType::HEIF),
         _ => None,
     }
 }
@@ -526,6 +547,65 @@ fn extract_chat_image_references(text: &str) -> Vec<String> {
         rest = &after[skip..];
     }
     references
+}
+
+#[cfg(test)]
+mod image_mime_allowlist_tests {
+    //! 白名单档位回归：位图 4 类双档接受；svg/heic/heif 仅聊天附件档接受。
+    //! （内联于 message.rs——tests.rs 子模块不在本任务授权文件清单内。）
+    use super::{data_url_to_image, image_media_type_for_mime, ImageMimeAllowlist};
+
+    #[test]
+    fn raster_types_are_accepted_under_both_allowlists() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            assert!(
+                image_media_type_for_mime(mime, ImageMimeAllowlist::ChatAttachments).is_some(),
+                "{mime} 应被聊天附件档接受"
+            );
+            assert!(
+                image_media_type_for_mime(mime, ImageMimeAllowlist::VisionInputs).is_some(),
+                "{mime} 应被视觉输入档接受"
+            );
+        }
+        // 大小写不敏感（沿用旧实现口径）。
+        assert!(image_media_type_for_mime("IMAGE/PNG", ImageMimeAllowlist::VisionInputs).is_some());
+    }
+
+    #[test]
+    fn vector_and_heif_types_are_chat_attachments_only() {
+        for mime in ["image/svg+xml", "image/heic", "image/heif"] {
+            assert!(
+                image_media_type_for_mime(mime, ImageMimeAllowlist::ChatAttachments).is_some(),
+                "{mime} 应被聊天附件档接受"
+            );
+            assert!(
+                image_media_type_for_mime(mime, ImageMimeAllowlist::VisionInputs).is_none(),
+                "{mime} 不应被视觉输入档接受"
+            );
+        }
+        assert!(
+            image_media_type_for_mime("image/bmp", ImageMimeAllowlist::ChatAttachments).is_none()
+        );
+    }
+
+    #[test]
+    fn data_url_parsing_honors_the_allowlist() {
+        let svg_url = "data:image/svg+xml;base64,PGhzdmcvPg==";
+        assert!(data_url_to_image(svg_url, ImageMimeAllowlist::ChatAttachments).is_ok());
+        let rejected = data_url_to_image(svg_url, ImageMimeAllowlist::VisionInputs)
+            .expect_err("svg data URL 不应被视觉输入档接受");
+        assert!(rejected.contains("不支持的图片类型"), "{rejected}");
+        assert!(data_url_to_image(
+            "data:image/png;base64,aGVsbG8=",
+            ImageMimeAllowlist::VisionInputs
+        )
+        .is_ok());
+        assert!(data_url_to_image(
+            "data:text/plain;base64,eA==",
+            ImageMimeAllowlist::ChatAttachments
+        )
+        .is_err());
+    }
 }
 
 #[cfg(test)]

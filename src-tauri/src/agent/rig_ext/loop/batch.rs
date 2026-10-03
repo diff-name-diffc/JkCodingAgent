@@ -1,9 +1,5 @@
 //! 批次配对、执行与结果持久化。
-use super::support::{tool_error_text, tool_output_text};
-use super::{
-    invocation, RigLoopHooks, RigProtocolAction, RigToolSurface, ToolCallOutcome,
-    ToolExecutionPolicy,
-};
+use super::{ProtocolToolHandler, RigProtocolAction, RigToolSurface};
 use crate::agent::common::{cancellation_requested, emit, UsageTracker};
 use crate::agent::db::{DispatcherDb, OutboundToolCall};
 use crate::agent::rig_ext::events::AgentEvent;
@@ -25,31 +21,35 @@ pub(super) struct ToolBatch {
     pub(super) actions: Vec<RigProtocolAction>,
     /// 本批最终答复（`message` 工具）。
     pub(super) final_message: Option<String>,
-    /// 本批是否出现可重试错误（含协议拒绝与普通工具的可重试失败）。
+    /// 本批是否出现可重试错误（含协议拒绝与宿主缺口短路）。
     pub(super) saw_retryable_error: bool,
 }
 
-/// 逐个执行工具调用并落库结果（取消时返回 contents=None：已执行结果已落库，
-/// 剩余调用不再执行——循环随之收口，不会再发起带悬空 tool_calls 的请求）。
+/// 逐个执行协议批调用并落库结果（取消时返回 contents=None：已执行结果已
+/// 落库，剩余调用不再执行——循环随之收口，不会再发起带悬空 tool_calls 的
+/// 请求）。
+///
+/// 只承接**全协议批**（混批已在决策层拒绝），因此直接收 `ProtocolToolHandler`：
+/// 命中的调用由宿主拦截完成真实动作；`handles` 命中但 `handle` 未拦截
+/// （宿主缺口）时直接短路为可恢复错误——协议壳回调本就只报错（见
+/// `agents/project_tools.rs`），不再回落执行壳工具，也不经策略层建台账：
+/// 此处的 `before_call` 在 `ToolInvocationContext` 作用域之外，会走
+/// `run_record` 裸路径产出 agent_run_id 为 NULL 的孤儿台账行（P0-3）。
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn execute_tool_calls<S, P>(
+pub(super) async fn execute_tool_calls<S>(
     db: &DispatcherDb,
     workspace_id: &str,
     on_event: &Channel<AgentEvent>,
     tool_calls: &[ToolCall],
     outbound_calls: &[OutboundToolCall],
     surface: &RigToolSurface,
-    tool_policy: &P,
+    protocol_handler: &dyn ProtocolToolHandler,
     summary: Option<&RigSummaryModel<'_, S>>,
     usage_tracker: &mut UsageTracker,
     cancel_rx: &watch::Receiver<bool>,
-    hooks: &RigLoopHooks,
-    agent_run_id: &str,
-    root_request_message_id: &str,
 ) -> Result<ToolBatch>
 where
     S: CompletionModel,
-    P: ToolExecutionPolicy,
 {
     let mut result_contents = Vec::with_capacity(tool_calls.len());
     let mut last_result_message_id: Option<String> = None;
@@ -91,28 +91,14 @@ where
             },
         );
 
-        // 三段式策略：before_call（门禁 + 台账开始）→ execute → after_call（台账收尾）。
-        let mut status: &'static str = "succeeded";
-        let mut error_kind: Option<&'static str> = None;
-        let mut fatal_message: Option<String> = None;
-        let mut trace = None;
-
         // 协议工具拦截（编排器）：命中则不执行壳工具回调，由宿主完成真实动作。
-        let protocol_result = match hooks.protocol_handler.as_ref() {
-            Some(handler) => {
-                handler
-                    .handle(&call.function.name, &call.function.arguments)
-                    .await
-            }
-            None => None,
-        };
-
-        let result_text = match protocol_result {
+        let result_text = match protocol_handler
+            .handle(&call.function.name, &call.function.arguments)
+            .await
+        {
             Some(protocol) => {
                 if protocol.retryable_error {
                     saw_retryable_error = true;
-                    status = "recoverable_error";
-                    error_kind = Some("recoverable_error");
                 }
                 actions.extend(protocol.actions);
                 if protocol.final_message.is_some() {
@@ -120,58 +106,14 @@ where
                 }
                 protocol.text
             }
-            None => match surface.find(&call.function.name) {
-                None => {
-                    status = "recoverable_error";
-                    error_kind = Some("recoverable_error");
-                    format!("错误：未注册的工具：{}", call.function.name)
-                }
-                Some(tool) => {
-                    let guard = tool_policy.before_call(tool, call).await;
-                    trace = guard.trace;
-                    match guard.rejection {
-                        Some(error) => {
-                            let (mapped_status, mapped_kind, fatal) = classify_tool_error(&error);
-                            status = mapped_status;
-                            error_kind = Some(mapped_kind);
-                            if fatal {
-                                fatal_message = Some(tool_error_text(&error));
-                            }
-                            tool_error_text(&error)
-                        }
-                        None => match (invocation::ToolInvocationContext {
-                            workspace_id: workspace_id.to_string(),
-                            agent_run_id: agent_run_id.to_string(),
-                            task_id: trace
-                                .as_ref()
-                                .and_then(|trace| trace.run_id.clone())
-                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                            tool_call_id: call.wire_call_id().to_string(),
-                            root_request_message_id: root_request_message_id.to_string(),
-                            cancel_rx: cancel_rx.clone(),
-                            prepared_arguments: None,
-                        })
-                        .scope(tool_policy.execute(tool, call))
-                        .await
-                        {
-                            Ok(output) => tool_output_text(&output),
-                            Err(error) => {
-                                let (mapped_status, mapped_kind, fatal) =
-                                    classify_tool_error(&error);
-                                status = mapped_status;
-                                error_kind = Some(mapped_kind);
-                                if error.retryable() == Some(true) {
-                                    saw_retryable_error = true;
-                                }
-                                if fatal {
-                                    fatal_message = Some(tool_error_text(&error));
-                                }
-                                tool_error_text(&error)
-                            }
-                        },
-                    }
-                }
-            },
+            None => {
+                // 宿主缺口短路：免台账、不执行壳回调，回灌可恢复错误。
+                saw_retryable_error = true;
+                format!(
+                    "错误：协议工具 '{}' 未被宿主拦截（handles 命中但 handle 未处理），本轮未执行。",
+                    call.function.name
+                )
+            }
         };
 
         let policy = surface.policy_for(&call.function.name);
@@ -188,22 +130,6 @@ where
         .await?;
         last_result_message_id = Some(record.id.clone());
 
-        // 台账收尾：结果已落库后回填 result_mode / message_id（对齐旧
-        // `persist_and_finalize_executed_tool` 的调用顺序）。
-        tool_policy
-            .after_call(
-                trace.as_ref(),
-                call,
-                ToolCallOutcome {
-                    status,
-                    result_mode: record.tool_result_mode.as_deref(),
-                    message_id: Some(record.id.as_str()),
-                    error_kind,
-                    error_message: error_kind.map(|_| result_text.as_str()),
-                },
-            )
-            .await;
-
         result_contents.push(UserContent::ToolResult(ToolResult {
             call: call.id.clone(),
             provider: call.provider.clone(),
@@ -217,25 +143,6 @@ where
                     .unwrap_or_else(|| record.plain_text()),
             )],
         }));
-
-        // 致命工具失败：本批已执行结果全部落库与收尾后中止 run
-        //（对齐旧 `ExecutedToolFinalize::FatalTool` 的收口时机）。剩余调用同样
-        // 补占位结果，否则历史里会留下未应答的 tool_calls。
-        if let Some(message) = fatal_message {
-            persist_skipped_tool_results(
-                db,
-                workspace_id,
-                on_event,
-                &tool_calls[index + 1..],
-                &outbound_calls[index + 1..],
-                surface,
-                summary,
-                usage_tracker,
-                "本批次因前序工具致命失败已中止。",
-            )
-            .await?;
-            anyhow::bail!("{message}");
-        }
     }
 
     Ok(ToolBatch {

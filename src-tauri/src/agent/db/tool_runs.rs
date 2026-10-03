@@ -20,6 +20,24 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 pub(crate) const TOOL_RUN_ORIGIN_MODEL: &str = "model";
+
+/// 工具运行的全部终态：到达后生命周期即结束，不得被后续 finish 覆盖
+/// （单向推进）。SQL 侧的 `status NOT IN (...)` 守卫与 Rust 侧判定同源
+/// 引用本常量，避免两份清单漂移。
+pub(crate) const TERMINAL_RUN_STATUSES: [&str; 6] = [
+    "succeeded",
+    "recoverable_error",
+    "fatal_error",
+    "cancelled",
+    "failed",
+    "internal_error",
+];
+
+/// 运行状态是否终态（台账与完成事件共用的单一判定）。
+pub(crate) fn is_terminal_run_status(status: &str) -> bool {
+    TERMINAL_RUN_STATUSES.contains(&status)
+}
+
 pub(super) const TOOL_RUN_SELECT_COLUMNS: &str =
     "r.id, r.workspace_id, r.tool_call_id, r.parent_run_id, r.origin, r.step_id, r.sequence,
      r.tool_name, r.provider, r.category, r.status, r.arguments_json,

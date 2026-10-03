@@ -81,6 +81,23 @@ END;
 mod tests {
     use super::*;
 
+    /// 按列存在性幂等删除列（构造旧版本形态夹具用；列已不在的基线形态跳过）。
+    fn drop_columns_if_present(conn: &Connection, columns: &[(&str, &str)]) {
+        for (table, column) in columns {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                    params![table, column],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if exists > 0 {
+                conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn v7_upgrade_preserves_rows_and_creates_snapshot() {
         let directory = std::env::temp_dir().join(format!("runtime-v8-{}", uuid::Uuid::new_v4()));
@@ -92,6 +109,19 @@ mod tests {
             // v10 新增的验收槽位列与 v11 新增的执行结果列同样需要移除
             //（v7 库不应有它们）。
             conn.execute_batch(super::super::BASELINE_DDL).unwrap();
+            // 回退到 v7 形态：删掉 v10/v11 新增列。基线是当前形态（v12+ 起
+            // dispatcher_settings 已是 JSON 单列、graph_runs 无 v11 结果列），
+            // 按「列存在才删」幂等回退。
+            drop_columns_if_present(
+                &conn,
+                &[
+                    ("dispatcher_settings", "project_verifier_model_configs_json"),
+                    ("graph_runs", "conclusion_node_id"),
+                    ("graph_runs", "conclusion_md"),
+                    ("graph_runs", "result_kind"),
+                    ("graph_runs", "modified_files_json"),
+                ],
+            );
             conn.execute_batch(
                 "INSERT INTO dispatcher_messages(id, workspace_id, role, created_at)
                  VALUES ('request', 'workspace', 'assistant', '2026-09-26T00:00:00Z');
@@ -99,12 +129,6 @@ mod tests {
                     tool_name, provider, category, status, created_at, updated_at)
                  VALUES ('task', 'workspace', 'call', 'echo', 'builtin', 'general',
                     'succeeded', '2026-09-26T00:00:00Z', '2026-09-26T00:00:00Z');
-                 ALTER TABLE dispatcher_settings
-                   DROP COLUMN project_verifier_model_configs_json;
-                 ALTER TABLE graph_runs DROP COLUMN conclusion_node_id;
-                 ALTER TABLE graph_runs DROP COLUMN conclusion_md;
-                 ALTER TABLE graph_runs DROP COLUMN result_kind;
-                 ALTER TABLE graph_runs DROP COLUMN modified_files_json;
                  PRAGMA user_version = 7;",
             )
             .unwrap();

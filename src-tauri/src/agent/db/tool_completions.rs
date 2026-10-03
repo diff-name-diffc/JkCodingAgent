@@ -6,7 +6,9 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 
-use super::{util::now, DispatcherDb, ToolArtifactDraft};
+use super::tool_runs::is_terminal_run_status;
+use super::util::{duration_since_started_ms, now};
+use super::{DispatcherDb, ToolArtifactDraft};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,16 +48,9 @@ pub(crate) struct CompletionDraft {
 impl DispatcherDb {
     /// 重复结算返回首个事件，不重复写产物或用量；事务提交前不得发布通知。
     pub(crate) fn settle_tool_completion(&self, draft: CompletionDraft) -> Result<i64> {
+        // 终态词表与台账 finish 共用同一常量判定（tool_runs::TERMINAL_RUN_STATUSES）。
         ensure!(
-            matches!(
-                draft.status.as_str(),
-                "succeeded"
-                    | "recoverable_error"
-                    | "fatal_error"
-                    | "cancelled"
-                    | "failed"
-                    | "internal_error"
-            ),
+            is_terminal_run_status(&draft.status),
             "非法工具终态：{}",
             draft.status
         );
@@ -72,16 +67,17 @@ impl DispatcherDb {
             tx.commit()?;
             return Ok(event_id);
         }
-        let (workspace, call_id, tool_name, run, scope, status): (
+        let (workspace, call_id, tool_name, run, scope, status, started_at): (
             String,
             String,
             String,
             Option<String>,
             Option<String>,
             String,
+            Option<String>,
         ) = tx
             .query_row(
-                "SELECT workspace_id, tool_call_id, tool_name, agent_run_id, scope_id, status
+                "SELECT workspace_id, tool_call_id, tool_name, agent_run_id, scope_id, status, started_at
              FROM dispatcher_tool_runs WHERE id = ?1",
                 [&draft.tool_run_id],
                 |row| {
@@ -92,6 +88,7 @@ impl DispatcherDb {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
@@ -125,18 +122,20 @@ impl DispatcherDb {
                 timestamp
             ],
         )?;
+        // 时长与台账 finish 同源：Rust 侧 chrono 计算（julianday 解析文本
+        // 时间戳的 SQL 版已移除；解析失败容错 0，不产生 NULL 违约）。
+        let duration_ms = duration_since_started_ms(started_at.as_deref(), &timestamp);
         tx.execute(
             "UPDATE dispatcher_tool_runs SET status = ?1, phase = NULL, result_mode = ?2,
-             error_kind = ?3, finished_at = ?4, updated_at = ?4,
-             duration_ms = CASE WHEN started_at IS NULL THEN 0 ELSE
-                MAX(0, CAST((julianday(?4) - julianday(started_at)) * 86400000 AS INTEGER)) END
+             error_kind = ?3, finished_at = ?4, updated_at = ?4, duration_ms = ?6
              WHERE id = ?5",
             params![
                 draft.status,
                 draft.result_mode,
                 draft.error_kind,
                 timestamp,
-                draft.tool_run_id
+                draft.tool_run_id,
+                duration_ms
             ],
         )?;
         tx.execute(

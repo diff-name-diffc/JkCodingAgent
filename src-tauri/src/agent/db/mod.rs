@@ -81,6 +81,21 @@ impl DispatcherDb {
         self.pool.get().with_context(|| "获取数据库连接")
     }
 
+    /// `spawn_blocking` 异步包装的统一底座：clone 句柄进阻塞线程执行 `f`，
+    /// JoinError 附带 `ctx` 上下文，内层 `Result` 原样透传。各领域的
+    /// `*_async` 孪生包装经此吸收「clone + 移交线程池 + 错误上下文」样板。
+    pub(crate) async fn blocking<T, F>(&self, ctx: &'static str, f: F) -> Result<T>
+    where
+        F: FnOnce(&Self) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let db = self.clone();
+        tokio::task::spawn_blocking(move || f(&db))
+            .await
+            .context(ctx)
+            .and_then(std::convert::identity)
+    }
+
     pub(super) fn find_dialogue_cutoff_rowid(
         &self,
         conn: &Connection,
@@ -91,7 +106,7 @@ impl DispatcherDb {
         let mut stmt = conn.prepare(
             "SELECT rowid
              FROM dispatcher_messages
-             WHERE workspace_id = ?1 AND role = 'user' AND visible = 1
+             WHERE workspace_id = ?1 AND role = 'user'
              ORDER BY rowid DESC
              LIMIT ?2",
         )?;

@@ -310,10 +310,10 @@ impl GraphStore {
         tx.execute(
             "INSERT OR REPLACE INTO graph_node_runs
                 (run_id,plan_id,node_id,status,phase,model_ref,model_label,model_category,
-                 base_tool_group,special_tools_json,input_text,output_text,error_text,
+                 base_tool_group,input_text,output_text,error_text,
                  started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count)
              SELECT ?1,?4,node_id,status,?2,model_ref,model_label,model_category,
-                 base_tool_group,special_tools_json,input_text,output_text,error_text,
+                 base_tool_group,input_text,output_text,error_text,
                  started_at,finished_at,duration_ms,usage_json,affected_files_json,tool_call_count,retry_count
              FROM graph_node_runs WHERE run_id=?3 AND plan_id=?4 AND status=?5",
             params![run.id, NODE_PHASE_CACHED, from_run_id, plan_id, NODE_SUCCEEDED],
@@ -542,12 +542,25 @@ impl GraphStore {
         }))
     }
 
-    pub(crate) async fn get_plan_async(&self, id: &str) -> Result<Option<GraphPlanRecord>> {
-        let s = self.clone();
-        let id = id.to_string();
-        tokio::task::spawn_blocking(move || s.get_plan(&id))
+    /// `spawn_blocking` 异步包装的统一底座（与 `DispatcherDb::blocking` 同形）：
+    /// clone 句柄进阻塞线程执行 `f`，JoinError 附带 `ctx` 上下文，内层
+    /// `Result` 原样透传。
+    async fn blocking<T, F>(&self, ctx: &'static str, f: F) -> Result<T>
+    where
+        F: FnOnce(&Self) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || f(&store))
             .await
-            .context("读取图计划任务失败")?
+            .context(ctx)
+            .and_then(std::convert::identity)
+    }
+
+    pub(crate) async fn get_plan_async(&self, id: &str) -> Result<Option<GraphPlanRecord>> {
+        let id = id.to_string();
+        self.blocking("读取图计划任务失败", move |s| s.get_plan(&id))
+            .await
     }
     pub(crate) async fn create_plan_async(
         &self,
@@ -556,12 +569,11 @@ impl GraphStore {
         requirement: &str,
         initial_state_json: &str,
     ) -> Result<GraphPlanRecord> {
-        let s = self.clone();
         let workspace_id = workspace_id.to_string();
         let definition = definition.clone();
         let requirement = requirement.to_string();
         let initial_state_json = initial_state_json.to_string();
-        tokio::task::spawn_blocking(move || {
+        self.blocking("创建图计划任务失败", move |s| {
             s.create_plan(
                 &workspace_id,
                 &definition,
@@ -570,27 +582,26 @@ impl GraphStore {
             )
         })
         .await
-        .context("创建图计划任务失败")?
     }
     pub(crate) async fn latest_plan_for_workspace_async(
         &self,
         id: &str,
     ) -> Result<Option<GraphPlanRecord>> {
-        let s = self.clone();
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || s.latest_plan_for_workspace(&id))
-            .await
-            .context("读取会话图计划任务失败")?
+        self.blocking("读取会话图计划任务失败", move |s| {
+            s.latest_plan_for_workspace(&id)
+        })
+        .await
     }
     pub(crate) async fn list_plan_summaries_for_workspace_async(
         &self,
         id: &str,
     ) -> Result<Vec<GraphPlanSummaryItem>> {
-        let s = self.clone();
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || s.list_plan_summaries_for_workspace(&id))
-            .await
-            .context("查询会话图计划列表任务失败")?
+        self.blocking("查询会话图计划列表任务失败", move |s| {
+            s.list_plan_summaries_for_workspace(&id)
+        })
+        .await
     }
     pub(crate) async fn update_plan_definition_async(
         &self,
@@ -598,100 +609,93 @@ impl GraphStore {
         expected_updated_at: i64,
         d: &GraphDefinition,
     ) -> Result<()> {
-        let s = self.clone();
         let id = id.to_string();
         let d = d.clone();
-        tokio::task::spawn_blocking(move || s.update_plan_definition(&id, expected_updated_at, &d))
-            .await
-            .context("更新图定义任务失败")?
+        self.blocking("更新图定义任务失败", move |s| {
+            s.update_plan_definition(&id, expected_updated_at, &d)
+        })
+        .await
     }
     pub(crate) async fn update_plan_status_async(&self, id: &str, status: &str) -> Result<()> {
-        let s = self.clone();
         let id = id.to_string();
         let status = status.to_string();
-        tokio::task::spawn_blocking(move || s.update_plan_status(&id, &status))
-            .await
-            .context("更新图状态任务失败")?
+        self.blocking("更新图状态任务失败", move |s| {
+            s.update_plan_status(&id, &status)
+        })
+        .await
     }
     pub(crate) async fn update_plan_state_async(&self, id: &str, state: &str) -> Result<()> {
-        let s = self.clone();
         let id = id.to_string();
         let state = state.to_string();
-        tokio::task::spawn_blocking(move || s.update_plan_state(&id, &state))
-            .await
-            .context("更新图 state 任务失败")?
+        self.blocking("更新图 state 任务失败", move |s| {
+            s.update_plan_state(&id, &state)
+        })
+        .await
     }
     pub(crate) async fn create_run_async(&self, id: &str) -> Result<GraphRunSummary> {
-        let s = self.clone();
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || s.create_run(&id))
+        self.blocking("创建图运行任务失败", move |s| s.create_run(&id))
             .await
-            .context("创建图运行任务失败")?
     }
     pub(crate) async fn finish_run_async(&self, id: &str, status: &str) -> Result<()> {
-        let s = self.clone();
         let id = id.to_string();
         let status = status.to_string();
-        tokio::task::spawn_blocking(move || s.finish_run(&id, &status))
-            .await
-            .context("结束图运行任务失败")?
+        self.blocking("结束图运行任务失败", move |s| {
+            s.finish_run(&id, &status)
+        })
+        .await
     }
-    pub(crate) async fn fail_interrupted_runs_async(&self, plan_id: Option<&str>) -> Result<usize> {
-        let s = self.clone();
+    pub(crate) async fn fail_interrupted_runs_async(
+        &self,
+        plan_id: Option<&str>,
+    ) -> Result<usize> {
         let plan_id = plan_id.map(str::to_string);
-        tokio::task::spawn_blocking(move || s.fail_interrupted_runs(plan_id.as_deref()))
-            .await
-            .context("恢复中断图运行任务失败")?
+        self.blocking("恢复中断图运行任务失败", move |s| {
+            s.fail_interrupted_runs(plan_id.as_deref())
+        })
+        .await
     }
     pub(crate) async fn save_node_run_async(&self, run: &GraphNodeRunRecord) -> Result<()> {
-        let s = self.clone();
         let run = run.clone();
-        tokio::task::spawn_blocking(move || s.save_node_run(&run))
+        self.blocking("保存节点任务失败", move |s| s.save_node_run(&run))
             .await
-            .context("保存节点任务失败")?
     }
     pub(crate) async fn list_node_runs_async(&self, id: &str) -> Result<Vec<GraphNodeRunRecord>> {
-        let s = self.clone();
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || s.list_node_runs(&id))
+        self.blocking("查询节点任务失败", move |s| s.list_node_runs(&id))
             .await
-            .context("查询节点任务失败")?
     }
     pub(crate) async fn save_activity_async(&self, a: &AgentActivity) -> Result<()> {
-        let s = self.clone();
         let a = a.clone();
-        tokio::task::spawn_blocking(move || s.save_activity(&a))
+        self.blocking("保存活动任务失败", move |s| s.save_activity(&a))
             .await
-            .context("保存活动任务失败")?
     }
     pub(crate) async fn get_run_detail_async(&self, id: &str) -> Result<Option<GraphRunDetail>> {
-        let s = self.clone();
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || s.get_run_detail(&id))
+        self.blocking("读取运行详情任务失败", move |s| s.get_run_detail(&id))
             .await
-            .context("读取运行详情任务失败")?
     }
     pub(crate) async fn create_resume_run_async(
         &self,
         plan_id: &str,
         from_run_id: &str,
     ) -> Result<GraphRunSummary> {
-        let s = self.clone();
         let plan_id = plan_id.to_string();
         let from_run_id = from_run_id.to_string();
-        tokio::task::spawn_blocking(move || s.create_resume_run(&plan_id, &from_run_id))
-            .await
-            .context("创建续跑运行任务失败")?
+        self.blocking("创建续跑运行任务失败", move |s| {
+            s.create_resume_run(&plan_id, &from_run_id)
+        })
+        .await
     }
     pub(crate) async fn get_latest_run_async(
         &self,
         plan_id: &str,
     ) -> Result<Option<GraphRunSummary>> {
-        let s = self.clone();
         let plan_id = plan_id.to_string();
-        tokio::task::spawn_blocking(move || s.get_latest_run(&plan_id))
-            .await
-            .context("读取最近图运行任务失败")?
+        self.blocking("读取最近图运行任务失败", move |s| {
+            s.get_latest_run(&plan_id)
+        })
+        .await
     }
     pub(crate) async fn update_run_verdict_async(
         &self,
@@ -699,34 +703,34 @@ impl GraphStore {
         status: &str,
         reason: &str,
     ) -> Result<()> {
-        let s = self.clone();
         let run_id = run_id.to_string();
         let status = status.to_string();
         let reason = reason.to_string();
-        tokio::task::spawn_blocking(move || s.update_run_verdict(&run_id, &status, &reason))
-            .await
-            .context("写入验收结论任务失败")?
+        self.blocking("写入验收结论任务失败", move |s| {
+            s.update_run_verdict(&run_id, &status, &reason)
+        })
+        .await
     }
     pub(crate) async fn update_run_result_async(
         &self,
         run_id: &str,
         result: GraphRunResult,
     ) -> Result<()> {
-        let s = self.clone();
         let run_id = run_id.to_string();
-        tokio::task::spawn_blocking(move || s.update_run_result(&run_id, &result))
-            .await
-            .context("写入执行结果任务失败")?
+        self.blocking("写入执行结果任务失败", move |s| {
+            s.update_run_result(&run_id, &result)
+        })
+        .await
     }
     pub(crate) async fn node_run_stats_async(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<GraphModelStat>> {
-        let s = self.clone();
         let workspace_id = workspace_id.to_string();
-        tokio::task::spawn_blocking(move || s.node_run_stats(&workspace_id))
-            .await
-            .context("统计节点运行历史任务失败")?
+        self.blocking("统计节点运行历史任务失败", move |s| {
+            s.node_run_stats(&workspace_id)
+        })
+        .await
     }
 }
 

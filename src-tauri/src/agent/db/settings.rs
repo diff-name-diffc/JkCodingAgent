@@ -1,7 +1,7 @@
 //! Aha 智能体设置：dispatcher_settings（共享/项目/聊天上下文配置）的读写。
 
 use anyhow::{Context, Result};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::DispatcherDb;
@@ -250,12 +250,18 @@ fn normalized_library_entries(library: &[ModelLibraryEntry]) -> Vec<ModelLibrary
         .collect()
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AhaSettingsV2 {
+    /// 整对象 JSON 落库（v12 起）：字段级 serde default 兜底历史/手改数据
+    /// 的缺字段，不因单字段缺失拒绝整份设置。
+    #[serde(default)]
     pub shared: AhaSharedModels,
+    #[serde(default)]
     pub project: AhaContextConfig,
+    #[serde(default)]
     pub chat: AhaContextConfig,
+    #[serde(default)]
     pub context_debug: bool,
     #[serde(default)]
     pub review: SshReviewConfig,
@@ -271,6 +277,24 @@ pub struct AhaSettingsV2 {
 
 fn default_theme_preference() -> String {
     "system".to_string()
+}
+
+/// 手写 Default：主题偏好回落 `system` 而非空串——serde 的
+/// `default = "default_theme_preference"` 只在反序列化生效，derive Default
+/// 会给出 `theme = ""` 的非法值（无设置行时 `get_settings_v2` 走此路径）。
+impl Default for AhaSettingsV2 {
+    fn default() -> Self {
+        Self {
+            shared: AhaSharedModels::default(),
+            project: AhaContextConfig::default(),
+            chat: AhaContextConfig::default(),
+            context_debug: false,
+            review: SshReviewConfig::default(),
+            model_library: Vec::new(),
+            graph: GraphExecutionConfig::default(),
+            theme: default_theme_preference(),
+        }
+    }
 }
 
 /// 主题偏好规范化：仅接受 system / light / dark，其余回落 system
@@ -375,343 +399,241 @@ impl SshReviewConfig {
     }
 }
 
-impl DispatcherDb {
-    fn parse_model_configs_json(raw: &str) -> Vec<DispatcherModelConfig> {
-        normalize_model_configs(
-            serde_json::from_str::<Vec<DispatcherModelConfig>>(raw).unwrap_or_default(),
-        )
-    }
+fn parse_model_configs_json(raw: &str) -> Vec<DispatcherModelConfig> {
+    normalize_model_configs(
+        serde_json::from_str::<Vec<DispatcherModelConfig>>(raw).unwrap_or_default(),
+    )
+}
 
-    fn serialize_json(configs: &[DispatcherModelConfig]) -> String {
-        serde_json::to_string(configs).unwrap_or_else(|_| "[]".to_string())
-    }
+fn parse_review_model_config_json(raw: &str) -> DispatcherModelConfig {
+    serde_json::from_str::<DispatcherModelConfig>(raw)
+        .unwrap_or_default()
+        .trimmed()
+}
 
-    /// 落库序列化：引用条目剥离解析出的凭据，DB 只存 library_id 引用。
-    fn stored_json(configs: &[DispatcherModelConfig]) -> String {
-        Self::serialize_json(&strip_library_credentials(configs.to_vec()))
-    }
-
-    fn parse_review_model_config_json(raw: &str) -> DispatcherModelConfig {
-        serde_json::from_str::<DispatcherModelConfig>(raw)
-            .unwrap_or_default()
-            .trimmed()
-    }
-
-    pub fn get_settings_v2(&self) -> Result<AhaSettingsV2> {
-        let conn = self.conn()?;
-        let sql = "SELECT
-            shared_vision_model_configs_json,
-            shared_image_model_configs_json,
-            shared_image_edit_model_configs_json,
-            shared_asr_model_configs_json,
-            shared_tts_model_configs_json,
-            shared_embedding_model_configs_json,
-            project_chat_model_configs_json,
-            project_summary_model_configs_json,
-            project_allowed_tools_json,
-            chat_agent_chat_model_configs_json,
-            chat_agent_summary_model_configs_json,
-            chat_agent_allowed_tools_json,
-            context_debug,
-            review_model_config_json,
-            review_system_prompt,
-            model_library_json,
-            graph_execution_config_json,
-            theme,
-            project_verifier_model_configs_json
-        FROM dispatcher_settings WHERE id = 'default'";
-
-        match conn.query_row(sql, [], |row| {
-            Ok(AhaSettingsV2 {
-                shared: AhaSharedModels {
-                    vision_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(0)?),
-                    image_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(1)?),
-                    image_edit_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(2)?,
-                    ),
-                    asr_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(3)?),
-                    tts_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(4)?),
-                    embedding_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(5)?,
-                    ),
-                },
-                project: AhaContextConfig {
-                    chat_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(6)?),
-                    summary_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(7)?,
-                    ),
-                    verifier_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(18)?,
-                    ),
-                    allowed_tools: {
-                        let raw: String = row.get(8)?;
-                        serde_json::from_str(&raw).unwrap_or_default()
-                    },
-                },
-                chat: AhaContextConfig {
-                    chat_model_configs: Self::parse_model_configs_json(&row.get::<_, String>(9)?),
-                    summary_model_configs: Self::parse_model_configs_json(
-                        &row.get::<_, String>(10)?,
-                    ),
-                    // chat 上下文无验收槽位存列：serde default 兜底为空。
-                    verifier_model_configs: Vec::new(),
-                    allowed_tools: {
-                        let raw: String = row.get(11)?;
-                        serde_json::from_str(&raw).unwrap_or_default()
-                    },
-                },
-                context_debug: row.get::<_, i32>(12)? != 0,
-                review: {
-                    let model_raw: String = row.get(13)?;
-                    let prompt_raw: String = row.get(14).unwrap_or_default();
-                    let model_config = Self::parse_review_model_config_json(&model_raw);
-                    let system_prompt = prompt_raw.trim().to_string();
-                    SshReviewConfig {
-                        model_config,
-                        system_prompt: if system_prompt.is_empty() {
-                            default_review_system_prompt()
-                        } else {
-                            system_prompt
-                        },
-                    }
-                },
-                model_library: {
-                    let raw: String = row.get(15).unwrap_or_default();
-                    // 读取侧同样做容量归一化（与保存侧对称）：历史/手改库中的
-                    // 越界容量不得流入请求预算与滑窗裁剪阈值。
-                    normalized_library_entries(
-                        &serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw).unwrap_or_default(),
-                    )
-                },
-                graph: {
-                    let raw: String = row.get(16).unwrap_or_default();
-                    serde_json::from_str::<GraphExecutionConfig>(&raw).unwrap_or_default()
-                },
-                theme: row
-                    .get::<_, String>(17)
-                    .unwrap_or_else(|_| default_theme_preference()),
-            })
-        }) {
-            Ok(mut settings) => {
-                // 库引用解析：所有用途槽位与审查模型从库回填凭据。
-                let library = settings.model_library.clone();
-                settings.shared.vision_model_configs = resolve_model_configs_from_library(
-                    settings.shared.vision_model_configs,
-                    &library,
-                );
-                settings.shared.image_model_configs = resolve_model_configs_from_library(
-                    settings.shared.image_model_configs,
-                    &library,
-                );
-                settings.shared.image_edit_model_configs = resolve_model_configs_from_library(
-                    settings.shared.image_edit_model_configs,
-                    &library,
-                );
-                settings.shared.asr_model_configs =
-                    resolve_model_configs_from_library(settings.shared.asr_model_configs, &library);
-                settings.shared.tts_model_configs =
-                    resolve_model_configs_from_library(settings.shared.tts_model_configs, &library);
-                settings.shared.embedding_model_configs = resolve_model_configs_from_library(
-                    settings.shared.embedding_model_configs,
-                    &library,
-                );
-                settings.project.chat_model_configs = resolve_model_configs_from_library(
-                    settings.project.chat_model_configs,
-                    &library,
-                );
-                settings.project.summary_model_configs = resolve_model_configs_from_library(
-                    settings.project.summary_model_configs,
-                    &library,
-                );
-                settings.project.verifier_model_configs = resolve_model_configs_from_library(
-                    settings.project.verifier_model_configs,
-                    &library,
-                );
-                settings.chat.chat_model_configs =
-                    resolve_model_configs_from_library(settings.chat.chat_model_configs, &library);
-                settings.chat.summary_model_configs = resolve_model_configs_from_library(
-                    settings.chat.summary_model_configs,
-                    &library,
-                );
-                settings.review.model_config.resolve_from_library(&library);
-                Ok(settings)
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AhaSettingsV2::default()),
-            Err(e) => Err(e).context("load dispatcher settings v2"),
-        }
-    }
-
-    pub fn save_settings_v2(&self, settings: &AhaSettingsV2) -> Result<AhaSettingsV2> {
-        let conn = self.conn()?;
-
-        // 保存前统一规范化，确保与读取端（get_settings_v2）语义对称：
-        // - 全部模型配置列表经 normalize_model_configs（trim、过滤空条目、active 唯一化）；
-        // - 审查模型 trim，空提示词回落默认文案（与读取端一致）；
-        // - 主题偏好收敛为 system/light/dark，非法值回落 system。
-        // 落盘的就是规范化结果，函数直接返回它，写后读回不再漂移。
-        let shared = AhaSharedModels {
-            vision_model_configs: normalize_model_configs(
-                settings.shared.vision_model_configs.clone(),
-            ),
-            image_model_configs: normalize_model_configs(
-                settings.shared.image_model_configs.clone(),
-            ),
-            image_edit_model_configs: normalize_model_configs(
-                settings.shared.image_edit_model_configs.clone(),
-            ),
-            asr_model_configs: normalize_model_configs(settings.shared.asr_model_configs.clone()),
-            tts_model_configs: normalize_model_configs(settings.shared.tts_model_configs.clone()),
-            embedding_model_configs: normalize_model_configs(
-                settings.shared.embedding_model_configs.clone(),
-            ),
-        };
-        let project = AhaContextConfig {
-            chat_model_configs: normalize_model_configs(
-                settings.project.chat_model_configs.clone(),
-            ),
-            summary_model_configs: normalize_model_configs(
-                settings.project.summary_model_configs.clone(),
-            ),
-            verifier_model_configs: normalize_model_configs(
-                settings.project.verifier_model_configs.clone(),
-            ),
-            allowed_tools: settings.project.allowed_tools.clone(),
-        };
-        let chat = AhaContextConfig {
-            chat_model_configs: normalize_model_configs(settings.chat.chat_model_configs.clone()),
-            summary_model_configs: normalize_model_configs(
-                settings.chat.summary_model_configs.clone(),
-            ),
-            // chat 上下文无验收槽位：显式清空，保证写后读回不漂移。
-            verifier_model_configs: Vec::new(),
-            allowed_tools: settings.chat.allowed_tools.clone(),
-        };
-        let review = SshReviewConfig {
-            model_config: settings.review.model_config.clone().trimmed(),
-            system_prompt: {
-                let prompt = settings.review.system_prompt.trim().to_string();
-                if prompt.is_empty() {
-                    default_review_system_prompt()
-                } else {
-                    prompt
-                }
-            },
-        };
-
-        let context_debug_int = if settings.context_debug { 1 } else { 0 };
-
-        let shared_vision = Self::stored_json(&shared.vision_model_configs);
-        let shared_image = Self::stored_json(&shared.image_model_configs);
-        let shared_image_edit = Self::stored_json(&shared.image_edit_model_configs);
-        let shared_asr = Self::stored_json(&shared.asr_model_configs);
-        let shared_tts = Self::stored_json(&shared.tts_model_configs);
-        let shared_embedding = Self::stored_json(&shared.embedding_model_configs);
-
-        let project_chat = Self::stored_json(&project.chat_model_configs);
-        let project_summary = Self::stored_json(&project.summary_model_configs);
-        let project_verifier = Self::stored_json(&project.verifier_model_configs);
-        let project_tools =
-            serde_json::to_string(&project.allowed_tools).unwrap_or_else(|_| "[]".to_string());
-
-        let chat_agent_chat = Self::stored_json(&chat.chat_model_configs);
-        let chat_agent_summary = Self::stored_json(&chat.summary_model_configs);
-        let chat_agent_tools =
-            serde_json::to_string(&chat.allowed_tools).unwrap_or_else(|_| "[]".to_string());
-
-        let review_model = serde_json::to_string(&strip_library_config_credentials(
-            review.model_config.clone(),
-        ))
-        .unwrap_or_else(|_| "{}".to_string());
-        let review_prompt = review.system_prompt.clone();
-        let model_library =
-            serde_json::to_string(&normalized_library_entries(&settings.model_library))
-                .unwrap_or_else(|_| "[]".to_string());
-        let graph_config =
-            serde_json::to_string(&settings.graph).unwrap_or_else(|_| "{}".to_string());
-        let theme = normalize_theme_preference(&settings.theme);
-
-        let sql = "INSERT INTO dispatcher_settings (
-            id,
-            shared_vision_model_configs_json,
-            shared_image_model_configs_json,
-            shared_image_edit_model_configs_json,
-            shared_asr_model_configs_json,
-            shared_tts_model_configs_json,
-            shared_embedding_model_configs_json,
-            project_chat_model_configs_json,
-            project_summary_model_configs_json,
-            project_allowed_tools_json,
-            chat_agent_chat_model_configs_json,
-            chat_agent_summary_model_configs_json,
-            chat_agent_allowed_tools_json,
-            context_debug,
-            review_model_config_json,
-            review_system_prompt,
-            model_library_json,
-            graph_execution_config_json,
-            theme,
-            project_verifier_model_configs_json
-        ) VALUES (
-            'default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
-        )
-        ON CONFLICT(id) DO UPDATE SET
-            shared_vision_model_configs_json = ?1,
-            shared_image_model_configs_json = ?2,
-            shared_image_edit_model_configs_json = ?3,
-            shared_asr_model_configs_json = ?4,
-            shared_tts_model_configs_json = ?5,
-            shared_embedding_model_configs_json = ?6,
-            project_chat_model_configs_json = ?7,
-            project_summary_model_configs_json = ?8,
-            project_allowed_tools_json = ?9,
-            chat_agent_chat_model_configs_json = ?10,
-            chat_agent_summary_model_configs_json = ?11,
-            chat_agent_allowed_tools_json = ?12,
-            context_debug = ?13,
-            review_model_config_json = ?14,
-            review_system_prompt = ?15,
-            model_library_json = ?16,
-            graph_execution_config_json = ?17,
-            theme = ?18,
-            project_verifier_model_configs_json = ?19";
-
-        conn.execute(
-            sql,
-            params![
-                &shared_vision,
-                &shared_image,
-                &shared_image_edit,
-                &shared_asr,
-                &shared_tts,
-                &shared_embedding,
-                &project_chat,
-                &project_summary,
-                &project_tools,
-                &chat_agent_chat,
-                &chat_agent_summary,
-                &chat_agent_tools,
-                context_debug_int,
-                &review_model,
-                &review_prompt,
-                &model_library,
-                &graph_config,
-                &theme,
-                &project_verifier,
-            ],
-        )
-        .context("save dispatcher settings")?;
-
-        // 直接返回落盘的规范化结果，保证返回值与 DB 状态一致。
-        Ok(AhaSettingsV2 {
+impl AhaSettingsV2 {
+    /// 全部用途槽位（不含 review）的可变引用：规范化与库回填按槽位统一处理，
+    /// 不再逐槽位手写展开。
+    fn model_config_slots_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut Vec<DispatcherModelConfig>> {
+        let AhaSettingsV2 {
             shared,
             project,
             chat,
-            context_debug: settings.context_debug,
-            review,
-            model_library: normalized_library_entries(&settings.model_library),
-            graph: settings.graph.clone(),
-            theme,
+            ..
+        } = self;
+        [
+            &mut shared.vision_model_configs,
+            &mut shared.image_model_configs,
+            &mut shared.image_edit_model_configs,
+            &mut shared.asr_model_configs,
+            &mut shared.tts_model_configs,
+            &mut shared.embedding_model_configs,
+            &mut project.chat_model_configs,
+            &mut project.summary_model_configs,
+            &mut project.verifier_model_configs,
+            &mut chat.chat_model_configs,
+            &mut chat.summary_model_configs,
+        ]
+        .into_iter()
+    }
+
+    /// 库引用解析：所有用途槽位与审查模型从库条目回填凭据与容量（读取路径）。
+    /// 引用指向的条目缺失或停用时一并清空，由运行入口的完整性校验显式报错。
+    pub(crate) fn resolve_library_references(&mut self) {
+        let library = self.model_library.clone();
+        for slot in self.model_config_slots_mut() {
+            *slot = resolve_model_configs_from_library(std::mem::take(slot), &library);
+        }
+        self.review.model_config.resolve_from_library(&library);
+    }
+
+    /// 读取侧防御性规范化（与保存端语义对称）：历史/手改库中的脏值不流入
+    /// 运行期。chat 上下文无验收槽位：恒清空（与旧 20 列形态「chat 侧无
+    /// verifier 存列」的语义一致）。
+    fn normalize_for_read(&mut self) {
+        for slot in self.model_config_slots_mut() {
+            *slot = normalize_model_configs(std::mem::take(slot));
+        }
+        self.review.model_config = self.review.model_config.clone().trimmed();
+        let prompt = self.review.system_prompt.trim().to_string();
+        self.review.system_prompt = if prompt.is_empty() {
+            default_review_system_prompt()
+        } else {
+            prompt
+        };
+        self.chat.verifier_model_configs = Vec::new();
+        self.model_library = normalized_library_entries(&self.model_library);
+        self.theme = normalize_theme_preference(&self.theme);
+    }
+
+    /// 保存前统一规范化 + 落库形态（strip 库引用凭据），确保与读取端语义
+    /// 对称：全部槽位 normalize（trim、过滤空条目、active 唯一化）→ 引用
+    /// 条目剥离凭据与容量（DB 只存 libraryId）；审查模型 trim、空提示词
+    /// 回落默认文案；chat 验收槽位清空；主题收敛 system/light/dark；库条目
+    /// 容量归一。落盘的就是该结果，写后读回不漂移。
+    fn normalized_stored(&self) -> AhaSettingsV2 {
+        let mut stored = self.clone();
+        for slot in stored.model_config_slots_mut() {
+            *slot = strip_library_credentials(normalize_model_configs(std::mem::take(slot)));
+        }
+        stored.review.model_config =
+            strip_library_config_credentials(self.review.model_config.clone().trimmed());
+        let prompt = stored.review.system_prompt.trim().to_string();
+        stored.review.system_prompt = if prompt.is_empty() {
+            default_review_system_prompt()
+        } else {
+            prompt
+        };
+        stored.chat.verifier_model_configs = Vec::new();
+        stored.model_library = normalized_library_entries(&self.model_library);
+        stored.theme = normalize_theme_preference(&self.theme);
+        stored
+    }
+}
+
+/// v11 及更早 dispatcher_settings 宽表行 → stored-form `AhaSettingsV2`（映射
+/// 与旧 get_settings_v2 的列语义逐字段一致）。按列名容错读取：v3 前无
+/// theme、v10 前无 verifier 的更旧库按默认值兜底，不依赖「沿链到达本块时
+/// 必为 20 列」的前提。仅供 `migrate_v11_to_v12` 使用。
+pub(crate) fn legacy_settings_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AhaSettingsV2> {
+    fn text(row: &rusqlite::Row<'_>, name: &str) -> Option<String> {
+        let index = row.as_ref().column_index(name).ok()?;
+        row.get::<_, Option<String>>(index).ok().flatten()
+    }
+    // context_debug 为 INTEGER 列：按整数读取（文本读取会类型不符而丢失）。
+    fn integer(row: &rusqlite::Row<'_>, name: &str) -> Option<i64> {
+        let index = row.as_ref().column_index(name).ok()?;
+        row.get::<_, Option<i64>>(index).ok().flatten()
+    }
+
+    let shared = AhaSharedModels {
+        vision_model_configs: text(row, "shared_vision_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        image_model_configs: text(row, "shared_image_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        image_edit_model_configs: text(row, "shared_image_edit_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        asr_model_configs: text(row, "shared_asr_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        tts_model_configs: text(row, "shared_tts_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        embedding_model_configs: text(row, "shared_embedding_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+    };
+    let project = AhaContextConfig {
+        chat_model_configs: text(row, "project_chat_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        summary_model_configs: text(row, "project_summary_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        verifier_model_configs: text(row, "project_verifier_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        allowed_tools: text(row, "project_allowed_tools_json")
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default(),
+    };
+    let chat = AhaContextConfig {
+        chat_model_configs: text(row, "chat_agent_chat_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        summary_model_configs: text(row, "chat_agent_summary_model_configs_json")
+            .map(|raw| parse_model_configs_json(&raw))
+            .unwrap_or_default(),
+        // chat 上下文无验收槽位存列：恒空。
+        verifier_model_configs: Vec::new(),
+        allowed_tools: text(row, "chat_agent_allowed_tools_json")
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default(),
+    };
+    let context_debug = integer(row, "context_debug")
+        .map(|value| value != 0)
+        .unwrap_or(false);
+    let review = SshReviewConfig {
+        model_config: text(row, "review_model_config_json")
+            .map(|raw| parse_review_model_config_json(&raw))
+            .unwrap_or_default(),
+        system_prompt: {
+            let prompt = text(row, "review_system_prompt")
+                .map(|raw| raw.trim().to_string())
+                .unwrap_or_default();
+            if prompt.is_empty() {
+                default_review_system_prompt()
+            } else {
+                prompt
+            }
+        },
+    };
+    let model_library = text(row, "model_library_json")
+        .map(|raw| {
+            normalized_library_entries(
+                &serde_json::from_str::<Vec<ModelLibraryEntry>>(&raw).unwrap_or_default(),
+            )
         })
+        .unwrap_or_default();
+    let graph = text(row, "graph_execution_config_json")
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let theme = text(row, "theme").unwrap_or_else(default_theme_preference);
+
+    Ok(AhaSettingsV2 {
+        shared,
+        project,
+        chat,
+        context_debug,
+        review,
+        model_library,
+        graph,
+        theme: normalize_theme_preference(&theme),
+    })
+}
+
+impl DispatcherDb {
+    pub fn get_settings_v2(&self) -> Result<AhaSettingsV2> {
+        let conn = self.conn()?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT settings_json FROM dispatcher_settings WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("load dispatcher settings v2")?;
+        let Some(raw) = raw else {
+            return Ok(AhaSettingsV2::default());
+        };
+        let mut settings: AhaSettingsV2 = serde_json::from_str(&raw)
+            .with_context(|| format!("解析 dispatcher settings json 失败（{} 字节）", raw.len()))?;
+        settings.normalize_for_read();
+        settings.resolve_library_references();
+        Ok(settings)
+    }
+
+    pub fn save_settings_v2(&self, settings: &AhaSettingsV2) -> Result<AhaSettingsV2> {
+        let stored = settings.normalized_stored();
+        let json =
+            serde_json::to_string(&stored).context("serialize dispatcher settings json")?;
+        self.conn()?
+            .execute(
+                "INSERT INTO dispatcher_settings (id, settings_json)
+                 VALUES ('default', ?1)
+                 ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json",
+                params![&json],
+            )
+            .context("save dispatcher settings")?;
+        // 直接返回落盘的规范化结果，保证返回值与 DB 状态一致。
+        Ok(stored)
     }
 }
 
@@ -726,6 +648,20 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         DispatcherDb::new(path).unwrap()
+    }
+
+    /// 落库形态（stored-form JSON）：断言「库引用槽位剥离凭据」等落库约定
+    /// 时经它读取，不再依赖列名（v12 起整对象单列存储）。
+    fn stored_json(db: &DispatcherDb) -> serde_json::Value {
+        let conn = db.conn().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT settings_json FROM dispatcher_settings WHERE id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
     }
 
     fn library_entry(id: &str, enabled: bool) -> ModelLibraryEntry {
@@ -760,18 +696,15 @@ mod tests {
         };
         db.save_settings_v2(&settings).unwrap();
 
-        // 落库形态：引用条目不含凭据。
-        let conn = db.conn().unwrap();
-        let raw: String = conn
-            .query_row(
-                "SELECT project_chat_model_configs_json FROM dispatcher_settings WHERE id='default'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(raw.contains("\"libraryId\":\"e1\""));
-        assert!(!raw.contains("sk-lib"));
-        drop(conn);
+        // 落库形态：引用条目不含凭据（库条目本身持有凭据，是唯一权威源）。
+        let stored = stored_json(&db);
+        let slot = &stored["project"]["chatModelConfigs"][0];
+        assert_eq!(slot["libraryId"], "e1");
+        assert_eq!(slot["apiKey"], "");
+        assert_eq!(stored["modelLibrary"][0]["apiKey"], "sk-lib");
+        let review_slot = &stored["review"]["modelConfig"];
+        assert_eq!(review_slot["libraryId"], "e1");
+        assert_eq!(review_slot["apiKey"], "");
 
         // 读取形态：凭据由库回填，运行期消费方无感知。
         let loaded = db.get_settings_v2().unwrap();
@@ -827,20 +760,13 @@ mod tests {
         }];
         db.save_settings_v2(&settings).unwrap();
 
-        let conn = db.conn().unwrap();
-        let raw: String = conn
-            .query_row(
-                "SELECT chat_agent_chat_model_configs_json FROM dispatcher_settings WHERE id='default'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(raw.contains("\"libraryId\":\"e1\""));
+        let stored = stored_json(&db);
+        let slot = &stored["chat"]["chatModelConfigs"][0];
+        assert_eq!(slot["libraryId"], "e1");
         assert!(
-            !raw.contains("maxTokens") && !raw.contains("contextWindow"),
-            "引用槽位的容量必须随凭据一起剥离：{raw}"
+            slot.get("maxTokens").is_none() && slot.get("contextWindow").is_none(),
+            "引用槽位的容量必须随凭据一起剥离：{slot}"
         );
-        drop(conn);
 
         let loaded = db.get_settings_v2().unwrap();
         let chat = &loaded.chat.chat_model_configs[0];
@@ -879,17 +805,10 @@ mod tests {
         }];
         db.save_settings_v2(&settings).unwrap();
 
-        let conn = db.conn().unwrap();
-        let raw: String = conn
-            .query_row(
-                "SELECT project_verifier_model_configs_json FROM dispatcher_settings WHERE id='default'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(raw.contains("\"libraryId\":\"e1\""));
-        assert!(!raw.contains("sk-lib"), "落库必须剥离库引用凭据：{raw}");
-        drop(conn);
+        let stored = stored_json(&db);
+        let slot = &stored["project"]["verifierModelConfigs"][0];
+        assert_eq!(slot["libraryId"], "e1");
+        assert_eq!(slot["apiKey"], "", "落库必须剥离库引用凭据：{slot}");
 
         let loaded = db.get_settings_v2().unwrap();
         let verifier = &loaded.project.verifier_model_configs[0];

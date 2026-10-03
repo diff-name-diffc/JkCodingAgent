@@ -1,5 +1,6 @@
-//! 会话记录与会话 CRUD：dispatcher_sessions（统一）、chat_sessions、project_sessions），
-//! 以及上下文（AgentContext）、会话类型（DispatcherSessionKind）。
+//! 会话记录与会话 CRUD：dispatcher_sessions 单表（v13 起两类会话统一读写，
+//! kind 列区分 chat / project），以及上下文（AgentContext）、会话类型
+//! （DispatcherSessionKind）。
 
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
@@ -123,9 +124,8 @@ impl DispatcherDb {
         title: &str,
     ) -> Result<Option<DispatcherSessionRecord>> {
         let updated_at = now();
-        let mut conn = self.conn()?;
-        let tx = conn.transaction().context("begin update session title")?;
-        let changed = tx
+        let conn = self.conn()?;
+        let changed = conn
             .execute(
                 "UPDATE dispatcher_sessions
                  SET title = ?1, updated_at = ?2
@@ -133,44 +133,28 @@ impl DispatcherDb {
                 params![title.trim(), &updated_at, session_id],
             )
             .context("update dispatcher session title")?;
-
         if changed == 0 {
             return Ok(None);
         }
-
-        tx.execute(
-            "UPDATE chat_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            params![title.trim(), &updated_at, session_id],
-        )
-        .context("reflect dispatcher title in chat session")?;
-        tx.execute(
-            "UPDATE project_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            params![title.trim(), &updated_at, session_id],
-        )
-        .context("reflect dispatcher title in project session")?;
-
-        let record = tx
-            .query_row(
-                "SELECT id, project_id, kind, title, category, created_at, updated_at
+        conn.query_row(
+            "SELECT id, project_id, kind, title, category, created_at, updated_at
              FROM dispatcher_sessions
              WHERE id = ?1",
-                params![session_id],
-                |row| {
-                    Ok(DispatcherSessionRecord {
-                        id: row.get(0)?,
-                        project_id: row.get(1)?,
-                        kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
-                        title: row.get(3)?,
-                        category: row.get(4)?,
-                        created_at: row.get(5)?,
-                        updated_at: row.get(6)?,
-                    })
-                },
-            )
-            .optional()
-            .context("load dispatcher session after title update")?;
-        tx.commit().context("commit update session title")?;
-        Ok(record)
+            params![session_id],
+            |row| {
+                Ok(DispatcherSessionRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    kind: DispatcherSessionKind::from_sql_value(row.get(2)?),
+                    title: row.get(3)?,
+                    category: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .context("load dispatcher session after title update")
     }
 
     /// 按 id 读取会话记录（供图执行回执等场景广播会话更新）。
@@ -204,15 +188,17 @@ impl DispatcherDb {
         &self,
         session_id: &str,
     ) -> Result<Option<DispatcherSessionRecord>> {
-        let db = self.clone();
         let session_id = session_id.to_string();
-        tokio::task::spawn_blocking(move || db.get_dispatcher_session(&session_id))
-            .await
-            .context("get_dispatcher_session spawn_blocking")?
+        self.blocking("get_dispatcher_session spawn_blocking", move |db| {
+            db.get_dispatcher_session(&session_id)
+        })
+        .await
     }
 
     // ── Chat Sessions (v6) ────────────────────────────────────────
 
+    /// 聊天会话分页（keyset）：统一表按 kind='chat' 过滤，cursor 为
+    /// (updated_at, id) 复合键的 JSON 编码。
     pub fn list_chat_sessions_paginated(
         &self,
         category: Option<&str>,
@@ -230,13 +216,15 @@ impl DispatcherDb {
         // 显式按分类查询时仍可列出（其专属界面自行管理）。
         let total: i64 = if let Some(cat) = category {
             conn.query_row(
-                "SELECT COUNT(*) FROM chat_sessions WHERE category = ?1",
+                "SELECT COUNT(*) FROM dispatcher_sessions
+                 WHERE kind = 'chat' AND category = ?1",
                 params![cat],
                 |row| row.get(0),
             )?
         } else {
             conn.query_row(
-                "SELECT COUNT(*) FROM chat_sessions WHERE category != ?1",
+                "SELECT COUNT(*) FROM dispatcher_sessions
+                 WHERE kind = 'chat' AND category != ?1",
                 params![INTERNAL_CHAT_CATEGORY],
                 |row| row.get(0),
             )?
@@ -245,7 +233,7 @@ impl DispatcherDb {
         let (where_clause, bind): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
             match (category, cursor.as_ref()) {
                 (Some(cat), Some(cur)) => (
-                    "WHERE category = ?1
+                    "WHERE kind = 'chat' AND category = ?1
                      AND (updated_at < ?2 OR (updated_at = ?2 AND id < ?3))"
                         .into(),
                     vec![
@@ -255,11 +243,11 @@ impl DispatcherDb {
                     ],
                 ),
                 (Some(cat), None) => (
-                    "WHERE category = ?1".into(),
+                    "WHERE kind = 'chat' AND category = ?1".into(),
                     vec![Box::new(cat.to_string())],
                 ),
                 (None, Some(cur)) => (
-                    "WHERE category != ?1
+                    "WHERE kind = 'chat' AND category != ?1
                      AND (updated_at < ?2 OR (updated_at = ?2 AND id < ?3))"
                         .into(),
                     vec![
@@ -269,14 +257,14 @@ impl DispatcherDb {
                     ],
                 ),
                 (None, None) => (
-                    "WHERE category != ?1".into(),
+                    "WHERE kind = 'chat' AND category != ?1".into(),
                     vec![Box::new(INTERNAL_CHAT_CATEGORY.to_string())],
                 ),
             };
 
         let sql = format!(
             "SELECT id, title, category, created_at, updated_at
-             FROM chat_sessions
+             FROM dispatcher_sessions
              {}
              ORDER BY updated_at DESC, id DESC
              LIMIT ?{}",
@@ -373,71 +361,40 @@ impl DispatcherDb {
             updated_at: now(),
             keywords: Vec::new(),
         };
-        let mut conn = self.conn()?;
-        // 子表与统一表两条 INSERT 同一事务包裹，第二条失败时整体回滚，不留孤儿记录。
-        let tx = conn.transaction().context("begin create chat session")?;
-        tx.execute(
-            "INSERT INTO chat_sessions (id, title, category, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                record.id,
-                record.title,
-                record.category,
-                record.created_at,
-                record.updated_at
-            ],
-        )
-        .context("insert chat session")?;
-        tx.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
-             VALUES (?1, '__global_chat__', 'chat', ?2, ?3, ?4, ?5)",
-            params![
-                record.id,
-                record.title,
-                record.category,
-                record.created_at,
-                record.updated_at
-            ],
-        )
-        .context("insert chat session into dispatcher_sessions")?;
-        tx.commit().context("commit create chat session")?;
+        self.conn()?
+            .execute(
+                "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
+                 VALUES (?1, '__global_chat__', 'chat', ?2, ?3, ?4, ?5)",
+                params![
+                    record.id,
+                    record.title,
+                    record.category,
+                    record.created_at,
+                    record.updated_at
+                ],
+            )
+            .context("insert chat session")?;
         Ok(record)
     }
 
     /// 统一删会话入口（原 delete_chat_session / delete_project_session 两条
-    /// 逐行镜像的命令合并）：查统一表 kind 分流子表删除，级联资源清单走
-    /// `purge_session_resources_tx` 单一出处。kind 异常值显式中止（保留原
-    /// 「禁跨类误删」的数据完整性守卫：子表与统一表同事务成对删除）。
+    /// 命令合并）：级联资源清单走 `purge_session_resources_tx` 单一出处，
+    /// 会话行删除统一表单条记录。
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        let kind: String = tx
+        let exists: Option<String> = tx
             .query_row(
-                "SELECT kind FROM dispatcher_sessions WHERE id = ?1",
+                "SELECT id FROM dispatcher_sessions WHERE id = ?1",
                 params![session_id],
                 |row| row.get(0),
             )
             .optional()
-            .context("load dispatcher session kind")?
-            .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
-        let image_dir = super::purge::purge_session_resources_tx(&tx, session_id)?;
-        match kind.as_str() {
-            "chat" => {
-                tx.execute(
-                    "DELETE FROM chat_sessions WHERE id = ?1",
-                    params![session_id],
-                )
-                .context("delete chat session row")?;
-            }
-            "project" => {
-                tx.execute(
-                    "DELETE FROM project_sessions WHERE id = ?1",
-                    params![session_id],
-                )
-                .context("delete project session row")?;
-            }
-            other => anyhow::bail!("未知会话类型 {other}（session {session_id}），中止删除"),
+            .context("load dispatcher session")?;
+        if exists.is_none() {
+            anyhow::bail!("session not found: {session_id}");
         }
+        let image_dir = super::purge::purge_session_resources_tx(&tx, session_id)?;
         tx.execute(
             "DELETE FROM dispatcher_sessions WHERE id = ?1",
             params![session_id],
@@ -456,22 +413,18 @@ impl DispatcherDb {
 
     pub fn set_chat_session_category(&self, session_id: &str, category_id: &str) -> Result<()> {
         let conn = self.conn()?;
-        let updated_at = now();
-        conn.execute(
-            "UPDATE chat_sessions SET category = ?1, updated_at = ?2 WHERE id = ?3",
-            params![category_id, &updated_at, session_id],
-        )
-        .context("set chat session category")?;
         conn.execute(
             "UPDATE dispatcher_sessions SET category = ?1, updated_at = ?2 WHERE id = ?3",
-            params![category_id, &updated_at, session_id],
+            params![category_id, now(), session_id],
         )
-        .context("reflect category in dispatcher_sessions")?;
+        .context("set chat session category")?;
         Ok(())
     }
 
     // ── Project Sessions (v6) ─────────────────────────────────────
 
+    /// 项目会话分页（offset）：统一表按 project_id + kind='project' 过滤。
+    /// 前端按「累计已载条数」推进 offset（不读 next_cursor），协议保持不变。
     pub fn list_project_sessions_paginated(
         &self,
         project_id: &str,
@@ -480,16 +433,17 @@ impl DispatcherDb {
     ) -> Result<SessionPage<ProjectSessionRecord>> {
         let conn = self.conn()?;
         let total: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM project_sessions WHERE project_id = ?1",
+            "SELECT COUNT(*) FROM dispatcher_sessions
+             WHERE project_id = ?1 AND kind = 'project'",
             params![project_id],
             |row| row.get(0),
         )?;
 
         let mut stmt = conn.prepare(
             "SELECT id, project_id, title, created_at, updated_at
-             FROM project_sessions
-             WHERE project_id = ?1
-             ORDER BY updated_at DESC
+             FROM dispatcher_sessions
+             WHERE project_id = ?1 AND kind = 'project'
+             ORDER BY updated_at DESC, id DESC
              LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(params![project_id, page_size, offset], |row| {
@@ -540,34 +494,19 @@ impl DispatcherDb {
             updated_at: now(),
             keywords: Vec::new(),
         };
-        let mut conn = self.conn()?;
-        // 子表与统一表两条 INSERT 同一事务包裹，第二条失败时整体回滚，不留孤儿记录。
-        let tx = conn.transaction().context("begin create project session")?;
-        tx.execute(
-            "INSERT INTO project_sessions (id, project_id, title, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                record.id,
-                record.project_id,
-                record.title,
-                record.created_at,
-                record.updated_at
-            ],
-        )
-        .context("insert project session")?;
-        tx.execute(
-            "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
-             VALUES (?1, ?2, 'project', ?3, '', ?4, ?5)",
-            params![
-                record.id,
-                record.project_id,
-                record.title,
-                record.created_at,
-                record.updated_at
-            ],
-        )
-        .context("insert project session into dispatcher_sessions")?;
-        tx.commit().context("commit create project session")?;
+        self.conn()?
+            .execute(
+                "INSERT INTO dispatcher_sessions (id, project_id, kind, title, category, created_at, updated_at)
+                 VALUES (?1, ?2, 'project', ?3, '', ?4, ?5)",
+                params![
+                    record.id,
+                    record.project_id,
+                    record.title,
+                    record.created_at,
+                    record.updated_at
+                ],
+            )
+            .context("insert project session")?;
         Ok(record)
     }
 
@@ -602,19 +541,19 @@ impl DispatcherDb {
 
 impl DispatcherDb {
     pub async fn get_session_title_async(&self, workspace_id: &str) -> Result<String> {
-        let db = self.clone();
         let wid = workspace_id.to_string();
-        tokio::task::spawn_blocking(move || db.get_session_title(&wid))
-            .await
-            .context("get_session_title spawn_blocking")?
+        self.blocking("get_session_title spawn_blocking", move |db| {
+            db.get_session_title(&wid)
+        })
+        .await
     }
 
     pub async fn get_session_project_id_async(&self, workspace_id: &str) -> Result<Option<String>> {
-        let db = self.clone();
         let wid = workspace_id.to_string();
-        tokio::task::spawn_blocking(move || db.get_session_project_id(&wid))
-            .await
-            .context("get_session_project_id spawn_blocking")?
+        self.blocking("get_session_project_id spawn_blocking", move |db| {
+            db.get_session_project_id(&wid)
+        })
+        .await
     }
 }
 
@@ -642,7 +581,7 @@ mod tests {
         db.conn()
             .expect("db conn")
             .execute(
-                "UPDATE chat_sessions SET updated_at = '2026-01-01T00:00:00Z' WHERE category = 'tech'",
+                "UPDATE dispatcher_sessions SET updated_at = '2026-01-01T00:00:00Z' WHERE kind = 'chat' AND category = 'tech'",
                 [],
             )
             .expect("normalize timestamps");

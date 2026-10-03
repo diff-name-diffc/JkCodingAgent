@@ -12,16 +12,6 @@ impl DispatcherDb {
             params![now(), workspace_id],
         )
         .context("update dispatcher session after clear")?;
-        tx.execute(
-            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![now(), workspace_id],
-        )
-        .context("update chat session updated_at after clear")?;
-        tx.execute(
-            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![now(), workspace_id],
-        )
-        .context("update project session updated_at after clear")?;
         tx.commit().context("commit dispatcher message cleanup")?;
         // 数据库清空已提交，图片目录清理失败不应把清空误报为失败。改为 best-effort。
         if let Some(dir) = image_dir {
@@ -169,23 +159,13 @@ impl DispatcherDb {
             )
             .context("truncate dispatcher messages")?;
 
-        // 消息删除改变了会话状态，同步全部会话表的 updated_at，避免统一会话列表排序错乱。
+        // 消息删除改变了会话状态，同步统一会话表的 updated_at，避免会话列表排序错乱。
         let updated_at = now();
         tx.execute(
             "UPDATE dispatcher_sessions SET updated_at = ?1 WHERE id = ?2",
             params![&updated_at, workspace_id],
         )
         .context("update dispatcher session updated_at after truncate")?;
-        tx.execute(
-            "UPDATE chat_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&updated_at, workspace_id],
-        )
-        .context("update chat session updated_at after truncate")?;
-        tx.execute(
-            "UPDATE project_sessions SET updated_at = ?1 WHERE id = ?2",
-            params![&updated_at, workspace_id],
-        )
-        .context("update project session updated_at after truncate")?;
 
         tx.commit()
             .context("commit dispatcher message truncation")?;

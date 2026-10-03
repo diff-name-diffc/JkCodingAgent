@@ -29,11 +29,6 @@ export interface GitCommitFile {
   deletions: number;
 }
 
-export interface GitBranchInfo {
-  name: string;
-  current: boolean;
-}
-
 export function CommitRow({
   commit,
   isSelected,

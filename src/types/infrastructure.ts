@@ -10,6 +10,13 @@ export interface ProjectDeleteResult {
   deletedSessionIds: string[];
 }
 
+/** `git_list_branches` 命令返回的分支条目（GitHistory / BranchBar / use-current-git-branch 同源）。 */
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+  remote: string | null;
+}
+
 /** MCP 配置作用域：全局（所有聊天共享）或项目（全局 ∪ 项目 mcp.json）。 */
 export type McpScopeKind = "global" | "project";
 

@@ -3,7 +3,7 @@ import { Check, Copy, Eye, PencilLine } from "lucide-react";
 import { collapseMiddlePath, getPathDirectory, getRelativePathDisplay } from "../../utils/filePaths";
 
 /** 文件 pane 的保存语义状态；idle 不渲染 pill。 */
-export type FileSaveStatus = "idle" | "saving" | "saved" | "error" | "unsaved";
+export type FileSaveStatus = "idle" | "saving" | "saved" | "error";
 
 export function FileStatusPill({
   children,
@@ -23,8 +23,6 @@ function savePillProps(status: FileSaveStatus): { label: string; tone: "default"
       return { label: "已保存", tone: "success" };
     case "error":
       return { label: "保存失败", tone: "error" };
-    case "unsaved":
-      return { label: "未保存", tone: "warning" };
     default:
       return null;
   }

@@ -14,26 +14,3 @@ export interface RopeMeta {
   charCount: number;
   byteLen: number;
 }
-
-export interface RopeEditResult {
-  lineCount: number;
-  affectedStartLine: number;
-  affectedEndLine: number;
-}
-
-export interface SelectionPoint {
-  line: number;
-  col: number;
-}
-
-export interface SelectionRange {
-  startLine: number;
-  startCol: number;
-  endLine: number;
-  endCol: number;
-}
-
-export interface PendingFocus {
-  line: number;
-  col: number;
-}

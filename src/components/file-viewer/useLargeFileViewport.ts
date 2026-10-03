@@ -4,7 +4,6 @@ import {
   LARGE_FILE_CHUNK_SIZE,
   LARGE_FILE_LINE_HEIGHT,
   LARGE_FILE_OVERSCAN,
-  type PendingFocus,
   type RopeMeta,
 } from "./large-file-types";
 
@@ -14,23 +13,18 @@ interface UseLargeFileViewportOptions {
   filePath: string;
   projectPath: string;
   initialLineCount: number;
-  editingLineRef: React.RefObject<number | null>;
-  pendingFocusRef: React.RefObject<PendingFocus | null>;
 }
 
+/** 大文件只读视口：按需分块经 `rope_read_lines` 拉取行文本，虚拟滚动渲染。 */
 export function useLargeFileViewport({
   active,
   sessionId,
   filePath,
   projectPath,
   initialLineCount,
-  editingLineRef,
-  pendingFocusRef,
 }: UseLargeFileViewportOptions) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const contentAreaRef = useRef<HTMLDivElement>(null);
   const lineCache = useRef(new Map<number, string>());
-  const syncedLineCache = useRef(new Map<number, string>());
   const pendingFetches = useRef(new Set<string>());
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 });
   const [renderedLines, setRenderedLines] = useState<{ idx: number; text: string }[]>([]);
@@ -40,7 +34,6 @@ export function useLargeFileViewport({
   useEffect(() => {
     let cancelled = false;
     lineCache.current.clear();
-    syncedLineCache.current.clear();
     pendingFetches.current.clear();
     setRenderedLines([]);
     setRopeReady(false);
@@ -106,19 +99,13 @@ export function useLargeFileViewport({
           })),
         );
         for (const { chunk, lines } of results) {
-          lines.forEach((text, offset) => {
-            const line = chunk.start + offset;
-            if (editingLineRef.current !== line) {
-              lineCache.current.set(line, text);
-              syncedLineCache.current.set(line, text);
-            }
-          });
+          lines.forEach((text, offset) => lineCache.current.set(chunk.start + offset, text));
           pendingFetches.current.delete(chunk.key);
         }
       }
       updateRenderedLines(start, end);
     },
-    [editingLineRef, ropeReady, sessionId, totalLines, updateRenderedLines],
+    [ropeReady, sessionId, totalLines, updateRenderedLines],
   );
 
   const handleScroll = useCallback(() => {
@@ -140,74 +127,5 @@ export function useLargeFileViewport({
     return () => cancelAnimationFrame(frame);
   }, [active, handleScroll]);
 
-  useEffect(() => {
-    const target = pendingFocusRef.current;
-    if (!target) return;
-    const frame = requestAnimationFrame(() => {
-      const element = contentAreaRef.current?.querySelector(
-        `[data-line="${target.line}"]`,
-      ) as HTMLElement | null;
-      if (element) {
-        editingLineRef.current = target.line;
-        element.focus();
-        setCaretPosition(element, target.col);
-      }
-      pendingFocusRef.current = null;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [editingLineRef, pendingFocusRef, renderedLines]);
-
-  const getLineElement = useCallback((line: number) => {
-    return contentAreaRef.current?.querySelector(`[data-line="${line}"]`) as HTMLElement | null;
-  }, []);
-
-  const invalidateCacheFrom = useCallback((fromLine: number) => {
-    lineCache.current = new Map([...lineCache.current].filter(([line]) => line < fromLine));
-    syncedLineCache.current = new Map(
-      [...syncedLineCache.current].filter(([line]) => line < fromLine),
-    );
-    for (const key of pendingFetches.current) {
-      if (Number(key.split("-")[1]) > fromLine) pendingFetches.current.delete(key);
-    }
-  }, []);
-
-  const clearCache = useCallback(() => {
-    lineCache.current.clear();
-    syncedLineCache.current.clear();
-    pendingFetches.current.clear();
-  }, []);
-
-  return {
-    containerRef,
-    contentAreaRef,
-    lineCache,
-    syncedLineCache,
-    visibleRange,
-    renderedLines,
-    totalLines,
-    setTotalLines,
-    handleScroll,
-    getLineElement,
-    invalidateCacheFrom,
-    clearCache,
-    loadRange,
-  };
-}
-
-export function setCaretPosition(element: HTMLElement, offset: number) {
-  const textNode = element.firstChild;
-  if (!textNode) {
-    element.focus();
-    return;
-  }
-  const range = document.createRange();
-  range.setStart(textNode, Math.min(offset, textNode.textContent?.length ?? 0));
-  range.collapse(true);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
-
-export function getCaretOffset(): number {
-  return window.getSelection()?.focusOffset ?? 0;
+  return { containerRef, renderedLines, totalLines, handleScroll };
 }

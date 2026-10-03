@@ -1802,35 +1802,6 @@
     font-weight: 600;
   }
 
-  .ai-large-file-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    border: 1px solid var(--border-dim);
-    border-radius: 999px;
-    padding: 2px 8px;
-    background: transparent;
-    font-weight: 600;
-  }
-
-  .ai-large-file-status.is-dirty {
-    border-color: rgb(var(--warning-rgb) / 0.28);
-    background: rgb(var(--warning-rgb) / 0.08);
-    color: var(--warning);
-  }
-
-  .ai-large-file-status.is-saved {
-    border-color: rgb(var(--success-rgb) / 0.26);
-    background: rgb(var(--success-rgb) / 0.08);
-    color: var(--success);
-  }
-
-  .ai-large-file-save-hint {
-    margin-left: auto;
-    color: var(--text-hint);
-    font-size: 10px;
-  }
-
   .ai-large-file-scroll {
     position: relative;
     flex: 1;
@@ -1854,15 +1825,6 @@
     align-items: stretch;
   }
 
-  .ai-large-file-selection {
-    position: absolute;
-    top: 2px;
-    bottom: 2px;
-    border-radius: 4px;
-    background: rgb(var(--accent-rgb) / 0.22);
-    pointer-events: none;
-  }
-
   .ai-large-file-gutter {
     flex-shrink: 0;
     padding-right: 12px;
@@ -1873,33 +1835,16 @@
     user-select: none;
   }
 
-  .ai-large-file-gutter.is-editing {
-    color: var(--accent);
-  }
-
   .ai-large-file-content {
     display: block;
     min-width: 0;
     height: 22px;
     flex: 1;
     overflow: hidden;
-    border-left: 2px solid transparent;
     padding-left: 8px;
     background: transparent;
-    caret-color: var(--accent);
     line-height: 22px;
-    outline: none;
-    user-select: none;
     white-space: pre;
-  }
-
-  .ai-large-file-content.is-editing {
-    border-left-color: var(--accent);
-    background: rgb(var(--accent-rgb) / 0.04);
-  }
-
-  .ai-large-file-content.has-selection {
-    caret-color: transparent;
   }
 
   .ai-git-changes {

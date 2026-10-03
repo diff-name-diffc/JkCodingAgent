@@ -210,7 +210,9 @@ async fn execute_program(
         match tokio::task::spawn_blocking(move || db.load_tool_run(&task)).await {
             Ok(Ok(run)) => crate::agent::common::emit(
                 run_events,
-                crate::agent::rig_ext::events::AgentEvent::ToolRunUpdated { run },
+                crate::agent::rig_ext::events::AgentEvent::ToolRunUpdated {
+                    run: Box::new(run),
+                },
             ),
             Ok(Err(error)) => eprintln!(
                 "[agent] run_tool_program 父运行记录读取失败，叶子实时事件可能无法挂载：{error:#}"

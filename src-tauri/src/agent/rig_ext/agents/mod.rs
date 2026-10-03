@@ -9,6 +9,7 @@ pub(crate) mod architecture_agent;
 pub(crate) mod plain_chat;
 
 pub(crate) mod project;
+pub(crate) mod project_graph_ops;
 pub(crate) mod project_prompt;
 pub(crate) mod project_report;
 pub(crate) mod project_submit;

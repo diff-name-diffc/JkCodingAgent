@@ -72,12 +72,114 @@ pub(crate) fn message_shell() -> PortableDynamicTool {
     )
 }
 
-/// 编排器可见的工具名（固定集合，模型只看这四个入口）。
-pub(crate) const ORCHESTRATOR_PROTOCOL_TOOL_NAMES: [&str; 4] = [
+/// `graph_result_read`：读取执行图执行结果（结构化结果的感知工具，不收口）。
+pub(crate) fn graph_result_read_shell() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        "graph_result_read",
+        "读取当前会话最近一次执行图的执行结果：结果类型（审查报告/执行结果）、验收结论、完整结论文本（审查类=问题清单，编辑类=执行总结）与修改文件清单。审查完成后要用结论规划修复/后续图，或需要向用户复述结果详情时，先用它拿到完整结论，再决定下一步。",
+        json!({
+            "type": "object",
+            "properties": {
+                "planId": {
+                    "type": "string",
+                    "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                }
+            }
+        }),
+        |_args| {
+            Box::pin(async move {
+                Err(ToolExecutionError::refused(
+                    "错误：graph_result_read 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                ))
+            })
+        },
+    )
+}
+
+/// `graph_get`：读取执行图定义与状态（感知工具，不收口）。
+pub(crate) fn graph_get_shell() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        "graph_get",
+        "读取当前会话执行图的完整定义与状态：节点任务、依赖、共享 state 键、最近运行摘要。上下文过长或被压缩后图细节可能丢失，需要时用它重新感知最新图信息，再决定答复、读报告或修复。",
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "planId": {
+                    "type": "string",
+                    "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+                }
+            }
+        }),
+        |_args| {
+            Box::pin(async move {
+                Err(ToolExecutionError::refused(
+                    "错误：graph_get 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                ))
+            })
+        },
+    )
+}
+
+/// `graph_node_update`：定点修改待确认图的单个节点（局部更新，不收口）。
+pub(crate) fn graph_node_update_shell() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        "graph_node_update",
+        "定点修正待确认（draft）执行图中的单个节点：patch 里提供哪个字段就替换哪个，未提供的字段保持不变（含 dependsOn，即改边）。仅 draft 态可用；图已开始执行后的修复请用 submit_graph + inheritsFrom 提交修复图。",
+        graph_node_update_parameters_schema(),
+        |_args| {
+            Box::pin(async move {
+                Err(ToolExecutionError::refused(
+                    "错误：graph_node_update 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                ))
+            })
+        },
+    )
+}
+
+/// `graph_node_add`：向待确认图新增节点（可原子插入执行边中间）。
+pub(crate) fn graph_node_add_shell() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        "graph_node_add",
+        "向待确认（draft）执行图新增一个节点（须给完整节点定义）。insertBefore 可选：把指定节点的、指向本节点上游的依赖边改写为本节点，实现 A→B 中间插入为 A→新节点→B；不传则按 dependsOn 并行/尾部追加。仅 draft 态可用。",
+        graph_node_add_parameters_schema(),
+        |_args| {
+            Box::pin(async move {
+                Err(ToolExecutionError::refused(
+                    "错误：graph_node_add 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                ))
+            })
+        },
+    )
+}
+
+/// `graph_node_delete`：从待确认图删除节点（可选级联删除下游）。
+pub(crate) fn graph_node_delete_shell() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        "graph_node_delete",
+        "从待确认（draft）执行图删除节点。节点被下游依赖时默认拒绝并列出全部传递下游；确认需要连带清理时带 force=true，将级联删除依赖它的全部下游节点，保证图无悬空依赖。仅 draft 态可用。",
+        graph_node_delete_parameters_schema(),
+        |_args| {
+            Box::pin(async move {
+                Err(ToolExecutionError::refused(
+                    "错误：graph_node_delete 仅支持在编排器拦截环境下运行，当前上下文不可用。",
+                ))
+            })
+        },
+    )
+}
+
+/// 编排器可见的工具名（固定集合，模型只看这九个入口）。
+pub(crate) const ORCHESTRATOR_PROTOCOL_TOOL_NAMES: [&str; 9] = [
     "run_tool_program",
     "message",
     "submit_graph",
     "graph_plan_report",
+    "graph_result_read",
+    "graph_get",
+    "graph_node_update",
+    "graph_node_add",
+    "graph_node_delete",
 ];
 
 fn bounded_identifier(description: &str) -> Value {
@@ -185,6 +287,84 @@ fn submit_graph_parameters_schema() -> Value {
     })
 }
 
+/// graph_node_update 的 patch 子 schema：复用节点 schema 的字段约束改为全
+/// 可选（minProperties=1 拒绝空 patch）；节点 id 不在 patch 面——id 是依赖
+/// 引用锚点，改 id 等同改图拓扑，应重提整图。
+fn graph_node_patch_schema() -> Value {
+    let mut node = graph_node_schema();
+    let object = node
+        .as_object_mut()
+        .expect("graph_node_schema 恒为 object schema");
+    // 节点 id 从 properties 中移除（additionalProperties=false 随即拒绝 patch
+    // 携带 id）；required 清空 + minProperties=1 拒绝空 patch。
+    if let Some(properties) = object
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    {
+        properties.remove("id");
+    }
+    object.insert("minProperties".into(), json!(1));
+    object.insert("required".into(), json!([]));
+    node
+}
+
+fn graph_node_update_parameters_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "planId": {
+                "type": "string",
+                "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+            },
+            "nodeId": bounded_identifier("要更新的节点 id"),
+            "patch": graph_node_patch_schema(),
+        },
+        "required": ["nodeId", "patch"],
+    })
+}
+
+fn graph_node_add_parameters_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "planId": {
+                "type": "string",
+                "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+            },
+            "node": graph_node_schema(),
+            "insertBefore": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": true,
+                "items": bounded_identifier("要改写依赖边的下游节点 id"),
+                "description": "可选：把这些节点对本节点上游的依赖边接管为本节点（中间插入）；不传则按 node.dependsOn 直接挂入图",
+            },
+        },
+        "required": ["node"],
+    })
+}
+
+fn graph_node_delete_parameters_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "planId": {
+                "type": "string",
+                "description": "可选：指定图计划 id；缺省取会话最近的图计划"
+            },
+            "nodeId": bounded_identifier("要删除的节点 id"),
+            "force": {
+                "type": "boolean",
+                "description": "true = 节点被依赖时级联删除全部传递下游；缺省 false（被依赖则拒绝并列出下游）",
+            },
+        },
+        "required": ["nodeId"],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +430,12 @@ mod tests {
         for tool in [
             submit_graph_shell(),
             graph_plan_report_shell(),
+            graph_result_read_shell(),
             message_shell(),
+            graph_get_shell(),
+            graph_node_update_shell(),
+            graph_node_add_shell(),
+            graph_node_delete_shell(),
         ] {
             let error = tool
                 .execute(json!({}))
@@ -271,8 +456,72 @@ mod tests {
         let names = ORCHESTRATOR_PROTOCOL_TOOL_NAMES;
         assert!(names.contains(&"submit_graph"));
         assert!(names.contains(&"graph_plan_report"));
+        assert!(names.contains(&"graph_result_read"));
         assert!(names.contains(&"message"));
         assert!(names.contains(&"run_tool_program"));
+        assert!(names.contains(&"graph_get"));
+        assert!(names.contains(&"graph_node_update"));
+        assert!(names.contains(&"graph_node_add"));
+        assert!(names.contains(&"graph_node_delete"));
+    }
+
+    #[test]
+    fn node_add_and_delete_schemas_are_strict() {
+        let add_validator = jsonschema::draft202012::new(&graph_node_add_parameters_schema())
+            .expect("schema");
+        // 完整节点定义 + insertBefore 数组合法。
+        let valid = json!({
+            "node": {
+                "id": "n9", "title": "新增", "modelRef": "sonnet",
+                "baseToolGroup": "read_only", "task": "任务", "outputKey": "out",
+                "dependsOn": ["n1"]
+            },
+            "insertBefore": ["n2"],
+        });
+        assert!(add_validator.is_valid(&valid));
+        // node 缺必填字段（task）拒绝；顶层未知字段拒绝。
+        let incomplete = json!({
+            "node": {
+                "id": "n9", "title": "新增", "modelRef": "sonnet",
+                "baseToolGroup": "read_only", "outputKey": "out"
+            },
+        });
+        assert!(!add_validator.is_valid(&incomplete));
+        let extra = json!({ "node": valid["node"].clone(), "extra": true });
+        assert!(!add_validator.is_valid(&extra));
+
+        let delete_validator =
+            jsonschema::draft202012::new(&graph_node_delete_parameters_schema()).expect("schema");
+        assert!(delete_validator.is_valid(&json!({ "nodeId": "n1", "force": true })));
+        assert!(delete_validator.is_valid(&json!({ "nodeId": "n1" })));
+        // 缺 nodeId / force 非布尔拒绝。
+        assert!(!delete_validator.is_valid(&json!({ "force": true })));
+        assert!(!delete_validator.is_valid(&json!({ "nodeId": "n1", "force": "yes" })));
+    }
+
+    #[test]
+    fn node_update_patch_schema_is_strict_and_optional() {
+        let validator = jsonschema::draft202012::new(&graph_node_update_parameters_schema())
+            .expect("schema");
+        let valid = json!({
+            "nodeId": "n1",
+            "patch": { "task": "新任务", "usePlanMode": true },
+        });
+        assert!(validator.is_valid(&valid));
+
+        // 空 patch、未知字段、节点 id 修改一律拒绝。
+        let empty_patch = json!({ "nodeId": "n1", "patch": {} });
+        assert!(!validator.is_valid(&empty_patch));
+        let unknown = json!({ "nodeId": "n1", "patch": { "unknown": 1 } });
+        assert!(!validator.is_valid(&unknown));
+        let id_patch = json!({ "nodeId": "n1", "patch": { "id": "n2" } });
+        assert!(!validator.is_valid(&id_patch));
+
+        // 顶层缺 nodeId 拒绝；多余顶层字段拒绝。
+        let missing_node = json!({ "patch": { "task": "x" } });
+        assert!(!validator.is_valid(&missing_node));
+        let extra_top = json!({ "nodeId": "n1", "patch": { "task": "x" }, "extra": true });
+        assert!(!validator.is_valid(&extra_top));
     }
 
     #[test]

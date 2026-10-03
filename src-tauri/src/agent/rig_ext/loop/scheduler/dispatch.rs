@@ -243,7 +243,9 @@ impl TaskScheduler {
                     if let Some(run_events) = &run_events {
                         crate::agent::common::emit(
                             run_events,
-                            crate::agent::rig_ext::events::AgentEvent::ToolRunUpdated { run: started },
+                            crate::agent::rig_ext::events::AgentEvent::ToolRunUpdated {
+                                run: Box::new(started),
+                            },
                         );
                     }
                     update_phase(&db, &context.task_id, "running")

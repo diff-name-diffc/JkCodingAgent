@@ -98,7 +98,7 @@ pub(super) async fn finalize_cancelled(
     emit(
         on_event,
         AgentEvent::AssistantMessage {
-            message: reply.clone(),
+            message: Box::new(reply.clone()),
             last_seq,
         },
     );

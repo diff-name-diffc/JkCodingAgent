@@ -149,6 +149,7 @@ impl Coordinator {
         Ok((results, last))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn dispatch<P: ToolExecutionPolicy + Clone + 'static>(
         &mut self,
         calls: &[ToolCall],

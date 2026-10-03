@@ -209,7 +209,9 @@ pub(crate) async fn start_tool_run(
         .await?;
     emit(
         context.on_event,
-        AgentEvent::ToolRunUpdated { run: run.clone() },
+        AgentEvent::ToolRunUpdated {
+            run: Box::new(run.clone()),
+        },
     );
 
     let started = match context.db.mark_tool_run_started_async(&run.id).await {
@@ -232,7 +234,9 @@ pub(crate) async fn start_tool_run(
             {
                 emit(
                     context.on_event,
-                    AgentEvent::ToolRunUpdated { run: finished },
+                    AgentEvent::ToolRunUpdated {
+                        run: Box::new(finished),
+                    },
                 );
             }
             return Err(error);
@@ -241,7 +245,7 @@ pub(crate) async fn start_tool_run(
     emit(
         context.on_event,
         AgentEvent::ToolRunUpdated {
-            run: started.clone(),
+            run: Box::new(started.clone()),
         },
     );
     Ok(RigToolRun { run_id: started.id })
@@ -283,12 +287,19 @@ pub(crate) async fn finish_tool_run(
             .attach_tool_run_tree_message_async(&finished.id, message_id)
             .await?;
         for run in tree {
-            emit(context.on_event, AgentEvent::ToolRunUpdated { run });
+            emit(
+                context.on_event,
+                AgentEvent::ToolRunUpdated {
+                    run: Box::new(run),
+                },
+            );
         }
     } else {
         emit(
             context.on_event,
-            AgentEvent::ToolRunUpdated { run: finished },
+            AgentEvent::ToolRunUpdated {
+                run: Box::new(finished),
+            },
         );
     }
     Ok(())

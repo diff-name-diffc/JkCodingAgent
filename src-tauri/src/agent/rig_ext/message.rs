@@ -299,13 +299,13 @@ const TOOL_IMAGE_NOTE_MARK: &str = "张图片由本轮工具调用";
 /// 锚点是最后一条含非工具结果内容的 user 消息。工具结果在 rig 里也是
 /// `Message::User`，若把锚点取成「任意最后一条 User」，刚落库的工具结果
 /// 会把扫描区间挤空，`generate_image` / `fetch_image` 的引用就进不了视觉输入。
-pub async fn attach_turn_tool_images(messages: &mut Vec<Message>) {
+pub async fn attach_turn_tool_images(messages: &mut [Message]) {
     let anchor = last_turn_anchor_index(messages);
     attach_turn_tool_images_at(messages, anchor).await;
 }
 
 /// 运行时 observation 同样映射为 User，因此调用方应传入真实请求的来源锚点。
-pub(crate) async fn attach_turn_tool_images_at(messages: &mut Vec<Message>, anchor: Option<usize>) {
+pub(crate) async fn attach_turn_tool_images_at(messages: &mut [Message], anchor: Option<usize>) {
     let Some(last_user_index) = anchor else {
         return;
     };

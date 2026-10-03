@@ -67,6 +67,7 @@ impl LeafHost {
     /// 执行一个叶子并取回它自己的结算。
     ///
     /// `captured` 是 `wrapped` 捕获的原始结构化输出（成功时由调用方取用）。
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_leaf(
         &self,
         tool: &PortableDynamicTool,
@@ -131,7 +132,12 @@ impl LeafHost {
             tokio::task::spawn_blocking(move || db.load_tool_run(&task)).await??
         };
         if let Some(run_events) = &self.run_events {
-            crate::agent::common::emit(run_events, AgentEvent::ToolRunUpdated { run: loaded });
+            crate::agent::common::emit(
+                run_events,
+                AgentEvent::ToolRunUpdated {
+                    run: Box::new(loaded),
+                },
+            );
         }
 
         leaf_result(completion, captured)

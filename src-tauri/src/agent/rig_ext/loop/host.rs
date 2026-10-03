@@ -149,6 +149,7 @@ impl LoopHost {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn memory_record(
     workspace: &str,
     task: &str,

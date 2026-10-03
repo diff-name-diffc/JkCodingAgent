@@ -261,7 +261,7 @@ where
             emit(
                 on_event,
                 AgentEvent::AssistantMessage {
-                    message: reply.clone(),
+                    message: Box::new(reply.clone()),
                     last_seq: consumption.last_seq,
                 },
             );
@@ -474,7 +474,7 @@ where
                 emit(
                     on_event,
                     AgentEvent::AssistantMessage {
-                        message: reply.clone(),
+                        message: Box::new(reply.clone()),
                         // 工具循环后的合成收口消息，无关联的流式 delta 序号。
                         last_seq: None,
                     },

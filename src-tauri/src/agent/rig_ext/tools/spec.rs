@@ -685,6 +685,52 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         60,
         ToolPolicyOptions::SERIAL,
     ),
+    // graph_result_read：宿主拦截的执行结果回读（结论 md 全文 + 修改文件
+    // 清单）。不声明 compress——LLM 压缩会把问题清单摘要掉，违背工具目的；
+    // 超长结论由拦截层确定性截断（CONCLUSION_MAX_CHARS）。
+    policy_row(
+        "graph_result_read",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+    ),
+    // graph_get / graph_node_{update,add,delete}：宿主拦截的读感知与 draft 图
+    // 节点级 CRUD，效果由协议处理器托管（同上 SUBSYSTEM_MANAGED 语义），
+    // 与报告工具同口径。
+    policy_row(
+        "graph_get",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+    ),
+    policy_row(
+        "graph_node_update",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+    ),
+    policy_row(
+        "graph_node_add",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+    ),
+    policy_row(
+        "graph_node_delete",
+        ToolCategory::Other,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+    ),
     // ── 架构画布 ──
     // architecture_run 的真实效应由前端画布解释器托管（同 SUBSYSTEM_MANAGED
     // 语义）；SERIAL 即 default_compress=false——执行报告里的 `chat-image://`

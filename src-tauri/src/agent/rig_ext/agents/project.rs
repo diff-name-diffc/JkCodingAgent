@@ -2,8 +2,9 @@
 //!
 //! 用固定只读能力探索项目，核心产物是执行图（DAG）——通过
 //! `submit_graph` 协议工具提交，经校验后落 `graph_plans` 并等待用户确认；
-//! 图执行由 `agent::graph::runner` 承担。模型可见工具仅四个入口
-//! （run_tool_program / message / submit_graph / graph_plan_report），
+//! 图执行由 `agent::graph::runner` 承担。模型可见工具为固定协议集合
+//! （run_tool_program / message / submit_graph / graph_plan_report /
+//! graph_result_read / graph_get / graph_node_{update,add,delete}），
 //! 只读数据面（read_file/list_dir/glob/grep）由 `run_tool_program` 的绑定调用。
 
 use std::path::PathBuf;
@@ -18,7 +19,9 @@ use tokio::sync::watch;
 
 use super::project_prompt::{build_iteration_system_prompt, build_static_prompt, log_warning};
 use super::project_tools::{
-    graph_plan_report_shell, message_shell, submit_graph_shell, ORCHESTRATOR_PROTOCOL_TOOL_NAMES,
+    graph_get_shell, graph_node_add_shell, graph_node_delete_shell, graph_node_update_shell,
+    graph_plan_report_shell, graph_result_read_shell, message_shell, submit_graph_shell,
+    ORCHESTRATOR_PROTOCOL_TOOL_NAMES,
 };
 use crate::agent::config::DispatcherAgentConfig;
 use crate::agent::db::{AgentContext, AhaSettingsV2, DispatcherDb, DispatcherMessageRecord};
@@ -132,7 +135,7 @@ impl RigOrchestratorAgent {
                 request.user_segments_json.clone(),
             )
             .await?;
-        crate::agent::common::emit(&on_event, AgentEvent::UserMessage { message: user });
+        crate::agent::common::emit(&on_event, AgentEvent::UserMessage { message: Box::new(user) });
 
         // 工作区边界校验（canonicalize + 受管项目成员校验）+ 建目录。
         let workspace = validate_project_workspace(db, request.project_path).await?;
@@ -309,6 +312,11 @@ impl RigOrchestratorAgent {
             message_shell(),
             submit_graph_shell(),
             graph_plan_report_shell(),
+            graph_result_read_shell(),
+            graph_get_shell(),
+            graph_node_update_shell(),
+            graph_node_add_shell(),
+            graph_node_delete_shell(),
         ];
         debug_assert_eq!(tools.len(), ORCHESTRATOR_PROTOCOL_TOOL_NAMES.len());
         (RigToolSurface::new(tools), sdk)
@@ -414,7 +422,8 @@ impl RigOrchestratorAgent {
     }
 }
 
-/// 编排器协议处理器：submit_graph / graph_plan_report / message 的宿主侧动作。
+/// 编排器协议处理器：submit_graph / graph_plan_report / graph_result_read /
+/// message / graph_get / graph_node_{update,add,delete} 的宿主侧动作。
 struct RigOrchestratorProtocol {
     db: DispatcherDb,
     workspace_id: String,
@@ -426,7 +435,17 @@ struct RigOrchestratorProtocol {
 #[async_trait::async_trait]
 impl ProtocolToolHandler for RigOrchestratorProtocol {
     fn handles(&self, name: &str) -> bool {
-        matches!(name, "submit_graph" | "graph_plan_report" | "message")
+        matches!(
+            name,
+            "submit_graph"
+                | "graph_plan_report"
+                | "graph_result_read"
+                | "message"
+                | "graph_get"
+                | "graph_node_update"
+                | "graph_node_add"
+                | "graph_node_delete"
+        )
     }
 
     async fn handle(&self, tool_name: &str, arguments: &Value) -> Option<RigProtocolResult> {
@@ -473,6 +492,94 @@ impl ProtocolToolHandler for RigOrchestratorProtocol {
                     Ok(text) => RigProtocolResult::text_feedback(text),
                     Err(error) => RigProtocolResult::retryable_error(format!(
                         "错误：读取执行图报告失败：{error:#}"
+                    )),
+                })
+            }
+            "graph_result_read" => {
+                let result = super::project_report::build_result_read(
+                    &self.db,
+                    &self.workspace_id,
+                    arguments,
+                )
+                .await;
+                Some(match result {
+                    Ok(text) => RigProtocolResult::text_feedback(text),
+                    Err(error) => RigProtocolResult::retryable_error(format!(
+                        "错误：读取执行结果失败：{error:#}"
+                    )),
+                })
+            }
+            "graph_get" => {
+                let text = super::project_graph_ops::build_graph_get(
+                    &self.db,
+                    &self.workspace_id,
+                    arguments,
+                )
+                .await;
+                Some(match text {
+                    Ok(text) => RigProtocolResult::text_feedback(text),
+                    Err(error) => RigProtocolResult::retryable_error(format!(
+                        "错误：读取执行图失败：{error:#}"
+                    )),
+                })
+            }
+            "graph_node_update" => {
+                let outcome = super::project_graph_ops::intercept_graph_node_update(
+                    &self.db,
+                    self.app_handle.as_ref(),
+                    &self.workspace_id,
+                    arguments,
+                )
+                .await;
+                Some(match outcome {
+                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Applied { text }) => {
+                        RigProtocolResult::text_feedback(text)
+                    }
+                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Rejected { error }) => {
+                        RigProtocolResult::retryable_error(error)
+                    }
+                    Err(error) => RigProtocolResult::retryable_error(format!(
+                        "错误：执行图节点更新失败：{error:#}"
+                    )),
+                })
+            }
+            "graph_node_add" => {
+                let outcome = super::project_graph_ops::intercept_graph_node_add(
+                    &self.db,
+                    self.app_handle.as_ref(),
+                    &self.workspace_id,
+                    arguments,
+                )
+                .await;
+                Some(match outcome {
+                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Applied { text }) => {
+                        RigProtocolResult::text_feedback(text)
+                    }
+                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Rejected { error }) => {
+                        RigProtocolResult::retryable_error(error)
+                    }
+                    Err(error) => RigProtocolResult::retryable_error(format!(
+                        "错误：执行图节点新增失败：{error:#}"
+                    )),
+                })
+            }
+            "graph_node_delete" => {
+                let outcome = super::project_graph_ops::intercept_graph_node_delete(
+                    &self.db,
+                    self.app_handle.as_ref(),
+                    &self.workspace_id,
+                    arguments,
+                )
+                .await;
+                Some(match outcome {
+                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Applied { text }) => {
+                        RigProtocolResult::text_feedback(text)
+                    }
+                    Ok(super::project_graph_ops::GraphNodeMutationOutcome::Rejected { error }) => {
+                        RigProtocolResult::retryable_error(error)
+                    }
+                    Err(error) => RigProtocolResult::retryable_error(format!(
+                        "错误：执行图节点删除失败：{error:#}"
                     )),
                 })
             }

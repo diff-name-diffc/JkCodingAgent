@@ -34,7 +34,7 @@ pub enum AgentEvent {
         workspace_id: String,
     },
     UserMessage {
-        message: DispatcherMessageRecord,
+        message: Box<DispatcherMessageRecord>,
     },
     AssistantStarted {
         message_id: String,
@@ -66,7 +66,7 @@ pub enum AgentEvent {
     /// `last_seq` 为该消息对应流式过程实际发出的最后一个 delta 序号；
     /// 无关联流式输出（如工具循环后的合成收口消息）时为 None。
     AssistantMessage {
-        message: DispatcherMessageRecord,
+        message: Box<DispatcherMessageRecord>,
         last_seq: Option<u64>,
     },
     RunUsageUpdated {
@@ -138,7 +138,7 @@ pub enum AgentEvent {
         name: String,
     },
     ToolRunUpdated {
-        run: DispatcherToolRunRecord,
+        run: Box<DispatcherToolRunRecord>,
     },
     /// 一轮运行成功收口。
     ///

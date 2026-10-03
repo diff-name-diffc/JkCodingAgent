@@ -2,14 +2,16 @@ import { memo, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Maximize2, Minimize2, Network, X } from "lucide-react";
+import { Network, X } from "lucide-react";
 import type { GraphPlanListItem, GraphPlanUpdatedPayload, GraphRunEventPayload } from "../../types";
 import { formatRelativeTime } from "../../utils";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
 import { EmptyState } from "../settings/EmptyState";
+import { resolveStatusMeta } from "../detail/status-meta";
 import { hydrateGraphPlan } from "./graph-store";
 import { PLAN_STATUS_META, resultKindBadgeLabel, resultKindMeta } from "./graph-utils";
+import { ExpandMainAreaButton } from "./ExpandMainAreaButton";
 import { useWorkspaceStore } from "../../stores/workspace-store";
 
 export interface GraphPlanListViewProps {
@@ -22,14 +24,6 @@ export interface GraphPlanListViewProps {
   onExpandMainArea?: () => void;
   mainAreaExpanded?: boolean;
 }
-
-/** 验收结论中文映射（GraphPlanListItem.latestRun.verdictStatus）。 */
-const VERDICT_LABEL: Record<string, string> = {
-  pass: "验收通过",
-  partial: "部分达成",
-  fail: "验收未通过",
-  unknown: "未能验收",
-};
 
 /** run 生命周期事件才影响列表行状态（节点增量不改变 plan 摘要）。 */
 const RUN_LIFECYCLE_EVENTS = new Set([
@@ -106,19 +100,7 @@ export function GraphPlanListView({
             <span className="ai-graph-panel-summary">本会话全部图计划（{plans?.length ?? 0}）</span>
           </div>
           {onExpandMainArea && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={mainAreaExpanded ? "还原双栏布局" : "扩大占满主区"}
-              title={mainAreaExpanded ? "还原双栏布局" : "扩大占满主区"}
-              onClick={onExpandMainArea}
-            >
-              {mainAreaExpanded ? (
-                <Minimize2 className="h-4 w-4" />
-              ) : (
-                <Maximize2 className="h-4 w-4" />
-              )}
-            </Button>
+            <ExpandMainAreaButton expanded={mainAreaExpanded} onClick={onExpandMainArea} />
           )}
           <Button variant="ghost" size="icon-sm" aria-label="关闭执行图标签" onClick={onClose}>
             <X className="h-4 w-4" />
@@ -153,7 +135,10 @@ const GraphPlanRow = memo(function GraphPlanRow({
   onOpen: (planId: string, view: "canvas" | "result") => void;
 }) {
   const statusMeta = PLAN_STATUS_META[item.status] ?? PLAN_STATUS_META.draft;
-  const verdict = item.latestRun ? VERDICT_LABEL[item.latestRun.verdictStatus] : null;
+  // 验收结论与详情态同源（detail/status-meta.ts 的 verdict 域），空串不展示。
+  const verdict = item.latestRun?.verdictStatus
+    ? resolveStatusMeta("verdict", item.latestRun.verdictStatus).label
+    : null;
   const resultBadge = item.latestRun
     ? resultKindBadgeLabel(item.latestRun.resultKind, item.latestRun.modifiedFileCount)
     : null;

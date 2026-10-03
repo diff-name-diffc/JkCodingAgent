@@ -43,7 +43,7 @@ pub use sessions::{
 };
 pub use settings::{AhaSettingsV2, DispatcherModelConfig};
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};
-pub use tool_runs::{DispatcherToolRunRecord, FinishToolRun, NewToolRun, ToolRunTraceContext};
+pub use tool_runs::{DispatcherToolRunRecord, NewToolRun, ToolRunTraceContext};
 pub(crate) use util::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS;
 use util::MAX_DIALOGUE_QUERY_LIMIT;
 

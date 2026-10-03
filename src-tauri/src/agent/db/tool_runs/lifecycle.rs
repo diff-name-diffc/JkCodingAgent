@@ -1,17 +1,19 @@
 //! 单条工具运行的生命周期状态机：planned → running → 终态。
 //!
-//! 状态单向推进：终态只能由第一个 finish 落定，重复/乱序调用幂等返回当前快照；
-//! 可选字段统一 COALESCE 保留语义，不被后续 finish 清空。
+//! 终态唯一由 `tool_completions::settle_tool_completion` 落定（首个完成事件
+//! wins，重复结算幂等返回同一事件）；本模块只保留登记（测试种子路径）与
+//! running 推进。历史上的独立 `finish_tool_run` 裸路径已随 loop 侧三段式
+//! 台账一并删除（P0-3 单写路径收敛）。
 
 use anyhow::{Context, Result};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-use super::{
-    is_terminal_run_status, load_tool_run_on_conn, DispatcherToolRunRecord, FinishToolRun,
-    NewToolRun, ToolRunTraceContext, TERMINAL_RUN_STATUSES,
-};
-use crate::agent::db::util::{duration_since_started_ms, now};
+#[cfg(test)]
+use rusqlite::TransactionBehavior;
+
+use super::{load_tool_run_on_conn, DispatcherToolRunRecord, NewToolRun, ToolRunTraceContext};
+use crate::agent::db::util::now;
 use crate::agent::db::DispatcherDb;
 
 impl DispatcherDb {
@@ -20,6 +22,7 @@ impl DispatcherDb {
         self.create_tool_run_with_trace(run, ToolRunTraceContext::default())
     }
 
+    #[cfg(test)]
     pub fn create_tool_run_with_trace(
         &self,
         run: NewToolRun,
@@ -48,84 +51,6 @@ impl DispatcherDb {
         )
         .context("mark dispatcher tool run started")?;
         self.load_tool_run(id)
-    }
-
-    pub fn finish_tool_run(
-        &self,
-        id: &str,
-        finish: FinishToolRun,
-    ) -> Result<DispatcherToolRunRecord> {
-        let mut conn = self.conn()?;
-        // IMMEDIATE：事务内先读状态再写入，避免延迟事务升级写锁时的 SQLITE_BUSY。
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .context("begin finish dispatcher tool run transaction")?;
-        let current: Option<(String, Option<String>)> = tx
-            .query_row(
-                "SELECT status, started_at FROM dispatcher_tool_runs WHERE id = ?1",
-                params![id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .context("load dispatcher tool run state before finish")?;
-        let Some((status, started_at)) = current else {
-            anyhow::bail!("dispatcher tool run not found: {id}");
-        };
-        if is_terminal_run_status(&status) {
-            // 状态守卫：终态只能由第一个 finish 落定，重复/乱序 finish 不得覆盖，
-            // 幂等返回当前快照。
-            tx.commit()
-                .context("commit finish dispatcher tool run no-op")?;
-            return load_tool_run_on_conn(&conn, id);
-        }
-
-        let finished_at = now();
-        // 时长在 Rust 侧计算（不再依赖 SQL julianday 解析文本时间戳）；
-        // started_at 缺失或无法解析时容错为 0。
-        let duration_ms = duration_since_started_ms(started_at.as_deref(), &finished_at);
-        // 可选字段统一 COALESCE 保留语义：未提供新值时保留既有值，
-        // 避免重复/乱序 finish 清空已落定的字段。
-        // 终态清单编译期拼入 SQL（词表常量，无注入面），与 is_terminal_run_status
-        // 同源，两份清单不会漂移。
-        let sql = format!(
-            "UPDATE dispatcher_tool_runs
-             SET status = ?1,
-                 result_mode = COALESCE(?2, result_mode),
-                 message_id = COALESCE(?3, message_id),
-                 error_kind = COALESCE(?4, error_kind),
-                 error_message = COALESCE(?5, error_message),
-                 finished_at = ?6,
-                 duration_ms = ?7,
-                 metadata_json = COALESCE(?8, metadata_json),
-                 updated_at = ?6
-             WHERE id = ?9
-               AND status NOT IN ('{}')",
-            TERMINAL_RUN_STATUSES.join("', '")
-        );
-        let changed = tx
-            .execute(
-                &sql,
-                params![
-                    &finish.status,
-                    &finish.result_mode,
-                    &finish.message_id,
-                    &finish.error_kind,
-                    &finish.error_message,
-                    &finished_at,
-                    duration_ms,
-                    &finish.metadata_json,
-                    id
-                ],
-            )
-            .context("finish dispatcher tool run")?;
-        if changed == 0 {
-            // 与状态守卫的双重保险：其他写者抢先推进到终态时，退化为只读返回。
-            tx.commit()
-                .context("commit finish dispatcher tool run no-op")?;
-            return load_tool_run_on_conn(&conn, id);
-        }
-        tx.commit().context("commit finish dispatcher tool run")?;
-        load_tool_run_on_conn(&conn, id)
     }
 
     pub fn load_tool_run(&self, id: &str) -> Result<DispatcherToolRunRecord> {

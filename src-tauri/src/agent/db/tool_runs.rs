@@ -115,16 +115,6 @@ impl Default for ToolRunTraceContext {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct FinishToolRun {
-    pub status: String,
-    pub result_mode: Option<String>,
-    pub message_id: Option<String>,
-    pub error_kind: Option<String>,
-    pub error_message: Option<String>,
-    pub metadata_json: Option<String>,
-}
-
 pub(super) fn load_tool_run_on_conn(
     conn: &Connection,
     id: &str,

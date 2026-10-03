@@ -2,8 +2,40 @@
 
 use uuid::Uuid;
 
-use super::{FinishToolRun, NewToolRun, ToolRunTraceContext, TOOL_RUN_ORIGIN_MODEL};
+use super::{NewToolRun, ToolRunTraceContext, DispatcherToolRunRecord, TOOL_RUN_ORIGIN_MODEL};
 use crate::agent::db::DispatcherDb;
+use crate::agent::db::tool_completions::CompletionDraft;
+use crate::agent::db::ToolArtifactDraft;
+
+/// 经生产登记路径种下一条带完整运行身份的工具台账记录。
+fn seed_registered_run(db: &DispatcherDb, workspace_id: &str) -> DispatcherToolRunRecord {
+    db.register_tool_task_batch(
+        vec![(new_run(workspace_id), Default::default())],
+        "run",
+        "scope",
+        1,
+        "anchor",
+    )
+    .expect("register tool run")
+    .into_iter()
+    .next()
+    .expect("registered run row")
+}
+
+fn draft(id: &str, status: &str) -> CompletionDraft {
+    CompletionDraft {
+        tool_run_id: id.into(),
+        status: status.into(),
+        error_kind: None,
+        fatal: false,
+        retryable: false,
+        display_content: "done".into(),
+        context_payload: "done".into(),
+        result_mode: "raw".into(),
+        usage_json: None,
+        artifact: ToolArtifactDraft::raw_tool_output("demo_tool", "done"),
+    }
+}
 
 fn test_db() -> DispatcherDb {
     let path = std::env::temp_dir().join(format!(
@@ -75,100 +107,45 @@ fn batch_registration_commits_all_runtime_identity_fields() {
     }
 }
 
-fn finish(status: &str) -> FinishToolRun {
-    FinishToolRun {
-        status: status.to_string(),
-        ..Default::default()
-    }
-}
-
 #[test]
-fn finish_advances_lifecycle_and_records_duration() {
+fn settlement_advances_lifecycle_and_records_duration() {
     let db = test_db();
-    let run = db.create_tool_run(new_run("ws")).expect("create run");
+    let run = seed_registered_run(&db, "ws");
     assert_eq!(run.status, "planned");
+    assert_eq!(run.phase.as_deref(), Some("queued"));
 
     let started = db.mark_tool_run_started(&run.id).expect("start run");
     assert_eq!(started.status, "running");
     assert!(started.started_at.is_some());
 
-    let finished = db
-        .finish_tool_run(&run.id, finish("succeeded"))
-        .expect("finish run");
+    db.settle_tool_completion(draft(&run.id, "succeeded"))
+        .expect("settle run");
+    let finished = db.load_tool_run(&run.id).expect("reload run");
     assert_eq!(finished.status, "succeeded");
     assert!(finished.finished_at.is_some());
     assert!(finished.started_at.is_some());
 }
 
 #[test]
-fn terminal_state_is_not_overwritten_by_second_finish() {
-    let db = test_db();
-    let run = db.create_tool_run(new_run("ws")).expect("create run");
-    db.mark_tool_run_started(&run.id).expect("start run");
-
-    let first = db
-        .finish_tool_run(
-            &run.id,
-            FinishToolRun {
-                status: "recoverable_error".to_string(),
-                error_kind: Some("retryable".to_string()),
-                error_message: Some("boom".to_string()),
-                ..Default::default()
-            },
-        )
-        .expect("first finish");
-    assert_eq!(first.status, "recoverable_error");
-    assert_eq!(first.error_message.as_deref(), Some("boom"));
-
-    // 重复/乱序 finish 不得把终态改回或清空错误信息。
-    let second = db
-        .finish_tool_run(
-            &run.id,
-            FinishToolRun {
-                status: "succeeded".to_string(),
-                error_kind: None,
-                error_message: None,
-                ..Default::default()
-            },
-        )
-        .expect("second finish is a no-op");
-    assert_eq!(second.status, "recoverable_error", "终态不得被覆盖");
-    assert_eq!(
-        second.error_message.as_deref(),
-        Some("boom"),
-        "错误信息不得被清空"
-    );
-}
-
-#[test]
 fn started_does_not_regress_terminal_state() {
     let db = test_db();
-    let run = db.create_tool_run(new_run("ws")).expect("create run");
+    let run = seed_registered_run(&db, "ws");
     db.mark_tool_run_started(&run.id).expect("start run");
-    db.finish_tool_run(&run.id, finish("succeeded"))
-        .expect("finish run");
+    db.settle_tool_completion(draft(&run.id, "succeeded"))
+        .expect("settle run");
 
     let regressed = db.mark_tool_run_started(&run.id).expect("re-start no-op");
     assert_eq!(regressed.status, "succeeded", "终态不得回退到 running");
 }
 
 #[test]
-fn finish_missing_run_errors() {
-    let db = test_db();
-    let error = db
-        .finish_tool_run("no-such-run", finish("succeeded"))
-        .expect_err("missing run must fail");
-    assert!(error.to_string().contains("not found"));
-}
-
-#[test]
 fn duration_is_nonnegative_even_with_missing_started_at() {
-    // 直接 finish 一个 planned（未 started）的 run，时长应容错为 0 而非 NULL。
+    // 直接结算一个 planned（未 started）的 run，时长应容错为 0 而非 NULL。
     let db = test_db();
-    let run = db.create_tool_run(new_run("ws")).expect("create run");
-    let finished = db
-        .finish_tool_run(&run.id, finish("cancelled"))
-        .expect("finish planned run");
+    let run = seed_registered_run(&db, "ws");
+    db.settle_tool_completion(draft(&run.id, "cancelled"))
+        .expect("settle planned run");
+    let finished = db.load_tool_run(&run.id).expect("reload run");
     assert_eq!(finished.duration_ms, 0);
     assert!(finished.started_at.is_none());
 }
@@ -311,16 +288,15 @@ fn traced_run_rejects_cross_workspace_parent_and_duplicate_sequence() {
 fn failed_and_internal_error_are_terminal() {
     let db = test_db();
     for status in ["failed", "internal_error"] {
-        let run = db.create_tool_run(new_run("ws")).expect("create run");
+        let run = seed_registered_run(&db, "ws");
         db.mark_tool_run_started(&run.id).expect("start run");
-        let terminal = db
-            .finish_tool_run(&run.id, finish(status))
-            .expect("finish run");
-        assert_eq!(terminal.status, status);
+        db.settle_tool_completion(draft(&run.id, status))
+            .expect("settle run");
+        assert_eq!(db.load_tool_run(&run.id).unwrap().status, status);
 
-        let unchanged = db
-            .finish_tool_run(&run.id, finish("succeeded"))
-            .expect("second finish is no-op");
-        assert_eq!(unchanged.status, status);
+        // 终态后再结算同一运行：幂等返回首个事件，状态不被改写。
+        db.settle_tool_completion(draft(&run.id, "succeeded"))
+            .expect("repeat settle is a no-op");
+        assert_eq!(db.load_tool_run(&run.id).unwrap().status, status);
     }
 }

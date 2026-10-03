@@ -4,10 +4,9 @@
 //! 外层结果落库后在同一事务中统一补挂整棵树，保证按消息截断时不遗留孤儿记录。
 
 use anyhow::{Context, Result};
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension};
 
 use super::{map_tool_run, DispatcherToolRunRecord, TOOL_RUN_SELECT_COLUMNS};
-use crate::agent::db::util::now;
 use crate::agent::db::DispatcherDb;
 
 impl DispatcherDb {
@@ -28,79 +27,6 @@ impl DispatcherDb {
             );
         }
         Ok(tasks)
-    }
-
-    /// 将外层 LLM tool 结果消息绑定到整棵内部调用树及其产物。
-    pub fn attach_tool_run_tree_message(
-        &self,
-        root_run_id: &str,
-        message_id: &str,
-    ) -> Result<Vec<DispatcherToolRunRecord>> {
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .context("begin attach dispatcher tool run tree message transaction")?;
-        let workspace_id = tx
-            .query_row(
-                "SELECT workspace_id FROM dispatcher_tool_runs WHERE id = ?1",
-                params![root_run_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .context("load dispatcher tool run root before message attach")?
-            .with_context(|| format!("dispatcher tool run root not found: {root_run_id}"))?;
-        let message_workspace_id = tx
-            .query_row(
-                "SELECT workspace_id FROM dispatcher_messages WHERE id = ?1",
-                params![message_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .context("load dispatcher message before tool run attach")?
-            .with_context(|| format!("dispatcher message not found: {message_id}"))?;
-        if message_workspace_id != workspace_id {
-            anyhow::bail!(
-                "dispatcher message {message_id} belongs to workspace {message_workspace_id}, not {workspace_id}"
-            );
-        }
-
-        let timestamp = now();
-        tx.execute(
-            "WITH RECURSIVE tool_run_tree(id) AS (
-                 SELECT id FROM dispatcher_tool_runs
-                 WHERE id = ?1 AND workspace_id = ?2
-                 UNION ALL
-                 SELECT child.id
-                 FROM dispatcher_tool_runs child
-                 INNER JOIN tool_run_tree tree ON child.parent_run_id = tree.id
-                 WHERE child.workspace_id = ?2
-             )
-             UPDATE dispatcher_tool_runs
-             SET message_id = ?3, updated_at = ?4
-             WHERE id IN (SELECT id FROM tool_run_tree)",
-            params![root_run_id, &workspace_id, message_id, &timestamp],
-        )
-        .context("attach dispatcher tool run tree message")?;
-        tx.execute(
-            "WITH RECURSIVE tool_run_tree(id) AS (
-                 SELECT id FROM dispatcher_tool_runs
-                 WHERE id = ?1 AND workspace_id = ?2
-                 UNION ALL
-                 SELECT child.id
-                 FROM dispatcher_tool_runs child
-                 INNER JOIN tool_run_tree tree ON child.parent_run_id = tree.id
-                 WHERE child.workspace_id = ?2
-             )
-             UPDATE dispatcher_tool_artifacts
-             SET message_id = ?3
-             WHERE workspace_id = ?2
-               AND tool_run_id IN (SELECT id FROM tool_run_tree)",
-            params![root_run_id, &workspace_id, message_id],
-        )
-        .context("attach dispatcher tool run tree artifacts to message")?;
-        tx.commit()
-            .context("commit attach dispatcher tool run tree message transaction")?;
-        self.list_tool_run_tree(&workspace_id, root_run_id)
     }
 
     /// 按外层模型工具调用定位完整运行树。`root_run_id` 可用于实时卡片精确命中；

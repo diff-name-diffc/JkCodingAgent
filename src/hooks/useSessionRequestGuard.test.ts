@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRequestGuard } from "./request-guard";
+import { createRequestGuard } from "./useSessionRequestGuard";
 
 describe("createRequestGuard", () => {
   it("begin 返回自增代号（从 2 起——1 为初始代号，0 为未领取哨兵）", () => {

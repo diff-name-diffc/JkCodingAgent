@@ -40,9 +40,6 @@ export interface PromptInputProps {
   editing?: boolean;
   onCancelEdit?: () => void;
   className?: string;
-  /** Slot for extra trailing controls (attachment, voice, shortcuts). */
-  leadingSlot?: React.ReactNode;
-  trailingSlot?: React.ReactNode;
 }
 
 const LINE_HEIGHT = 24;
@@ -93,8 +90,6 @@ export function PromptInput({
   editing = false,
   onCancelEdit,
   className,
-  leadingSlot,
-  trailingSlot,
 }: PromptInputProps) {
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -210,7 +205,6 @@ export function PromptInput({
             </TooltipTrigger>
             <TooltipContent>添加图片（也可直接粘贴截图）</TooltipContent>
           </Tooltip>
-          {leadingSlot}
           {models && onSelectModel && (
             <ModelSelector
               models={models}
@@ -222,7 +216,6 @@ export function PromptInput({
             />
           )}
           <div className="flex-1" />
-          {trailingSlot}
 
           {mode === "stop" ? (
             <Tooltip>

@@ -2,7 +2,7 @@ import type { ThemePreference } from "../lib/theme";
 
 // ── Content Segments ─────────────────────────────────────────────────────────
 
-export type ContentSegmentType = "text" | "image" | "file";
+export type ContentSegmentType = "text" | "image";
 
 export interface ContentSegment {
   id: string;
@@ -27,16 +27,7 @@ export interface ImageSegment extends ContentSegment {
   generationPrompt?: string;
 }
 
-export interface FileSegment extends ContentSegment {
-  type: "file";
-  fileId: string;
-  path: string;
-  fileName: string;
-  mimeType: string;
-  size: number;
-}
-
-export type AnyContentSegment = TextSegment | ImageSegment | FileSegment;
+export type AnyContentSegment = TextSegment | ImageSegment;
 
 // ── Dispatcher Agent ─────────────────────────────────────────────────────────
 

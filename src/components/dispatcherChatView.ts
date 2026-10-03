@@ -11,7 +11,7 @@ import {
   getToolErrorText,
   prettyPrintToolPayload,
   upsertToolActivity,
-} from "./dispatcher-chat/live-tool-activity";
+} from "./dispatcher-chat/tool-activity";
 import {
   pushAssistantSegment,
   shouldRenderToolSummaryInline,

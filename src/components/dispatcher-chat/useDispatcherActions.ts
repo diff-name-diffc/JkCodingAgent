@@ -7,10 +7,11 @@ import {
   getDispatcherActiveRunId,
   nextDispatcherActiveRunId,
   notifyDispatcherMessages,
+  reconcileSessionMessages,
 } from "../dispatcherSessionStore";
 import type { LiveSessionUpdater } from "./useLiveSessionState";
 import { buildOptimisticUserMessage, toErrorMessage } from "./dispatcherChatUtils";
-import { createDispatcherEventChannel, reconcileSessionMessages } from "./event-channel";
+import { createDispatcherEventChannel } from "./event-channel";
 
 export interface UseDispatcherActionsOptions {
   sessionId: string;

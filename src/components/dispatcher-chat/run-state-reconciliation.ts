@@ -18,10 +18,10 @@ import {
   getDispatcherActiveRunId,
   getDispatcherLiveSessionState,
   notifyDispatcherLiveSessionSubscribers,
+  reconcileSessionMessages,
   setDispatcherLiveSessionState,
   type DispatcherLiveSessionState,
 } from "../dispatcherSessionStore";
-import { reconcileSessionMessages } from "./event-channel";
 
 const DETACHED_RUN_POLL_INTERVAL_MS = 2000;
 

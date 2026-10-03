@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useMemo } from "react";
+import { memo, useMemo } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -7,8 +7,6 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
-import type { PythonCodeRunRecord } from "../../types";
-import { stableHash } from "../../lib/stable-hash";
 import { normalizeMarkdownMath } from "../../lib/normalize-math";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { MarkdownImage } from "./MarkdownImage";
@@ -18,70 +16,24 @@ import { useDeferredContent } from "./use-deferred-content";
 
 /**
  * 遗留 react-markdown 管线的实现（文件查看器 / 子智能体结果 / Python 运行
- * 记录）。经 ./MarkdownRenderer.tsx 的 lazy 外壳按需加载，不要新增对
- * 本文件的静态 import。
+ * 记录 / 图节点输出）。经 ./MarkdownRenderer.tsx 的 lazy 外壳按需加载，
+ * 不要新增对本文件的静态 import。
+ *
+ * 这些表面只渲染终态 markdown，不接 Python 运行按钮与流式参数——那是
+ * 聊天 streamdown 管线（components/chat/markdown-renderer.tsx）的能力。
  */
 
 export interface MarkdownRendererProps {
   content: string;
   variant?: "chat" | "document";
-  streaming?: boolean;
-  messageId?: string;
-  onRunPython?: (target: {
-    messageId: string;
-    codeBlockIndex: number;
-    code: string;
-    codeHash: string;
-  }) => void;
-  pythonRunRecords?: Record<string, PythonCodeRunRecord>;
-}
-
-const StreamingContext = createContext(false);
-
-/** Reads streaming flag from context and passes to MarkdownCodeBlock */
-function StreamingCodeBlock({
-  code,
-  language,
-  messageId,
-  codeBlockIndex,
-  codeHash,
-  onRunPython,
-  runRecord,
-}: {
-  code: string;
-  language?: string | null;
-  messageId?: string;
-  codeBlockIndex?: number;
-  codeHash: string;
-  onRunPython?: (target: { messageId: string; codeBlockIndex: number; code: string; codeHash: string }) => void;
-  runRecord?: PythonCodeRunRecord | null;
-}) {
-  const streaming = useContext(StreamingContext);
-  return (
-    <MarkdownCodeBlock
-      code={code}
-      language={language}
-      messageId={messageId}
-      codeBlockIndex={codeBlockIndex}
-      codeHash={codeHash}
-      onRunPython={onRunPython}
-      runRecord={runRecord}
-      compact
-      streaming={streaming}
-    />
-  );
 }
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   variant = "chat",
-  streaming = false,
-  messageId,
-  onRunPython,
-  pythonRunRecords,
 }: MarkdownRendererProps) {
-  // 流式节流 + 大文本首帧降级（与聊天 streamdown 管线共用同一 hook）。
-  const { effectiveContent, deferred } = useDeferredContent(content, streaming);
+  // 大文本首帧降级（与聊天 streamdown 管线共用同一 hook）。
+  const { effectiveContent, deferred } = useDeferredContent(content, false);
   const normalizedContent = useMemo(
     () => (deferred ? effectiveContent : normalizeMarkdownMath(effectiveContent)),
     [effectiveContent, deferred],
@@ -97,7 +49,6 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     );
   }
 
-  let codeBlockIndex = 0;
   const markdownComponents: Components = {
     code({ className, children }) {
       const rawCode = String(children).replace(/\n$/, "");
@@ -108,23 +59,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         return <code className="markdown-inline-code">{rawCode}</code>;
       }
 
-      const currentIndex = codeBlockIndex;
-      codeBlockIndex += 1;
-      const hash = stableHash(rawCode);
-      const record = messageId && pythonRunRecords
-        ? pythonRunRecords[`${messageId}:${hash}`] ?? null
-        : null;
-      return (
-        <StreamingCodeBlock
-          code={rawCode}
-          language={language}
-          messageId={messageId}
-          codeBlockIndex={currentIndex}
-          codeHash={hash}
-          onRunPython={onRunPython}
-          runRecord={record}
-        />
-      );
+      return <MarkdownCodeBlock code={rawCode} language={language} compact />;
     },
     pre({ children }) {
       return <>{children}</>;
@@ -150,7 +85,6 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 
   return (
     <div className={`markdown-surface markdown-surface--${variant}`}>
-      <StreamingContext.Provider value={streaming}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeRaw, [rehypeSanitize, chatSafeSchema], rehypeKatex]}
@@ -159,7 +93,6 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       >
         {normalizedContent}
       </ReactMarkdown>
-      </StreamingContext.Provider>
     </div>
   );
 });

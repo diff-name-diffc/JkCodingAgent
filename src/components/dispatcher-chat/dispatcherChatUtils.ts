@@ -151,7 +151,7 @@ function parseSegmentsJson(raw: string | undefined): AnyContentSegment[] {
 function isContentSegment(segment: unknown): segment is AnyContentSegment {
   if (!segment || typeof segment !== "object") return false;
   const type = (segment as { type?: unknown }).type;
-  return type === "text" || type === "image" || type === "file";
+  return type === "text" || type === "image";
 }
 
 function textFromSegments(segments: AnyContentSegment[]): string {

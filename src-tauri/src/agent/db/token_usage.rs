@@ -149,12 +149,15 @@ impl DispatcherDb {
         let wid = workspace_id.to_string();
         let model = model.to_string();
         let usage = usage.clone();
-        self.blocking(
-            "upsert_session_token_usage spawn_blocking",
-            move |db| {
-                db.upsert_session_token_usage(&wid, &model, source_kind, &usage, context_window_capacity)
-            },
-        )
+        self.blocking("upsert_session_token_usage spawn_blocking", move |db| {
+            db.upsert_session_token_usage(
+                &wid,
+                &model,
+                source_kind,
+                &usage,
+                context_window_capacity,
+            )
+        })
         .await
     }
 }

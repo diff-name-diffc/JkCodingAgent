@@ -414,9 +414,7 @@ fn parse_review_model_config_json(raw: &str) -> DispatcherModelConfig {
 impl AhaSettingsV2 {
     /// 全部用途槽位（不含 review）的可变引用：规范化与库回填按槽位统一处理，
     /// 不再逐槽位手写展开。
-    fn model_config_slots_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut Vec<DispatcherModelConfig>> {
+    fn model_config_slots_mut(&mut self) -> impl Iterator<Item = &mut Vec<DispatcherModelConfig>> {
         let AhaSettingsV2 {
             shared,
             project,
@@ -497,9 +495,7 @@ impl AhaSettingsV2 {
 /// 与旧 get_settings_v2 的列语义逐字段一致）。按列名容错读取：v3 前无
 /// theme、v10 前无 verifier 的更旧库按默认值兜底，不依赖「沿链到达本块时
 /// 必为 20 列」的前提。仅供 `migrate_v11_to_v12` 使用。
-pub(crate) fn legacy_settings_from_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<AhaSettingsV2> {
+pub(crate) fn legacy_settings_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AhaSettingsV2> {
     fn text(row: &rusqlite::Row<'_>, name: &str) -> Option<String> {
         let index = row.as_ref().column_index(name).ok()?;
         row.get::<_, Option<String>>(index).ok().flatten()
@@ -622,8 +618,7 @@ impl DispatcherDb {
 
     pub fn save_settings_v2(&self, settings: &AhaSettingsV2) -> Result<AhaSettingsV2> {
         let stored = settings.normalized_stored();
-        let json =
-            serde_json::to_string(&stored).context("serialize dispatcher settings json")?;
+        let json = serde_json::to_string(&stored).context("serialize dispatcher settings json")?;
         self.conn()?
             .execute(
                 "INSERT INTO dispatcher_settings (id, settings_json)

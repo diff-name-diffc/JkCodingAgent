@@ -98,7 +98,8 @@ impl RopeSession {
             char_count: self.rope.len_chars() as u64,
             byte_len: self.rope.len_bytes() as u64,
         }
-    }}
+    }
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

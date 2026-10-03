@@ -833,12 +833,13 @@ impl DispatcherDb {
             ("dispatcher_tool_runs", "action_kind"),
             ("graph_node_runs", "special_tools_json"),
         ] {
-            let column_exists: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
-                params![table, column],
-                |row| row.get(0),
-            )
-            .with_context(|| format!("inspect {table}.{column} before drop"))?;
+            let column_exists: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                    params![table, column],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("inspect {table}.{column} before drop"))?;
             if column_exists > 0 {
                 tx.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column};"))
                     .with_context(|| format!("drop dead column {table}.{column}"))?;
@@ -1270,8 +1271,7 @@ pub(super) fn default_chat_category_agent_config_tx(
     let allowed_tools_json = raw
         .and_then(|json| serde_json::from_str::<super::settings::AhaSettingsV2>(&json).ok())
         .map(|settings| {
-            serde_json::to_string(&settings.chat.allowed_tools)
-                .unwrap_or_else(|_| "[]".to_string())
+            serde_json::to_string(&settings.chat.allowed_tools).unwrap_or_else(|_| "[]".to_string())
         })
         .unwrap_or_else(|| "[]".to_string());
     if let Some(default) = scenario_chat_category_agent_config(category_id) {
@@ -2192,9 +2192,9 @@ mod tests {
         let db = DispatcherDb::new(path.clone()).unwrap();
         {
             let conn = db.conn().unwrap();
-            let version: i32 =
-                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
-                    .unwrap();
+            let version: i32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
             assert_eq!(version, super::SCHEMA_VERSION);
 
             // 两张读模型子表删除；统一表 = 双写行 + 子表孤儿回填。
@@ -2743,7 +2743,8 @@ mod tests {
         let tx = conn.transaction().unwrap();
         super::runtime::extend_schema(&tx).unwrap();
         tx.commit().unwrap();
-        conn.execute_batch("DROP TABLE dispatcher_settings;").unwrap();
+        conn.execute_batch("DROP TABLE dispatcher_settings;")
+            .unwrap();
         conn.execute_batch(LEGACY_SETTINGS_DDL_V9).unwrap();
         conn.execute_batch(
             "INSERT INTO dispatcher_settings (id, project_summary_model_configs_json)

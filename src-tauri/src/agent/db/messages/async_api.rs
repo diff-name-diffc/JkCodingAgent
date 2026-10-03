@@ -124,10 +124,9 @@ impl DispatcherDb {
         let role = role.to_string();
         let content = content.to_string();
         let usage_stats = usage_stats.clone();
-        self.blocking(
-            "add_visible_message_with_usage spawn_blocking",
-            move |db| db.add_visible_message_with_usage(&wid, &role, &content, &usage_stats),
-        )
+        self.blocking("add_visible_message_with_usage spawn_blocking", move |db| {
+            db.add_visible_message_with_usage(&wid, &role, &content, &usage_stats)
+        })
         .await
     }
 

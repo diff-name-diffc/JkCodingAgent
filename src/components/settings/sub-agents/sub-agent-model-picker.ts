@@ -6,7 +6,7 @@ import type {
 import {
   categoryDef,
   entriesForCategory,
-} from "../../settings/providers/model-library";
+} from "../providers/model-library";
 
 /**
  * 子智能体「自定义配置」模型选择器的纯函数层。

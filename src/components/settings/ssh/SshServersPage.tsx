@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download, Plus, RefreshCw, RotateCcw, Server } from "lucide-react";
 import type { SshServerConfig } from "../../../types";
-import { SshAuditRecordList } from "../../app-settings/aha/SshAuditRecordList";
+import { SshAuditRecordList } from "./SshAuditRecordList";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { EmptyState } from "../EmptyState";
 import { FieldLabel } from "../FieldLabel";

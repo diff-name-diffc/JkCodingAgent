@@ -25,7 +25,7 @@ import { ProvidersPage } from "./settings/providers/ProvidersPage";
 import { PurposesPage } from "./settings/providers/PurposesPage";
 import { SshServersPage } from "./settings/ssh/SshServersPage";
 import { McpServersPage } from "./settings/mcp/McpServersPage";
-import { RagKbConfigPanel } from "./app-settings/rag/RagKbConfigPanel";
+import { RagKbConfigPanel } from "./settings/rag/RagKbConfigPanel";
 import type { ModelCategory } from "../types";
 
 export type SettingsNavKey =

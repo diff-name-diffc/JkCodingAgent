@@ -10,7 +10,7 @@ import { TestButton } from "../TestButton";
 import { toast } from "../../Toast";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { isImeComposing } from "../../../lib/keyboard-bindings";
-import { parseBoundedNumberInput } from "../../app-settings/rag/rag-config";
+import { parseBoundedNumberInput } from "../rag/rag-config";
 import type { ModelLibraryEntry } from "../../../types";
 import {
   entryLabel,

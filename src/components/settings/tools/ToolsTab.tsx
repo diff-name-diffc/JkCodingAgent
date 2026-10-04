@@ -46,10 +46,7 @@ export function ToolsTab({
 
   // 搜索输入防抖，避免每次击键都重算过滤。
   useEffect(() => {
-    const timer = setTimeout(
-      () => setQuery(searchInput.trim().toLowerCase()),
-      SEARCH_DEBOUNCE_MS,
-    );
+    const timer = setTimeout(() => setQuery(searchInput.trim().toLowerCase()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [searchInput]);
 
@@ -109,9 +106,7 @@ export function ToolsTab({
     (name: string, description: string) => {
       if (selectedOnly && !selectedSet.has(name)) return false;
       if (!query) return true;
-      return (
-        name.toLowerCase().includes(query) || description.toLowerCase().includes(query)
-      );
+      return name.toLowerCase().includes(query) || description.toLowerCase().includes(query);
     },
     [query, selectedOnly, selectedSet],
   );
@@ -155,9 +150,7 @@ export function ToolsTab({
     return mcpStatus.servers
       .map((server) => ({
         server,
-        tools: server.tools.filter((tool) =>
-          matchesFilters(tool.exposedName, tool.description),
-        ),
+        tools: server.tools.filter((tool) => matchesFilters(tool.exposedName, tool.description)),
       }))
       .filter((group) => group.tools.length > 0);
   }, [isChat, mcpStatus, matchesFilters]);
@@ -286,9 +279,7 @@ export function ToolsTab({
               {mcpGroups.length === 0 ? (
                 !loadingMcp &&
                 !mcpError &&
-                mcpToolTotal > 0 && (
-                  <span className="ai-aha-hint">没有匹配的 MCP 工具</span>
-                )
+                mcpToolTotal > 0 && <span className="ai-aha-hint">没有匹配的 MCP 工具</span>
               ) : (
                 <div className="ai-aha-tool-list">
                   {mcpGroups.map(({ server, tools }) => (

@@ -28,7 +28,9 @@ export function HomeChatPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("providers");
   // 「配置模型」深链携带的目标分类（UI-25 遗留）；null 走 ProvidersPage 缺省。
-  const [settingsInitialCategory, setSettingsInitialCategory] = useState<ModelCategory | null>(null);
+  const [settingsInitialCategory, setSettingsInitialCategory] = useState<ModelCategory | null>(
+    null,
+  );
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   // 全局 MCP 状态快照：所有聊天会话共享；聊天界面实际只展示当前会话
   // 所属分类显式配置的子集（见下方 chatMcpStatus 派生）。

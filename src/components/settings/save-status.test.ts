@@ -14,10 +14,9 @@ describe("aggregateSaveStatuses", () => {
 
   it("loading（全局管线加载中）门控一切", () => {
     expect(
-      aggregateSaveStatuses(
-        { loading: true, dirty: true, hasError: true },
-        [{ ...autoIdle, hasError: true }],
-      ),
+      aggregateSaveStatuses({ loading: true, dirty: true, hasError: true }, [
+        { ...autoIdle, hasError: true },
+      ]),
     ).toBe("loading");
   });
 
@@ -37,14 +36,18 @@ describe("aggregateSaveStatuses", () => {
   it("auto 源 dirty 或任一源保存进行中即 saving", () => {
     expect(aggregateSaveStatuses(idle, [{ ...autoIdle, dirty: true }])).toBe("saving");
     expect(
-      aggregateSaveStatuses(idle, [{ mode: "manual" as const, dirty: true, saving: true, hasError: false }]),
+      aggregateSaveStatuses(idle, [
+        { mode: "manual" as const, dirty: true, saving: true, hasError: false },
+      ]),
     ).toBe("saving");
     expect(aggregateSaveStatuses({ ...idle, dirty: true }, [autoIdle])).toBe("saving");
   });
 
   it("manual 源 dirty 显示 unsaved，不谎报保存中", () => {
     expect(
-      aggregateSaveStatuses(idle, [{ mode: "manual" as const, dirty: true, saving: false, hasError: false }]),
+      aggregateSaveStatuses(idle, [
+        { mode: "manual" as const, dirty: true, saving: false, hasError: false },
+      ]),
     ).toBe("unsaved");
   });
 

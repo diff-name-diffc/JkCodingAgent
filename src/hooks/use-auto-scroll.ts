@@ -72,8 +72,7 @@ export function useAutoScroll(sessionId: string | null): AutoScrollApi {
         setFollowing(false);
         return;
       }
-      const distanceFromBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
       if (distanceFromBottom <= BOTTOM_THRESHOLD_PX && !pinnedRef.current) {
         setFollowing(true);
       }

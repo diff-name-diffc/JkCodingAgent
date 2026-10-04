@@ -33,9 +33,7 @@ describe("formatCanvasSnapshot", () => {
 
   it("marks shapes outside the viewport", () => {
     const snapshot = formatCanvasSnapshot(
-      makeInput([
-        { id: "shape:far", type: "note", bounds: { x: 5000, y: 5000, w: 200, h: 80 } },
-      ]),
+      makeInput([{ id: "shape:far", type: "note", bounds: { x: 5000, y: 5000, w: 200, h: 80 } }]),
     );
     expect(snapshot).toContain("（视口外）");
   });
@@ -107,9 +105,7 @@ describe("formatCanvasSnapshot", () => {
 
     // arrowEnds 缺省（两端皆未连接的自由箭头）：退回位置尺寸表示。
     const free = formatCanvasSnapshot(
-      makeInput([
-        { id: "shape:arr3", type: "arrow", bounds: { x: 5, y: 6, w: 70, h: 8 } },
-      ]),
+      makeInput([{ id: "shape:arr3", type: "arrow", bounds: { x: 5, y: 6, w: 70, h: 8 } }]),
     );
     expect(free).toContain("[shape:arr3] arrow x=5 y=6 w=70 h=8");
   });
@@ -134,9 +130,7 @@ describe("formatCanvasSnapshot", () => {
 
   it("includes user selection in the header", () => {
     const snapshot = formatCanvasSnapshot({
-      ...makeInput([
-        { id: "shape:a", type: "geo", bounds: { x: 0, y: 0, w: 10, h: 10 } },
-      ]),
+      ...makeInput([{ id: "shape:a", type: "geo", bounds: { x: 0, y: 0, w: 10, h: 10 } }]),
       selectedIds: ["shape:a"],
     });
     expect(snapshot.split("\n")[0]).toContain("选中: shape:a（用户当前选中）");

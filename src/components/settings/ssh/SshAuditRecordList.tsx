@@ -46,11 +46,7 @@ function SshAuditRecordItem({
     <div className="ai-ssh-audit-record">
       <button type="button" className="ai-ssh-audit-header" onClick={onToggle}>
         <div className="ai-ssh-audit-title-wrap">
-          {expanded ? (
-            <ChevronDown size={13} />
-          ) : (
-            <ChevronRight size={13} />
-          )}
+          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <span className="ai-ssh-audit-server">{record.serverId}</span>
           <span className="ai-ssh-audit-session">{record.sessionId}</span>
           <ReviewBadge record={record} />

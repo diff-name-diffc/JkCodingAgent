@@ -53,7 +53,12 @@ export function McpServersPage() {
     }
   }, []);
 
-  const { scheduleSave, flush, cancelPending, error: saveError } = useAutoSaveSource({
+  const {
+    scheduleSave,
+    flush,
+    cancelPending,
+    error: saveError,
+  } = useAutoSaveSource({
     id: "mcp-servers",
     read: () => entries,
     save: async (next) => {
@@ -215,7 +220,9 @@ export function McpServersPage() {
                 className="ai-settings-textarea ai-set-json-editor font-mono"
                 value={jsonText}
                 spellCheck={false}
-                placeholder={'{\n  "mcpServers": {\n    "my-server": {\n      "transport": "stdio",\n      "command": "npx",\n      "args": ["-y", "some-mcp-server"]\n    }\n  }\n}'}
+                placeholder={
+                  '{\n  "mcpServers": {\n    "my-server": {\n      "transport": "stdio",\n      "command": "npx",\n      "args": ["-y", "some-mcp-server"]\n    }\n  }\n}'
+                }
                 onChange={(event) => handleJsonChange(event.target.value)}
                 onKeyDown={handleJsonKeyDown}
               />
@@ -223,7 +230,8 @@ export function McpServersPage() {
                 <p className="ai-set-field-error">{jsonError}</p>
               ) : (
                 <p className="ai-settings-hint">
-                  形状与项目级 .jkcodingagent/mcp.json 相同；JSON 有效时自动保存，无效时不会保存（上一份有效配置仍然生效）。
+                  形状与项目级 .jkcodingagent/mcp.json 相同；JSON
+                  有效时自动保存，无效时不会保存（上一份有效配置仍然生效）。
                 </p>
               )}
             </div>

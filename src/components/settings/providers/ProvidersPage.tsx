@@ -24,9 +24,7 @@ import { ModelEntryCard } from "./ModelEntryCard";
  */
 export function ProvidersPage({ initialCategory }: { initialCategory?: ModelCategory }) {
   const store = useAhaSettings();
-  const [activeCategory, setActiveCategory] = useState<ModelCategory>(
-    initialCategory ?? "text",
-  );
+  const [activeCategory, setActiveCategory] = useState<ModelCategory>(initialCategory ?? "text");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // prefs（最近测试结果）存于 localStorage，非 React 状态；prefsVersion 作为版本号触发重读。
   const [prefsVersion, setPrefsVersion] = useState(0);

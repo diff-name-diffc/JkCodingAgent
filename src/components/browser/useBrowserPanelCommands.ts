@@ -59,13 +59,16 @@ export function useBrowserPanelCommands({
 
   const startBrowser = useCallback(async () => {
     if (!sessionId) return;
-    await runBrowserAction(async () => {
-      const next = await invoke<BrowserStatus>("browser_start", {
-        sessionId,
-        projectPath: projectPath || null,
-      });
-      setStatus(next);
-    }, { refresh: false });
+    await runBrowserAction(
+      async () => {
+        const next = await invoke<BrowserStatus>("browser_start", {
+          sessionId,
+          projectPath: projectPath || null,
+        });
+        setStatus(next);
+      },
+      { refresh: false },
+    );
   }, [projectPath, runBrowserAction, sessionId, setStatus]);
 
   const stopBrowser = useCallback(async () => {
@@ -135,10 +138,7 @@ export function useBrowserPanelCommands({
       if (candidates.length > 0) {
         const visibleCandidates = candidates
           .slice(0, 6)
-          .map(
-            (candidate, index) =>
-              `${index + 1}. ${candidate.profileName}: ${candidate.path}`,
-          );
+          .map((candidate, index) => `${index + 1}. ${candidate.profileName}: ${candidate.path}`);
         const hiddenCount = candidates.length - visibleCandidates.length;
         scanMessage = [
           "",
@@ -175,19 +175,22 @@ export function useBrowserPanelCommands({
     });
     if (!selected || Array.isArray(selected)) return;
 
-    await runBrowserAction(async () => {
-      const result = await invoke<BrowserProfileImportResult>("browser_import_chrome_profile", {
-        sessionId,
-        projectPath: projectPath || null,
-        chromeProfilePath: selected,
-      });
-      appendLog(`已导入 Chrome Profile：${result.profileName} → ${result.targetPath}`);
-      const next = await invoke<BrowserStatus>("browser_start", {
-        sessionId,
-        projectPath: projectPath || null,
-      });
-      setStatus(next);
-    }, { refresh: false });
+    await runBrowserAction(
+      async () => {
+        const result = await invoke<BrowserProfileImportResult>("browser_import_chrome_profile", {
+          sessionId,
+          projectPath: projectPath || null,
+          chromeProfilePath: selected,
+        });
+        appendLog(`已导入 Chrome Profile：${result.profileName} → ${result.targetPath}`);
+        const next = await invoke<BrowserStatus>("browser_start", {
+          sessionId,
+          projectPath: projectPath || null,
+        });
+        setStatus(next);
+      },
+      { refresh: false },
+    );
   }, [appendLog, busy, projectPath, runBrowserAction, sessionId, setStatus]);
 
   const openCurrentUrl = useCallback(async () => {

@@ -3,7 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Network, X } from "lucide-react";
-import type { WorkflowPlanListItem, WorkflowPlanUpdatedPayload, WorkflowRunEventPayload } from "../../types";
+import type {
+  WorkflowPlanListItem,
+  WorkflowPlanUpdatedPayload,
+  WorkflowRunEventPayload,
+} from "../../types";
 import { formatRelativeTime } from "../../utils";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
@@ -26,12 +30,7 @@ export interface WorkflowPlanListViewProps {
 }
 
 /** run 生命周期事件才影响列表行状态（节点增量不改变 plan 摘要）。 */
-const RUN_LIFECYCLE_EVENTS = new Set([
-  "runStarted",
-  "runFinished",
-  "runFailed",
-  "runCancelled",
-]);
+const RUN_LIFECYCLE_EVENTS = new Set(["runStarted", "runFinished", "runFailed", "runCancelled"]);
 
 /**
  * 会话工作流列表（两级视图的列表态）：展示本会话全部工作流计划摘要，点击行经
@@ -48,21 +47,29 @@ export function WorkflowPlanListView({
   const queryClient = useQueryClient();
   const openWorkflowPanel = useWorkspaceStore((state) => state.openWorkflowPanel);
 
-  const { data: plans, isPending, isError } = useQuery({
+  const {
+    data: plans,
+    isPending,
+    isError,
+  } = useQuery({
     queryKey: ["workflow-plan-list", sessionId],
-    queryFn: () => invoke<WorkflowPlanListItem[]>("workflow_plan_list_for_session", {
-      workspaceId: sessionId,
-    }),
+    queryFn: () =>
+      invoke<WorkflowPlanListItem[]>("workflow_plan_list_for_session", {
+        workspaceId: sessionId,
+      }),
   });
 
   useEffect(() => {
     // 计划登记/定义更新/状态流转都会触发失效；run 生命周期事件改变行内
     // 最近运行摘要（状态、验收），节点级增量事件与列表无关。
-    const stopPlanUpdated = listen<WorkflowPlanUpdatedPayload>("workflow-plan-updated", ({ payload }) => {
-      if (payload.workspaceId === sessionId) {
-        void queryClient.invalidateQueries({ queryKey: ["workflow-plan-list", sessionId] });
-      }
-    });
+    const stopPlanUpdated = listen<WorkflowPlanUpdatedPayload>(
+      "workflow-plan-updated",
+      ({ payload }) => {
+        if (payload.workspaceId === sessionId) {
+          void queryClient.invalidateQueries({ queryKey: ["workflow-plan-list", sessionId] });
+        }
+      },
+    );
     const stopRunEvent = listen<WorkflowRunEventPayload>("workflow-run-event", ({ payload }) => {
       if (payload.workspaceId === sessionId && RUN_LIFECYCLE_EVENTS.has(payload.event)) {
         void queryClient.invalidateQueries({ queryKey: ["workflow-plan-list", sessionId] });
@@ -97,7 +104,9 @@ export function WorkflowPlanListView({
         <div className="ai-workflow-panel-header-top">
           <div className="ai-workflow-panel-heading">
             <span className="ai-workflow-panel-title">工作流</span>
-            <span className="ai-workflow-panel-summary">本会话全部工作流计划（{plans?.length ?? 0}）</span>
+            <span className="ai-workflow-panel-summary">
+              本会话全部工作流计划（{plans?.length ?? 0}）
+            </span>
           </div>
           {onExpandMainArea && (
             <ExpandMainAreaButton expanded={mainAreaExpanded} onClick={onExpandMainArea} />
@@ -108,13 +117,13 @@ export function WorkflowPlanListView({
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {isPending && <p className="px-2 py-8 text-center text-sm text-muted-foreground">加载中…</p>}
+        {isPending && (
+          <p className="px-2 py-8 text-center text-sm text-muted-foreground">加载中…</p>
+        )}
         {isError && (
           <p className="px-2 py-8 text-center text-sm text-danger">工作流列表加载失败，请重试。</p>
         )}
-        {plans && plans.length === 0 && (
-          <EmptyState icon={Network} title="本会话还没有工作流" />
-        )}
+        {plans && plans.length === 0 && <EmptyState icon={Network} title="本会话还没有工作流" />}
         {plans && plans.length > 0 && (
           <ul className="flex flex-col gap-2">
             {plans.map((item) => (

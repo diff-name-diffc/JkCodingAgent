@@ -37,11 +37,19 @@ describe("fillProps", () => {
 
 describe("dashProps", () => {
   it("draw → 手绘质感（roughness 1 + solid）", () => {
-    expect(dashProps("draw")).toEqual({ strokeStyle: "solid", roughness: 1, transparentStroke: false });
+    expect(dashProps("draw")).toEqual({
+      strokeStyle: "solid",
+      roughness: 1,
+      transparentStroke: false,
+    });
   });
 
   it("solid/dashed/dotted → 利落几何线（roughness 0）", () => {
-    expect(dashProps("dashed")).toEqual({ strokeStyle: "dashed", roughness: 0, transparentStroke: false });
+    expect(dashProps("dashed")).toEqual({
+      strokeStyle: "dashed",
+      roughness: 0,
+      transparentStroke: false,
+    });
     expect(dashProps("dotted").strokeStyle).toBe("dotted");
   });
 

@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  createShikiHighlightCache,
-  shikiCacheKey,
-} from "./shiki-cache";
+import { createShikiHighlightCache, shikiCacheKey } from "./shiki-cache";
 
 describe("shikiCacheKey — 键构成", () => {
   it("语言与主题参与键：同代码不同主题/语言不撞键", () => {

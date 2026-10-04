@@ -34,20 +34,15 @@ export function useArchRunListener(
     const cancelListener = listen<{ runId: string }>("architecture-run-cancel", (event) => {
       controllers.get(event.payload.runId)?.abort();
     });
-    const unlistenPromise = cancelListener.then(() => listen<ArchRunRequestPayload>(
-      "architecture-run-request",
-      async (event) => {
+    const unlistenPromise = cancelListener.then(() =>
+      listen<ArchRunRequestPayload>("architecture-run-request", async (event) => {
         const { runId, workspaceId, program } = event.payload;
         const controller = new AbortController();
         controllers.set(runId, controller);
         // 画布 api 的挂载与视图切换存在瞬时空窗：先短轮询等待，避免把
         // 「正在挂载」误判为「视图未打开」而直接放弃执行。
         let canvasApi = getterRef.current();
-        for (
-          let waited = 0;
-          !canvasApi && waited < EDITOR_WAIT_MS;
-          waited += EDITOR_WAIT_STEP_MS
-        ) {
+        for (let waited = 0; !canvasApi && waited < EDITOR_WAIT_MS; waited += EDITOR_WAIT_STEP_MS) {
           await new Promise((resolve) => setTimeout(resolve, EDITOR_WAIT_STEP_MS));
           if (disposed || controller.signal.aborted) break;
           canvasApi = getterRef.current();
@@ -65,7 +60,12 @@ export function useArchRunListener(
             if (!claimed) {
               report = "画布任务已取消或已结算，未执行。";
             } else {
-              const outcome = await runArchProgram(canvasApi, workspaceId, program, controller.signal);
+              const outcome = await runArchProgram(
+                canvasApi,
+                workspaceId,
+                program,
+                controller.signal,
+              );
               report = outcome.reportText;
             }
           } catch (error) {
@@ -84,8 +84,8 @@ export function useArchRunListener(
         } finally {
           controllers.delete(runId);
         }
-      },
-    ));
+      }),
+    );
 
     return () => {
       disposed = true;

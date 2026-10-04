@@ -1,11 +1,5 @@
 import { useAhaSettings } from "../use-aha-settings";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import type { DispatcherModelConfig, ModelCategory } from "../../../types";
 import {
   bindPurpose,

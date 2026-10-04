@@ -360,7 +360,9 @@ export function BranchBar({ projectPath }: { projectPath: string }) {
                     >
                       <GitBranch size={12} strokeWidth={2} />
                       <span className="branch-popover-item-name">{b.name}</span>
-                      {b.current && <Check size={12} strokeWidth={2.5} className="ai-branch-check" />}
+                      {b.current && (
+                        <Check size={12} strokeWidth={2.5} className="ai-branch-check" />
+                      )}
                       {switching === b.name && <span className="ai-branch-switching">…</span>}
                     </button>
                   ))}

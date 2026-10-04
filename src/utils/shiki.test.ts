@@ -35,7 +35,21 @@ describe("isSupportedHighlightLanguage（streamdown 高亮插件能力面）", (
   });
 
   it("SUPPORTED_HIGHLIGHT_LANGUAGES 覆盖核心语言且无别名重复", () => {
-    for (const lang of ["bash", "css", "html", "js", "jsx", "json", "md", "python", "rust", "toml", "ts", "tsx", "yaml"]) {
+    for (const lang of [
+      "bash",
+      "css",
+      "html",
+      "js",
+      "jsx",
+      "json",
+      "md",
+      "python",
+      "rust",
+      "toml",
+      "ts",
+      "tsx",
+      "yaml",
+    ]) {
       expect(SUPPORTED_HIGHLIGHT_LANGUAGES).toContain(lang);
     }
     expect(SUPPORTED_HIGHLIGHT_LANGUAGES).not.toContain("shell");
@@ -56,6 +70,11 @@ describe("tokenizeCodeDualTheme（streamdown 高亮插件运行时冒烟）", ()
   it("未支持语言回退 plaintext，不抛错", async () => {
     const result = await tokenizeCodeDualTheme("some plain text", "brainfuck");
     expect(result.tokens.length).toBeGreaterThan(0);
-    expect(result.tokens.flat().map((t) => t.content).join("")).toContain("some plain text");
+    expect(
+      result.tokens
+        .flat()
+        .map((t) => t.content)
+        .join(""),
+    ).toContain("some plain text");
   });
 });

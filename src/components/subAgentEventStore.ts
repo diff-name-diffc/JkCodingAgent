@@ -10,12 +10,7 @@ export interface EventLine {
 }
 
 export type SubAgentPhase =
-  | "initializing"
-  | "thinking"
-  | "tool_calling"
-  | "generating"
-  | "completed"
-  | "failed";
+  "initializing" | "thinking" | "tool_calling" | "generating" | "completed" | "failed";
 
 export interface SubAgentToolCall {
   id: string;
@@ -173,168 +168,173 @@ function buildEventText(eventType: string, data: SubAgentEventPayload["data"]): 
 }
 
 function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): void {
-    const { sessionId, toolCallId, event: eventType, data } = payload;
-    const agentId = data.agentId ?? "unknown";
-    const now = payload.timestampMs || Date.now();
+  const { sessionId, toolCallId, event: eventType, data } = payload;
+  const agentId = data.agentId ?? "unknown";
+  const now = payload.timestampMs || Date.now();
 
-    ensureSessionMap(sessionId);
-    const existing = store[sessionId][toolCallId];
-    const storeKey = keyFor(sessionId, toolCallId);
+  ensureSessionMap(sessionId);
+  const existing = store[sessionId][toolCallId];
+  const storeKey = keyFor(sessionId, toolCallId);
 
-    let name: string;
-    let task: string;
-    let model: string | undefined;
-    let status: "running" | "completed" | "failed";
-    let elapsed: number;
-    let phase: SubAgentPhase;
-    let toolCalls: SubAgentToolCall[];
-    let finishedResult: string | undefined;
-    let finishedError: string | undefined;
-    let tokenUsage: SubAgentUsage | undefined;
-    let usageReceivedAt: number | undefined;
-    let iterations: number | undefined;
+  let name: string;
+  let task: string;
+  let model: string | undefined;
+  let status: "running" | "completed" | "failed";
+  let elapsed: number;
+  let phase: SubAgentPhase;
+  let toolCalls: SubAgentToolCall[];
+  let finishedResult: string | undefined;
+  let finishedError: string | undefined;
+  let tokenUsage: SubAgentUsage | undefined;
+  let usageReceivedAt: number | undefined;
+  let iterations: number | undefined;
 
-    if (eventType === "Started") {
-      name = data.agentName ?? agentId;
-      task = data.task ?? "";
-      // Started 携带运行实际模型（老轨迹事件缺字段 → 保持 undefined）。
-      model = data.model ?? existing?.model;
-      status = "running";
-      elapsed = 0;
-      phase = "initializing";
-      toolCalls = [];
-      usageReceivedAt = undefined;
-      starts[storeKey] = now;
-    } else if (eventType === "Finished") {
-      name = existing?.name ?? agentId;
-      task = existing?.task ?? "";
-      model = existing?.model;
-      status = "completed";
-      elapsed = data.elapsedMs ?? 0;
-      phase = "completed";
-      toolCalls = existing?.toolCalls ?? [];
-      finishedResult = data.result ?? existing?.finishedResult;
-      tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
-      iterations = data.iterations ?? existing?.iterations;
-    } else if (eventType === "Failed") {
-      name = existing?.name ?? agentId;
-      task = existing?.task ?? "";
-      model = existing?.model;
-      status = "failed";
-      elapsed = now - (starts[storeKey] ?? now);
-      phase = "failed";
-      toolCalls = existing?.toolCalls ?? [];
-      finishedError = data.error ?? existing?.finishedError;
-    } else {
-      name = existing?.name ?? agentId;
-      task = existing?.task ?? "";
-      model = existing?.model;
-      status = existing?.status ?? "running";
-      elapsed = now - (starts[storeKey] ?? now);
-      toolCalls = existing?.toolCalls ? [...existing.toolCalls] : [];
+  if (eventType === "Started") {
+    name = data.agentName ?? agentId;
+    task = data.task ?? "";
+    // Started 携带运行实际模型（老轨迹事件缺字段 → 保持 undefined）。
+    model = data.model ?? existing?.model;
+    status = "running";
+    elapsed = 0;
+    phase = "initializing";
+    toolCalls = [];
+    usageReceivedAt = undefined;
+    starts[storeKey] = now;
+  } else if (eventType === "Finished") {
+    name = existing?.name ?? agentId;
+    task = existing?.task ?? "";
+    model = existing?.model;
+    status = "completed";
+    elapsed = data.elapsedMs ?? 0;
+    phase = "completed";
+    toolCalls = existing?.toolCalls ?? [];
+    finishedResult = data.result ?? existing?.finishedResult;
+    tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
+    iterations = data.iterations ?? existing?.iterations;
+  } else if (eventType === "Failed") {
+    name = existing?.name ?? agentId;
+    task = existing?.task ?? "";
+    model = existing?.model;
+    status = "failed";
+    elapsed = now - (starts[storeKey] ?? now);
+    phase = "failed";
+    toolCalls = existing?.toolCalls ?? [];
+    finishedError = data.error ?? existing?.finishedError;
+  } else {
+    name = existing?.name ?? agentId;
+    task = existing?.task ?? "";
+    model = existing?.model;
+    status = existing?.status ?? "running";
+    elapsed = now - (starts[storeKey] ?? now);
+    toolCalls = existing?.toolCalls ? [...existing.toolCalls] : [];
 
-      if (eventType === "ToolStarted") {
-        phase = "tool_calling";
-        const toolCallId = data.taskId ?? `${agentId}-${data.toolName}-${now}`;
-        const existingIndex = toolCalls.findIndex((call) => call.id === toolCallId);
-        if (existingIndex >= 0) {
-          if (data.arguments && Object.keys(data.arguments).length > 0) {
-            toolCalls[existingIndex] = { ...toolCalls[existingIndex], arguments: data.arguments };
-          }
-        } else toolCalls.push({
+    if (eventType === "ToolStarted") {
+      phase = "tool_calling";
+      const toolCallId = data.taskId ?? `${agentId}-${data.toolName}-${now}`;
+      const existingIndex = toolCalls.findIndex((call) => call.id === toolCallId);
+      if (existingIndex >= 0) {
+        if (data.arguments && Object.keys(data.arguments).length > 0) {
+          toolCalls[existingIndex] = { ...toolCalls[existingIndex], arguments: data.arguments };
+        }
+      } else
+        toolCalls.push({
           id: toolCallId,
           toolName: data.toolName ?? "",
           arguments: data.arguments ?? {},
           startedAt: now,
           status: "running",
         });
-      } else if (eventType === "ToolFinished") {
-        // Keep current phase, but update the last running tool call
-        phase = existing?.phase ?? "tool_calling";
-        const lastRunning = data.taskId
-          ? toolCalls.find((call) => call.id === data.taskId)
-          : [...toolCalls].reverse().find((call) => call.status === "running" && call.toolName === (data.toolName ?? ""));
-        if (lastRunning) {
-          const idx = toolCalls.findIndex((tc) => tc.id === lastRunning.id);
-          if (idx !== -1) {
-            toolCalls[idx] = {
-              ...toolCalls[idx],
-              resultPreview: data.resultPreview,
-              finishedAt: now,
-              durationMs: now - toolCalls[idx].startedAt,
-              status: "completed",
-            };
-          }
+    } else if (eventType === "ToolFinished") {
+      // Keep current phase, but update the last running tool call
+      phase = existing?.phase ?? "tool_calling";
+      const lastRunning = data.taskId
+        ? toolCalls.find((call) => call.id === data.taskId)
+        : [...toolCalls]
+            .reverse()
+            .find((call) => call.status === "running" && call.toolName === (data.toolName ?? ""));
+      if (lastRunning) {
+        const idx = toolCalls.findIndex((tc) => tc.id === lastRunning.id);
+        if (idx !== -1) {
+          toolCalls[idx] = {
+            ...toolCalls[idx],
+            resultPreview: data.resultPreview,
+            finishedAt: now,
+            durationMs: now - toolCalls[idx].startedAt,
+            status: "completed",
+          };
         }
-      } else if (eventType === "llmDelta") {
-        // If we have tool calls, we're generating the final response; otherwise thinking
-        phase = toolCalls.length > 0 ? "generating" : "thinking";
-      } else {
-        phase = existing?.phase ?? "initializing";
       }
-
-      finishedResult = existing?.finishedResult;
-      finishedError = existing?.finishedError;
-      tokenUsage = existing?.tokenUsage;
-      iterations = existing?.iterations;
+    } else if (eventType === "llmDelta") {
+      // If we have tool calls, we're generating the final response; otherwise thinking
+      phase = toolCalls.length > 0 ? "generating" : "thinking";
+    } else {
+      phase = existing?.phase ?? "initializing";
     }
 
-    // UsageUpdated is a lightweight telemetry event: update token/elapsed
-    // without adding an event line or changing phase.
-    if (eventType === "UsageUpdated") {
-      tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
-      elapsed = data.elapsedMs ?? elapsed;
-      usageReceivedAt = now;
-    }
+    finishedResult = existing?.finishedResult;
+    finishedError = existing?.finishedError;
+    tokenUsage = existing?.tokenUsage;
+    iterations = existing?.iterations;
+  }
 
-    const text = buildEventText(eventType, data);
-    const eventId = `${agentId}-${now}-${Math.random().toString(36).slice(2, 6)}`;
-    const newEvent: EventLine = { id: eventId, type: eventType, text, timestamp: now };
-    const events = text ? [...(existing?.events ?? []), newEvent].slice(-50) : existing?.events ?? [];
-    const responseText =
-      eventType === "llmDelta"
-        ? `${existing?.responseText ?? ""}${data.delta ?? ""}`
-        : eventType === "Started"
-          ? ""
-          : existing?.responseText ?? "";
-    const progressMessages =
-      eventType === "Progress" && data.message?.trim()
-        ? [
-            ...(existing?.progressMessages ?? []),
-            {
-              id: eventId,
-              agentId,
-              agentName: name,
-              text: data.message.trim(),
-              timestamp: now,
-            },
-          ].slice(-20)
-        : eventType === "Started"
-          ? []
-          : existing?.progressMessages ?? [];
+  // UsageUpdated is a lightweight telemetry event: update token/elapsed
+  // without adding an event line or changing phase.
+  if (eventType === "UsageUpdated") {
+    tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
+    elapsed = data.elapsedMs ?? elapsed;
+    usageReceivedAt = now;
+  }
 
-    commitSessionMap(sessionId, {
-      ...store[sessionId],
-      [toolCallId]: {
-        agentId,
-        name,
-        task,
-        model,
-        responseText,
-        progressMessages,
-        events,
-        elapsed,
-        status,
-        phase,
-        toolCalls,
-        finishedResult,
-        finishedError,
-        tokenUsage,
-        usageReceivedAt,
-        iterations,
-      },
-    });
-    if (notifyAfter) notify();
+  const text = buildEventText(eventType, data);
+  const eventId = `${agentId}-${now}-${Math.random().toString(36).slice(2, 6)}`;
+  const newEvent: EventLine = { id: eventId, type: eventType, text, timestamp: now };
+  const events = text
+    ? [...(existing?.events ?? []), newEvent].slice(-50)
+    : (existing?.events ?? []);
+  const responseText =
+    eventType === "llmDelta"
+      ? `${existing?.responseText ?? ""}${data.delta ?? ""}`
+      : eventType === "Started"
+        ? ""
+        : (existing?.responseText ?? "");
+  const progressMessages =
+    eventType === "Progress" && data.message?.trim()
+      ? [
+          ...(existing?.progressMessages ?? []),
+          {
+            id: eventId,
+            agentId,
+            agentName: name,
+            text: data.message.trim(),
+            timestamp: now,
+          },
+        ].slice(-20)
+      : eventType === "Started"
+        ? []
+        : (existing?.progressMessages ?? []);
+
+  commitSessionMap(sessionId, {
+    ...store[sessionId],
+    [toolCallId]: {
+      agentId,
+      name,
+      task,
+      model,
+      responseText,
+      progressMessages,
+      events,
+      elapsed,
+      status,
+      phase,
+      toolCalls,
+      finishedResult,
+      finishedError,
+      tokenUsage,
+      usageReceivedAt,
+      iterations,
+    },
+  });
+  if (notifyAfter) notify();
 }
 
 function registerGlobalListener(): void {
@@ -365,10 +365,7 @@ export function useSubAgentSessions(sessionId: string): SessionMap {
   return snapshot;
 }
 
-export function getSubAgentSession(
-  sessionId: string,
-  toolCallId: string,
-): SubAgentSession | null {
+export function getSubAgentSession(sessionId: string, toolCallId: string): SubAgentSession | null {
   touchSession(sessionId);
   return store[sessionId]?.[toolCallId] ?? null;
 }

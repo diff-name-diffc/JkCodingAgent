@@ -128,10 +128,14 @@ export function createDispatcherEventChannel({
         if (!isActiveRun) return;
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
-          assistantPlaceholder: event.data.phase === "cleaning"
-            ? "正在清理工具任务，请等待实际操作结束..."
-            : event.data.phase === "waiting" ? "正在等待工具完成..."
-            : event.data.phase === "cancelling" ? "正在停止工具任务..." : "正在思考...",
+          assistantPlaceholder:
+            event.data.phase === "cleaning"
+              ? "正在清理工具任务，请等待实际操作结束..."
+              : event.data.phase === "waiting"
+                ? "正在等待工具完成..."
+                : event.data.phase === "cancelling"
+                  ? "正在停止工具任务..."
+                  : "正在思考...",
         }));
         break;
       case "toolAccepted":

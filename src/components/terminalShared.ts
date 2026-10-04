@@ -116,7 +116,11 @@ export function createSmartWriter(term: Terminal): SmartWriter {
   function enqueuePending(data: string, callback?: () => void, limitBytes = true) {
     state.pendingChunks.push({ data, callback });
     state.pendingBytes += data.length;
-    while (limitBytes && state.pendingBytes > MAX_PENDING_BYTES && state.pendingHead < state.pendingChunks.length) {
+    while (
+      limitBytes &&
+      state.pendingBytes > MAX_PENDING_BYTES &&
+      state.pendingHead < state.pendingChunks.length
+    ) {
       dropOldestPendingChunk();
     }
   }

@@ -67,9 +67,7 @@ function FileExplorerContextMenuContent({
                 <span className="file-explorer-context-menu-item-copy">
                   <span className="file-explorer-context-menu-item-label">{item.label}</span>
                   {item.caption && (
-                    <span className="file-explorer-context-menu-item-caption">
-                      {item.caption}
-                    </span>
+                    <span className="file-explorer-context-menu-item-caption">{item.caption}</span>
                   )}
                 </span>
               </ContextMenu.Item>
@@ -117,11 +115,7 @@ export function FileExplorerContextMenu({
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       {node && (
         <ContextMenu.Portal>
-          <FileExplorerContextMenuContent
-            node={node}
-            relativePath={relativePath}
-            groups={groups}
-          />
+          <FileExplorerContextMenuContent node={node} relativePath={relativePath} groups={groups} />
         </ContextMenu.Portal>
       )}
     </ContextMenu.Root>

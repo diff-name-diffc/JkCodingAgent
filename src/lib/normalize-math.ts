@@ -103,7 +103,8 @@ const MATH_LANGUAGES = new Set(["math", "latex", "tex", "katex", "formula"]);
 const NEUTRAL_LANGUAGES = new Set(["", "text", "plain", "txt"]);
 
 /** Unicode math glyphs that effectively never appear in real code. */
-const MATH_SYMBOL = /[\u2211\u220F\u222B\u2202\u221A\u221E\u2248\u2260\u2264\u2265\u2261\u21D2\u21D4\u2200\u2203\u2207\u2208\u2209\u222A\u2229\u221D\u00B1\u00D7\u00F7\u2070-\u2079\u2080-\u2089]/;
+const MATH_SYMBOL =
+  /[\u2211\u220F\u222B\u2202\u221A\u221E\u2248\u2260\u2264\u2265\u2261\u21D2\u21D4\u2200\u2203\u2207\u2208\u2209\u222A\u2229\u221D\u00B1\u00D7\u00F7\u2070-\u2079\u2080-\u2089]/;
 
 /** LaTeX commands that only make sense inside math mode. */
 const MATH_LATEX_COMMAND =
@@ -142,11 +143,7 @@ export function normalizeMathCodeFences(content: string): string {
     if (fenceMatch && fenceMarker === null) {
       fenceMarker = fenceMatch[1];
       fenceIndent = line.slice(0, line.length - line.trimStart().length);
-      fenceLang = line
-        .slice(fenceMatch[0].length)
-        .trim()
-        .split(/\s+/)[0]
-        .toLowerCase();
+      fenceLang = line.slice(fenceMatch[0].length).trim().split(/\s+/)[0].toLowerCase();
       fenceLines = [line];
       continue;
     }

@@ -1,5 +1,11 @@
 import { useEffect, useRef } from "react";
-import { isTopOverlay, peekOverlay, popOverlay, pushOverlay, shouldHandleEscape } from "../lib/overlay-stack";
+import {
+  isTopOverlay,
+  peekOverlay,
+  popOverlay,
+  pushOverlay,
+  shouldHandleEscape,
+} from "../lib/overlay-stack";
 
 /**
  * 自研覆盖层的统一 Escape 接线（UI-23b）。

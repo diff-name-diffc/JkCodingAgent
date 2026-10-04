@@ -20,8 +20,7 @@ import {
 } from "./arch-program";
 
 export type ArchValidationResult =
-  | { ok: true; program: ArchProgram }
-  | { ok: false; error: string };
+  { ok: true; program: ArchProgram } | { ok: false; error: string };
 
 const INSTRUCTION_TYPES = new Set([
   "create_shape",
@@ -43,8 +42,19 @@ const SHAPE_KINDS = new Set(["geo", "note", "text", "frame"]);
 // 与 ArchGeo 一致：Excalidraw 原生容器形状（支持内嵌绑定文本）。
 const GEO_KINDS = new Set(["rectangle", "ellipse", "diamond"]);
 const COLOR_VALUES = new Set([
-  "black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow",
-  "orange", "green", "light-green", "light-red", "red", "white",
+  "black",
+  "grey",
+  "light-violet",
+  "violet",
+  "blue",
+  "light-blue",
+  "yellow",
+  "orange",
+  "green",
+  "light-green",
+  "light-red",
+  "red",
+  "white",
 ]);
 const FILL_VALUES = new Set(["none", "semi", "solid", "pattern", "fill", "lined-fill"]);
 const SIZE_VALUES = new Set(["s", "m", "l", "xl"]);
@@ -53,7 +63,14 @@ const FONT_VALUES = new Set(["draw", "sans", "serif", "mono"]);
 const ALIGN_VALUES = new Set(["start", "middle", "end"]);
 const ARROW_KIND_VALUES = new Set(["arc", "elbow"]);
 const ARROWHEAD_VALUES = new Set([
-  "arrow", "triangle", "square", "dot", "pipe", "diamond", "inverted", "bar",
+  "arrow",
+  "triangle",
+  "square",
+  "dot",
+  "pipe",
+  "diamond",
+  "inverted",
+  "bar",
   "none",
 ]);
 const LAYOUT_MODE_VALUES = new Set(["grid", "row", "column"]);

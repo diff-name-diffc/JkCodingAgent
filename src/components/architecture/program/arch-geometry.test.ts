@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  autoPlaceInFrame,
-  autoPlacePosition,
-  finite,
-  type AutoPlaceCursor,
-} from "./arch-geometry";
+import { autoPlaceInFrame, autoPlacePosition, finite, type AutoPlaceCursor } from "./arch-geometry";
 
 function cursor(): AutoPlaceCursor {
   return { x: 0, y: 0, placed: false, frameCounts: new Map() };

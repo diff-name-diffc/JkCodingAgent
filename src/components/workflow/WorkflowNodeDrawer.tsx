@@ -1,8 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
-import { BrainCircuit, ChevronDown, ChevronRight, Clock3, Gauge, Play, RotateCcw, Square, X } from "lucide-react";
-import type { AgentActivity, WorkflowBaseToolGroup, WorkflowDefinition, WorkflowHarnessCatalog, WorkflowPlanStatus, WorkflowRunDetail } from "../../types";
+import {
+  BrainCircuit,
+  ChevronDown,
+  ChevronRight,
+  Clock3,
+  Gauge,
+  Play,
+  RotateCcw,
+  Square,
+  X,
+} from "lucide-react";
+import type {
+  AgentActivity,
+  WorkflowBaseToolGroup,
+  WorkflowDefinition,
+  WorkflowHarnessCatalog,
+  WorkflowPlanStatus,
+  WorkflowRunDetail,
+} from "../../types";
 import { toast } from "../Toast";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
@@ -40,7 +57,8 @@ interface WorkflowNodeDrawerProps {
  * 有意保留在本组件——拆分 Harness 编辑器会改变 flush 时序语义，风险大于收益。
  */
 export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
-  const { planId, nodeId, planStatus, actionPending, onClose, onSelectNode, onStart, onCancel } = props;
+  const { planId, nodeId, planStatus, actionPending, onClose, onSelectNode, onStart, onCancel } =
+    props;
   const snapshot = useWorkflowPlan(planId);
   const plan = snapshot.plan;
   const definition = useMemo(() => parseWorkflowDefinition(plan), [plan]);
@@ -54,28 +72,51 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
   // 输出默认按 markdown 渲染（节点输出即结论文本），可切回纯原文核对。
   const [outputRaw, setOutputRaw] = useState(false);
   const [draftTask, setDraftTask] = useState(node?.task ?? "");
-  const [draftExpectedFiles, setDraftExpectedFiles] = useState((node?.expectedFiles ?? []).join(", "));
+  const [draftExpectedFiles, setDraftExpectedFiles] = useState(
+    (node?.expectedFiles ?? []).join(", "),
+  );
   const [saving, setSaving] = useState(false);
   const [enqueueSave] = useState(() => createSerialTaskQueue());
   const pendingSaves = useRef(0);
 
-  useEffect(() => { setSelectedRunId(plan?.latestRunId ?? ""); }, [plan?.latestRunId]);
+  useEffect(() => {
+    setSelectedRunId(plan?.latestRunId ?? "");
+  }, [plan?.latestRunId]);
   // 切换节点时重置折叠状态：组件常驻挂载（不随 nodeId 重建），
   // 否则会从上一节点继承输入/输出区的展开收起状态
-  useEffect(() => { setInputOpen(false); setOutputOpen(true); setOutputRaw(false); }, [nodeId]);
-  useEffect(() => { setDraftTask(node?.task ?? ""); }, [node?.task, nodeId]);
-  useEffect(() => { setDraftExpectedFiles((node?.expectedFiles ?? []).join(", ")); }, [node?.expectedFiles, nodeId]);
   useEffect(() => {
-    if (!selectedRunId) { setRunDetail(null); return; }
+    setInputOpen(false);
+    setOutputOpen(true);
+    setOutputRaw(false);
+  }, [nodeId]);
+  useEffect(() => {
+    setDraftTask(node?.task ?? "");
+  }, [node?.task, nodeId]);
+  useEffect(() => {
+    setDraftExpectedFiles((node?.expectedFiles ?? []).join(", "));
+  }, [node?.expectedFiles, nodeId]);
+  useEffect(() => {
+    if (!selectedRunId) {
+      setRunDetail(null);
+      return;
+    }
     let alive = true;
     invoke<WorkflowRunDetail>("workflow_run_get", { runId: selectedRunId })
-      .then((detail) => { if (alive) setRunDetail(detail); })
-      .catch((error) => { if (alive) toast.warning(`加载运行详情失败：${String(error)}`); });
-    return () => { alive = false; };
+      .then((detail) => {
+        if (alive) setRunDetail(detail);
+      })
+      .catch((error) => {
+        if (alive) toast.warning(`加载运行详情失败：${String(error)}`);
+      });
+    return () => {
+      alive = false;
+    };
   }, [selectedRunId]);
   useEffect(() => {
     if (plan?.status !== "draft" || !plan.workspaceId) return;
-    invoke<WorkflowHarnessCatalog>("workflow_harness_catalog_get", { workspaceId: plan.workspaceId })
+    invoke<WorkflowHarnessCatalog>("workflow_harness_catalog_get", {
+      workspaceId: plan.workspaceId,
+    })
       .then(setCatalog)
       .catch((error) => toast.warning(`加载 Harness 目录失败：${String(error)}`));
   }, [plan?.status, plan?.workspaceId]);
@@ -83,7 +124,8 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
   const historicalRun = runDetail?.nodeRuns.find((item) => item.nodeId === nodeId) ?? null;
   const currentRun = plan?.nodeRuns.find((item) => item.nodeId === nodeId) ?? null;
   const nodeRun = selectedRunId === plan?.latestRunId ? currentRun : historicalRun;
-  const liveOutput = selectedRunId === plan?.latestRunId ? snapshot.liveOutputs[nodeId] ?? "" : "";
+  const liveOutput =
+    selectedRunId === plan?.latestRunId ? (snapshot.liveOutputs[nodeId] ?? "") : "";
   const output = liveOutput || nodeRun?.outputText || "";
   // 历史 activities 用 useMemo 稳定引用：行内 filter 每次渲染都新建数组，
   // 会让下方派生的 useMemo 依赖恒变，查看历史运行（无实时 activities）时
@@ -93,9 +135,10 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
     () => runDetail?.activities.filter((item) => item.nodeId === nodeId) ?? EMPTY_ACTIVITIES,
     [runDetail, nodeId],
   );
-  const liveActivities = selectedRunId === plan?.latestRunId
-    ? snapshot.liveActivities[nodeId] ?? EMPTY_ACTIVITIES
-    : EMPTY_ACTIVITIES;
+  const liveActivities =
+    selectedRunId === plan?.latestRunId
+      ? (snapshot.liveActivities[nodeId] ?? EMPTY_ACTIVITIES)
+      : EMPTY_ACTIVITIES;
   const activities = liveActivities.length > 0 ? liveActivities : historicalActivities;
   // 工具条目、时间线行与上下文读数共享一次派生，避免 buildToolCallEntries 重复执行。
   const { toolEntries, timelineRows, contextUsage } = useMemo(
@@ -120,7 +163,9 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
     ? [nodeRun.modelLabel, nodeRun.modelCategory].filter(Boolean).join(" · ")
     : undefined;
 
-  async function updateDefinition(mutator: (definition: WorkflowDefinition) => WorkflowDefinition): Promise<boolean> {
+  async function updateDefinition(
+    mutator: (definition: WorkflowDefinition) => WorkflowDefinition,
+  ): Promise<boolean> {
     if (!definition || !editable) return false;
     pendingSaves.current += 1;
     setSaving(true);
@@ -131,8 +176,11 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
         if (!latestPlan || latestPlan.status !== "draft" || !latestDefinition) {
           throw new Error("工作流计划已不可编辑或最新定义加载失败");
         }
-        await invoke("workflow_plan_update", { planId, definitionJson: JSON.stringify(mutator(latestDefinition)) });
-        if (!await hydrateWorkflowPlan(planId)) throw new Error("保存后重新加载工作流计划失败");
+        await invoke("workflow_plan_update", {
+          planId,
+          definitionJson: JSON.stringify(mutator(latestDefinition)),
+        });
+        if (!(await hydrateWorkflowPlan(planId))) throw new Error("保存后重新加载工作流计划失败");
       });
       return true;
     } catch (error) {
@@ -145,21 +193,32 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
   }
 
   async function patchNode(patch: Partial<NonNullable<typeof node>>): Promise<boolean> {
-    return updateDefinition((value) => ({ ...value, nodes: value.nodes.map((item) => item.id === nodeId ? { ...item, ...patch } : item) }));
+    return updateDefinition((value) => ({
+      ...value,
+      nodes: value.nodes.map((item) => (item.id === nodeId ? { ...item, ...patch } : item)),
+    }));
   }
 
   // 草稿提交：失焦与「切换节点/关闭抽屉前的兜底 flush」共用，逻辑保持单一。
   function commitDraftTask(): void {
     const task = draftTask.trim();
     if (!task || task === node?.task) return;
-    void patchNode({ task }).then((saved) => { if (!saved) setDraftTask(node?.task ?? ""); });
+    void patchNode({ task }).then((saved) => {
+      if (!saved) setDraftTask(node?.task ?? "");
+    });
   }
 
   function commitDraftExpectedFiles(): void {
-    const files = draftExpectedFiles.split(",").map((file) => file.trim()).filter(Boolean);
+    const files = draftExpectedFiles
+      .split(",")
+      .map((file) => file.trim())
+      .filter(Boolean);
     const current = node?.expectedFiles ?? [];
-    if (files.length === current.length && files.every((file, index) => file === current[index])) return;
-    void patchNode({ expectedFiles: files }).then((saved) => { if (!saved) setDraftExpectedFiles(current.join(", ")); });
+    if (files.length === current.length && files.every((file, index) => file === current[index]))
+      return;
+    void patchNode({ expectedFiles: files }).then((saved) => {
+      if (!saved) setDraftExpectedFiles(current.join(", "));
+    });
   }
 
   // 切换节点 / 抽屉卸载（关闭抽屉、关闭面板）前兜底提交未失焦的草稿：
@@ -179,28 +238,48 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
   }, [nodeId]);
 
   const upstream = node?.dependsOn ?? [];
-  const downstream = definition?.nodes.filter((item) => item.dependsOn.includes(nodeId)).map((item) => item.id) ?? [];
+  const downstream =
+    definition?.nodes.filter((item) => item.dependsOn.includes(nodeId)).map((item) => item.id) ??
+    [];
   const titleOf = (id: string) => definition?.nodes.find((item) => item.id === id)?.title ?? id;
   const inputText = nodeRun?.inputText || node?.task || "";
   // 超长输出只渲染尾部最新部分，避免 MB 级文本拖慢渲染
-  const outputDisplay = output.length > OUTPUT_DISPLAY_LIMIT ? output.slice(-OUTPUT_DISPLAY_LIMIT) : output;
+  const outputDisplay =
+    output.length > OUTPUT_DISPLAY_LIMIT ? output.slice(-OUTPUT_DISPLAY_LIMIT) : output;
   const outputOmitted = output.length - outputDisplay.length;
   // footer 文案与头部/门禁同一表达式（UI-14）：failed/cancelled → 断点续跑
   // （onStart 实际以 resume 模式调用），completed → 完整重跑（full）。
   const rerunLabel = planStatus === "completed" ? "完整重跑" : "从断点继续";
 
   return (
-    <motion.aside initial={{ x: 460, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 460, opacity: 0 }} transition={{ duration: 0.2 }} className="ai-workflow-drawer">
+    <motion.aside
+      initial={{ x: 460, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: 460, opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      className="ai-workflow-drawer"
+    >
       <div className="ai-workflow-drawer-header">
-        <span className="ai-workflow-drawer-agent" title={modelTitle}><BrainCircuit className="h-3.5 w-3.5" />{modelLabel}</span>
+        <span className="ai-workflow-drawer-agent" title={modelTitle}>
+          <BrainCircuit className="h-3.5 w-3.5" />
+          {modelLabel}
+        </span>
         <StatusPill domain="workflow-node" status={status} />
-        {nodeRun?.durationMs != null && <span className="ai-workflow-drawer-duration"><Clock3 className="h-3 w-3" />{formatWorkflowDuration(nodeRun.durationMs)}</span>}
-        {contextUsage && (
-          <span className="ai-workflow-drawer-usage" title="上下文窗口占用（运行时估算值）">
-            <Gauge className="h-3 w-3" />{formatContextUsage(contextUsage)}
+        {nodeRun?.durationMs != null && (
+          <span className="ai-workflow-drawer-duration">
+            <Clock3 className="h-3 w-3" />
+            {formatWorkflowDuration(nodeRun.durationMs)}
           </span>
         )}
-        <Button variant="ghost" size="icon-sm" aria-label="关闭节点详情" onClick={onClose}><X className="h-4 w-4" /></Button>
+        {contextUsage && (
+          <span className="ai-workflow-drawer-usage" title="上下文窗口占用（运行时估算值）">
+            <Gauge className="h-3 w-3" />
+            {formatContextUsage(contextUsage)}
+          </span>
+        )}
+        <Button variant="ghost" size="icon-sm" aria-label="关闭节点详情" onClick={onClose}>
+          <X className="h-4 w-4" />
+        </Button>
       </div>
 
       <div className="ai-workflow-drawer-body">
@@ -208,33 +287,83 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
           <h3 className="ai-workflow-drawer-title">{node?.title ?? nodeId}</h3>
           {plan && plan.runs.length > 0 && (
             <Select value={selectedRunId} onValueChange={setSelectedRunId}>
-              <SelectTrigger className="h-8 w-36 text-xs"><SelectValue placeholder="选择运行" /></SelectTrigger>
-              <SelectContent>{plan.runs.map((run) => <SelectItem key={run.id} value={run.id}>第 {run.attemptNo} 次 · {run.status}</SelectItem>)}</SelectContent>
+              <SelectTrigger className="h-8 w-36 text-xs">
+                <SelectValue placeholder="选择运行" />
+              </SelectTrigger>
+              <SelectContent>
+                {plan.runs.map((run) => (
+                  <SelectItem key={run.id} value={run.id}>
+                    第 {run.attemptNo} 次 · {run.status}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           )}
         </div>
 
         {editable && catalog && node && (
           <section className="ai-workflow-drawer-section ai-workflow-harness-editor">
-            <div className="ai-workflow-drawer-label">运行 Harness {saving && <span className="ai-workflow-drawer-hint">保存中…</span>}</div>
-            <Select value={node.modelRef} onValueChange={(modelRef) => void patchNode({ modelRef })} disabled={saving}>
-              <SelectTrigger><SelectValue placeholder="选择模型" /></SelectTrigger>
-              <SelectContent>{catalog.models.map((model) => <SelectItem key={model.id} value={model.id} title={model.model}>{model.label}</SelectItem>)}</SelectContent>
+            <div className="ai-workflow-drawer-label">
+              运行 Harness {saving && <span className="ai-workflow-drawer-hint">保存中…</span>}
+            </div>
+            <Select
+              value={node.modelRef}
+              onValueChange={(modelRef) => void patchNode({ modelRef })}
+              disabled={saving}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="选择模型" />
+              </SelectTrigger>
+              <SelectContent>
+                {catalog.models.map((model) => (
+                  <SelectItem key={model.id} value={model.id} title={model.model}>
+                    {model.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
-            <Select value={node.baseToolGroup} onValueChange={(baseToolGroup) => void patchNode({ baseToolGroup: baseToolGroup as WorkflowBaseToolGroup })} disabled={saving}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="read_only">只读调研（注入只读纪律约束）</SelectItem><SelectItem value="coding">编码执行（可修改文件）</SelectItem></SelectContent>
+            <Select
+              value={node.baseToolGroup}
+              onValueChange={(baseToolGroup) =>
+                void patchNode({ baseToolGroup: baseToolGroup as WorkflowBaseToolGroup })
+              }
+              disabled={saving}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="read_only">只读调研（注入只读纪律约束）</SelectItem>
+                <SelectItem value="coding">编码执行（可修改文件）</SelectItem>
+              </SelectContent>
             </Select>
-            <Select value={node.usePlanMode ? "plan" : "bypass"} onValueChange={(mode) => void patchNode({ usePlanMode: mode === "plan" })} disabled={saving}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+            <Select
+              value={node.usePlanMode ? "plan" : "bypass"}
+              onValueChange={(mode) => void patchNode({ usePlanMode: mode === "plan" })}
+              disabled={saving}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="bypass">全权限执行 · bypassPermissions（默认）</SelectItem>
                 <SelectItem value="plan">先计划后执行 · plan（复杂任务）</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={node.exportPolicy ?? "summary"} onValueChange={(exportPolicy) => void patchNode({ exportPolicy: exportPolicy as "summary" | "full" })} disabled={saving}>
-              <SelectTrigger><SelectValue placeholder="下游导出策略" /></SelectTrigger>
-              <SelectContent><SelectItem value="summary">下游只见产出摘要</SelectItem><SelectItem value="full">下游可见完整输出</SelectItem></SelectContent>
+            <Select
+              value={node.exportPolicy ?? "summary"}
+              onValueChange={(exportPolicy) =>
+                void patchNode({ exportPolicy: exportPolicy as "summary" | "full" })
+              }
+              disabled={saving}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="下游导出策略" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="summary">下游只见产出摘要</SelectItem>
+                <SelectItem value="full">下游可见完整输出</SelectItem>
+              </SelectContent>
             </Select>
             <input
               type="text"
@@ -245,7 +374,13 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
               onChange={(event) => setDraftExpectedFiles(event.target.value)}
               onBlur={commitDraftExpectedFiles}
             />
-            {catalog.diagnostics.length > 0 && <div className="ai-workflow-catalog-diagnostics">{catalog.diagnostics.map((diagnostic) => <div key={diagnostic}>{diagnostic}</div>)}</div>}
+            {catalog.diagnostics.length > 0 && (
+              <div className="ai-workflow-catalog-diagnostics">
+                {catalog.diagnostics.map((diagnostic) => (
+                  <div key={diagnostic}>{diagnostic}</div>
+                ))}
+              </div>
+            )}
           </section>
         )}
 
@@ -262,15 +397,34 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
         <section className="ai-workflow-drawer-section">
           {editable ? (
             <>
-              <div className="ai-workflow-drawer-label">Agent 输入 <span className="ai-workflow-drawer-hint">可编辑任务，失焦保存</span></div>
-              <Textarea value={draftTask} onChange={(event) => setDraftTask(event.target.value)} onBlur={commitDraftTask} rows={8} className="resize-y font-mono text-xs leading-relaxed" />
+              <div className="ai-workflow-drawer-label">
+                Agent 输入 <span className="ai-workflow-drawer-hint">可编辑任务，失焦保存</span>
+              </div>
+              <Textarea
+                value={draftTask}
+                onChange={(event) => setDraftTask(event.target.value)}
+                onBlur={commitDraftTask}
+                rows={8}
+                className="resize-y font-mono text-xs leading-relaxed"
+              />
             </>
           ) : (
             <>
-              <button type="button" className="ai-workflow-drawer-label ai-workflow-drawer-label--toggle" onClick={() => setInputOpen((value) => !value)} aria-expanded={inputOpen}>
-                {inputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              <button
+                type="button"
+                className="ai-workflow-drawer-label ai-workflow-drawer-label--toggle"
+                onClick={() => setInputOpen((value) => !value)}
+                aria-expanded={inputOpen}
+              >
+                {inputOpen ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <ChevronRight className="h-3 w-3" />
+                )}
                 Agent 输入
-                <span className="ai-workflow-drawer-hint">{inputText ? `${formatCharCount(inputText.length)} 字符` : "等待运行"}</span>
+                <span className="ai-workflow-drawer-hint">
+                  {inputText ? `${formatCharCount(inputText.length)} 字符` : "等待运行"}
+                </span>
               </button>
               {inputOpen && <pre className="ai-workflow-drawer-pre">{inputText || "等待运行"}</pre>}
             </>
@@ -279,10 +433,23 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
 
         <section className="ai-workflow-drawer-section ai-workflow-output-section">
           <div className="ai-workflow-drawer-title-row">
-            <button type="button" className="ai-workflow-drawer-label ai-workflow-drawer-label--toggle" onClick={() => setOutputOpen((value) => !value)} aria-expanded={outputOpen}>
-              {outputOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <button
+              type="button"
+              className="ai-workflow-drawer-label ai-workflow-drawer-label--toggle"
+              onClick={() => setOutputOpen((value) => !value)}
+              aria-expanded={outputOpen}
+            >
+              {outputOpen ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
               {liveOutput ? "实时响应" : "Agent 输出"}
-              {output && <span className="ai-workflow-drawer-hint">{formatCharCount(output.length)} 字符</span>}
+              {output && (
+                <span className="ai-workflow-drawer-hint">
+                  {formatCharCount(output.length)} 字符
+                </span>
+              )}
             </button>
             {output && (
               <span className="flex items-center gap-1">
@@ -298,31 +465,70 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
               </span>
             )}
           </div>
-          {outputOpen && (outputRaw ? (
-            <pre className="ai-workflow-drawer-pre ai-workflow-drawer-pre--output">
-              {outputOmitted > 0 ? `…（前 ${formatCharCount(outputOmitted)} 字符已省略）\n` : ""}
-              {outputDisplay || (status === "running" ? "Claude Agent 正在准备…" : "尚无输出")}
-            </pre>
-          ) : outputDisplay || status !== "running" ? (
-            <div className="ai-workflow-drawer-output-md">
-              {outputOmitted > 0 && (
-                <p className="ai-workflow-drawer-output-omitted">…（前 {formatCharCount(outputOmitted)} 字符已省略）</p>
-              )}
-              {outputDisplay
-                ? <MarkdownRenderer content={outputDisplay} variant="document" />
-                : <p className="ai-workflow-drawer-output-empty">尚无输出</p>}
-            </div>
-          ) : (
-            <p className="ai-workflow-drawer-output-empty">Claude Agent 正在准备…</p>
-          ))}
+          {outputOpen &&
+            (outputRaw ? (
+              <pre className="ai-workflow-drawer-pre ai-workflow-drawer-pre--output">
+                {outputOmitted > 0 ? `…（前 ${formatCharCount(outputOmitted)} 字符已省略）\n` : ""}
+                {outputDisplay || (status === "running" ? "Claude Agent 正在准备…" : "尚无输出")}
+              </pre>
+            ) : outputDisplay || status !== "running" ? (
+              <div className="ai-workflow-drawer-output-md">
+                {outputOmitted > 0 && (
+                  <p className="ai-workflow-drawer-output-omitted">
+                    …（前 {formatCharCount(outputOmitted)} 字符已省略）
+                  </p>
+                )}
+                {outputDisplay ? (
+                  <MarkdownRenderer content={outputDisplay} variant="document" />
+                ) : (
+                  <p className="ai-workflow-drawer-output-empty">尚无输出</p>
+                )}
+              </div>
+            ) : (
+              <p className="ai-workflow-drawer-output-empty">Claude Agent 正在准备…</p>
+            ))}
         </section>
 
-        {(upstream.length > 0 || downstream.length > 0) && <section className="ai-workflow-drawer-section"><div className="ai-workflow-drawer-label">依赖关系</div><div className="ai-workflow-drawer-deps-chips">{[...upstream, ...downstream].map((id) => <button key={id} className="ai-workflow-dep-chip" onClick={() => onSelectNode(id)}>{titleOf(id)}</button>)}</div></section>}
+        {(upstream.length > 0 || downstream.length > 0) && (
+          <section className="ai-workflow-drawer-section">
+            <div className="ai-workflow-drawer-label">依赖关系</div>
+            <div className="ai-workflow-drawer-deps-chips">
+              {[...upstream, ...downstream].map((id) => (
+                <button key={id} className="ai-workflow-dep-chip" onClick={() => onSelectNode(id)}>
+                  {titleOf(id)}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
-        {nodeRun?.errorText && <section className="ai-workflow-drawer-section"><div className="ai-workflow-drawer-label">错误</div><div className="ai-workflow-drawer-error">{nodeRun.errorText}</div></section>}
+        {nodeRun?.errorText && (
+          <section className="ai-workflow-drawer-section">
+            <div className="ai-workflow-drawer-label">错误</div>
+            <div className="ai-workflow-drawer-error">{nodeRun.errorText}</div>
+          </section>
+        )}
       </div>
 
-      {(planStatus === "running" || ["failed", "cancelled", "completed"].includes(planStatus)) && <div className="ai-workflow-drawer-footer">{planStatus === "running" ? <Button variant="destructive" size="sm" onClick={onCancel} disabled={actionPending}><Square className="h-3.5 w-3.5" />停止</Button> : <Button variant="outline" size="sm" onClick={onStart} disabled={actionPending}>{planStatus === "completed" ? <RotateCcw className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}{rerunLabel}</Button>}</div>}
+      {(planStatus === "running" || ["failed", "cancelled", "completed"].includes(planStatus)) && (
+        <div className="ai-workflow-drawer-footer">
+          {planStatus === "running" ? (
+            <Button variant="destructive" size="sm" onClick={onCancel} disabled={actionPending}>
+              <Square className="h-3.5 w-3.5" />
+              停止
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={onStart} disabled={actionPending}>
+              {planStatus === "completed" ? (
+                <RotateCcw className="h-3.5 w-3.5" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {rerunLabel}
+            </Button>
+          )}
+        </div>
+      )}
     </motion.aside>
   );
 }

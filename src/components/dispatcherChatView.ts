@@ -123,9 +123,22 @@ export function buildDispatcherDisplayItems(
       const task = taskId ? taskCalls.get(taskId) : undefined;
       if (!taskId || !task) continue;
       let payload: unknown;
-      try { payload = JSON.parse(message.contextPayload ?? message.content); } catch { continue; }
-      if (!payload || typeof payload !== "object" || !("kind" in payload) || payload.kind !== "tool_completion") continue;
-      const output = "context_payload" in payload && typeof payload.context_payload === "string" ? payload.context_payload : message.content;
+      try {
+        payload = JSON.parse(message.contextPayload ?? message.content);
+      } catch {
+        continue;
+      }
+      if (
+        !payload ||
+        typeof payload !== "object" ||
+        !("kind" in payload) ||
+        payload.kind !== "tool_completion"
+      )
+        continue;
+      const output =
+        "context_payload" in payload && typeof payload.context_payload === "string"
+          ? payload.context_payload
+          : message.content;
       const succeeded = "status" in payload && payload.status === "succeeded";
       // 归属优先：完成消息可能排在新 user 消息之后，必须写回发起工具的原始回合。
       const turn = taskTurns.get(taskId) ?? ensureAssistantTurn(message.id);
@@ -134,14 +147,18 @@ export function buildDispatcherDisplayItems(
       const startedAtMs = toolStartedAt.get(task.id);
       const finishedAtMs = Date.parse(message.createdAt);
       upsertToolActivity(turn.tools, {
-        id: task.id, name: task.name, workspaceId: message.workspaceId,
-        output, status: succeeded ? "success" : "error",
+        id: task.id,
+        name: task.name,
+        workspaceId: message.workspaceId,
+        output,
+        status: succeeded ? "success" : "error",
         errorText: succeeded ? undefined : output,
         durationMs:
           startedAtMs != null && Number.isFinite(finishedAtMs)
             ? Math.max(0, finishedAtMs - startedAtMs)
             : undefined,
-        resultMode: message.toolResultMode, detailRefs: message.toolArtifacts,
+        resultMode: message.toolResultMode,
+        detailRefs: message.toolArtifacts,
       });
       continue;
     }

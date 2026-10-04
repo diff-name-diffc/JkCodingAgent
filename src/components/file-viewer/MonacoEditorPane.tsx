@@ -6,13 +6,7 @@ import jsonWorker from "monaco-editor/languages/features/json/json.worker?worker
 import cssWorker from "monaco-editor/languages/features/css/css.worker?worker";
 import htmlWorker from "monaco-editor/languages/features/html/html.worker?worker";
 import tsWorker from "monaco-editor/languages/features/typescript/ts.worker?worker";
-import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-} from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from "react";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 
 const MONACO_THEME_LIGHT = "nezha-light";
@@ -142,20 +136,14 @@ export const MonacoEditorPane = forwardRef<
     language: string;
     onChange: (value: string) => void;
   }
->(function MonacoEditorPane(
-  { active = true, initialValue, filePath, language, onChange },
-  ref,
-) {
+>(function MonacoEditorPane({ active = true, initialValue, filePath, language, onChange }, ref) {
   const isDark = useIsDarkTheme();
-  const editorRef = useRef<MonacoTypes.editor.IStandaloneCodeEditor | null>(
-    null,
-  );
+  const editorRef = useRef<MonacoTypes.editor.IStandaloneCodeEditor | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
   // Dispose listener on unmount
-  const listenerRef =
-    useRef<MonacoTypes.IDisposable | null>(null);
+  const listenerRef = useRef<MonacoTypes.IDisposable | null>(null);
 
   useImperativeHandle(
     ref,
@@ -202,9 +190,7 @@ export const MonacoEditorPane = forwardRef<
       saveViewState() {
         return editorRef.current?.saveViewState() ?? null;
       },
-      restoreViewState(
-        state: MonacoTypes.editor.ICodeEditorViewState | null,
-      ) {
+      restoreViewState(state: MonacoTypes.editor.ICodeEditorViewState | null) {
         if (state) {
           editorRef.current?.restoreViewState(state);
         }
@@ -213,23 +199,20 @@ export const MonacoEditorPane = forwardRef<
     [],
   );
 
-  const handleMount = useCallback(
-    (editor: MonacoTypes.editor.IStandaloneCodeEditor) => {
-      editorRef.current = editor;
+  const handleMount = useCallback((editor: MonacoTypes.editor.IStandaloneCodeEditor) => {
+    editorRef.current = editor;
 
-      // Guard: if Monaco mounted before container had final dimensions, force re-layout
-      const { width, height } = editor.getLayoutInfo();
-      if (height === 0 || width === 0) {
-        requestAnimationFrame(() => editor.layout());
-      }
+    // Guard: if Monaco mounted before container had final dimensions, force re-layout
+    const { width, height } = editor.getLayoutInfo();
+    if (height === 0 || width === 0) {
+      requestAnimationFrame(() => editor.layout());
+    }
 
-      // Attach content change listener (uncontrolled — no React setState)
-      listenerRef.current = editor.onDidChangeModelContent(() => {
-        onChangeRef.current(editor.getValue());
-      });
-    },
-    [],
-  );
+    // Attach content change listener (uncontrolled — no React setState)
+    listenerRef.current = editor.onDidChangeModelContent(() => {
+      onChangeRef.current(editor.getValue());
+    });
+  }, []);
 
   // Cleanup on unmount — dispose listener and model to prevent memory leaks
   useEffect(() => {

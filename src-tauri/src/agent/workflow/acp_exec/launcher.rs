@@ -431,7 +431,10 @@ mod tests {
         assert_eq!(&entries[..2], &["/nvm/node/bin", "/usr/bin"]);
         assert!(entries.contains(&"/opt/homebrew/bin"));
         assert!(entries.contains(&"/sbin"));
-        assert_eq!(entries.iter().filter(|entry| **entry == "/usr/bin").count(), 1);
+        assert_eq!(
+            entries.iter().filter(|entry| **entry == "/usr/bin").count(),
+            1
+        );
     }
 
     #[cfg(unix)]

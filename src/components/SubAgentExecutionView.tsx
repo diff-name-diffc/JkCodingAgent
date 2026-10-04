@@ -99,13 +99,23 @@ function PhaseIndicator({ phase }: { phase: SubAgentPhase }) {
         const StepIcon = failedHere ? XCircle : step.Icon;
 
         return (
-          <span key={step.key} className="ai-subagent-exec-phase-step-wrap" style={{ flex: idx < PHASE_STEPS.length - 1 ? 1 : undefined }}>
+          <span
+            key={step.key}
+            className="ai-subagent-exec-phase-step-wrap"
+            style={{ flex: idx < PHASE_STEPS.length - 1 ? 1 : undefined }}
+          >
             <span className={stepClass}>
               <StepIcon size={11} />
               {step.label}
             </span>
             {idx < PHASE_STEPS.length - 1 && (
-              <span className={done ? "ai-subagent-exec-phase-connector is-done" : "ai-subagent-exec-phase-connector"} />
+              <span
+                className={
+                  done
+                    ? "ai-subagent-exec-phase-connector is-done"
+                    : "ai-subagent-exec-phase-connector"
+                }
+              />
             )}
           </span>
         );
@@ -137,7 +147,11 @@ function buildActivityRows(toolCalls: SubAgentToolCall[]): ActivityRow[] {
         <>
           {tc.toolName}
           {isRunning && (
-            <LoaderCircle size={10} className="spin" style={{ marginLeft: 4, verticalAlign: "middle" }} />
+            <LoaderCircle
+              size={10}
+              className="spin"
+              style={{ marginLeft: 4, verticalAlign: "middle" }}
+            />
           )}
         </>
       ),
@@ -195,12 +209,17 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
   const taskLong = task.length > TASK_PREVIEW_LIMIT;
   const taskText = taskLong && !taskExpanded ? `${task.slice(0, TASK_PREVIEW_LIMIT)}...` : task;
   const completionTokens = session.tokenUsage?.completionTokens ?? 0;
-  const speed = isActive && completionTokens > 0 ? formatTokenGenerationSpeed(completionTokens, elapsed) : null;
+  const speed =
+    isActive && completionTokens > 0 ? formatTokenGenerationSpeed(completionTokens, elapsed) : null;
 
   return (
     <div className="ai-subagent-exec ai-migrated-tool-activity">
       {/* Header */}
-      <button type="button" onClick={() => setIsOpen((prev) => !prev)} className="ai-subagent-exec-header">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="ai-subagent-exec-header"
+      >
         {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <Bot size={14} className="ai-subagent-exec-icon" />
         <span className="ai-subagent-exec-name">子智能体：{session.name}</span>
@@ -208,7 +227,11 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
         {/* Phase label chip */}
         <span className={isActive ? "ai-subagent-exec-phase is-active" : "ai-subagent-exec-phase"}>
           {isActive && session.phase === "tool_calling" ? (
-            <LoaderCircle size={10} className="spin" style={{ marginRight: 3, verticalAlign: "middle" }} />
+            <LoaderCircle
+              size={10}
+              className="spin"
+              style={{ marginRight: 3, verticalAlign: "middle" }}
+            />
           ) : null}
           {phaseLabel}
         </span>
@@ -292,7 +315,9 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
             {isActive && session.progressMessages.length > 0 && (
               <div className="ai-subagent-exec-progress">
                 {session.progressMessages.slice(-5).map((msg) => (
-                  <div key={msg.id} className="ai-subagent-exec-progress-item">{msg.text}</div>
+                  <div key={msg.id} className="ai-subagent-exec-progress-item">
+                    {msg.text}
+                  </div>
                 ))}
               </div>
             )}

@@ -86,8 +86,12 @@
   --animate-fade-in: fade-in var(--motion-normal) var(--motion-ease);
 
   @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 }
 
@@ -102,7 +106,6 @@
 
 /* Chat-specific component utilities — kept minimal on purpose. */
 @layer components {
-
   .ai-dialog {
     border: 1px solid var(--border-dim);
     border-radius: var(--radius-xl);
@@ -818,7 +821,9 @@
     height: 26px;
     border-radius: var(--radius-md);
     color: var(--text-muted);
-    transition: background 0.15s var(--motion-ease), color 0.15s var(--motion-ease);
+    transition:
+      background 0.15s var(--motion-ease),
+      color 0.15s var(--motion-ease);
     flex-shrink: 0;
   }
 
@@ -979,7 +984,9 @@
     border-left: 1px solid var(--border-dim);
     background: var(--bg-sidebar);
     color: var(--text-muted);
-    transition: background 0.15s var(--motion-ease), color 0.15s var(--motion-ease);
+    transition:
+      background 0.15s var(--motion-ease),
+      color 0.15s var(--motion-ease);
   }
 
   .ai-arch-chat-dock:hover {
@@ -1061,14 +1068,6 @@
     box-shadow: 0 12px 34px rgb(var(--accent-rgb) / 0.16);
   }
 
-
-
-
-
-
-
-
-
   .ai-project-name {
     overflow: hidden;
     color: var(--text-primary);
@@ -1108,8 +1107,6 @@
       color 0.16s ease,
       background 0.16s ease;
   }
-
-
 
   .ai-project-delete-btn:hover {
     border-color: rgb(var(--danger-rgb) / 0.28);
@@ -1737,8 +1734,20 @@
     padding: 24px;
     background-color: var(--bg-panel);
     background-image:
-      linear-gradient(45deg, rgb(128 128 128 / 0.1) 25%, transparent 25%, transparent 75%, rgb(128 128 128 / 0.1) 75%),
-      linear-gradient(45deg, rgb(128 128 128 / 0.1) 25%, transparent 25%, transparent 75%, rgb(128 128 128 / 0.1) 75%);
+      linear-gradient(
+        45deg,
+        rgb(128 128 128 / 0.1) 25%,
+        transparent 25%,
+        transparent 75%,
+        rgb(128 128 128 / 0.1) 75%
+      ),
+      linear-gradient(
+        45deg,
+        rgb(128 128 128 / 0.1) 25%,
+        transparent 25%,
+        transparent 75%,
+        rgb(128 128 128 / 0.1) 75%
+      );
     background-position:
       0 0,
       8px 8px;
@@ -1898,9 +1907,6 @@
     background: rgb(var(--accent-rgb) / 0.1);
     color: var(--text-primary);
   }
-
-
-
 
   .ai-git-inline-error {
     display: flex;
@@ -2755,9 +2761,6 @@
     color: currentColor;
   }
 
-
-
-
   .ai-settings-nav-label {
     min-width: 0;
     overflow: hidden;
@@ -2845,11 +2848,6 @@
     background: var(--bg-elevated);
   }
 
-
-
-
-
-
   .ai-settings-title-stack {
     display: flex;
     min-width: 0;
@@ -2917,9 +2915,6 @@
     text-overflow: ellipsis;
   }
 
-
-
-
   .ai-settings-footer {
     display: flex;
     min-height: 52px;
@@ -2946,11 +2941,6 @@
     margin: 22px 26px;
   }
 
-
-
-
-
-
   .ai-settings-panel-host > [style] {
     background: transparent !important;
   }
@@ -2962,10 +2952,6 @@
   .ai-settings-panel-host button {
     font-family: var(--font-ui);
   }
-
-
-
-
 
   .ai-aha-tab {
     position: relative;
@@ -3013,12 +2999,6 @@
     background: var(--accent);
   }
 
-
-
-
-
-
-
   .ai-aha-action-row {
     display: flex;
     align-items: center;
@@ -3064,17 +3044,10 @@
 
   /* 小尺寸行内动作按钮（获取模型 / 删除等） */
 
-
-
-
-
-
-
   .ai-aha-section.is-last {
     border-bottom: none;
     padding-bottom: 0;
   }
-
 
   /* ── 表单字段栈：label + control + hint（替代旧 s.aha* 内联样式） ── */
   .ai-aha-field {
@@ -3083,8 +3056,6 @@
     gap: 5px;
     min-width: 0;
   }
-
-
 
   .ai-aha-hint {
     font-size: 11px;
@@ -3096,27 +3067,9 @@
     color: var(--danger, var(--danger));
   }
 
-
   /* ── Provider 卡片 ── */
 
-
-
-
-
-
-
-
-
-
-
-
   /* ── 模型下拉选择 ── */
-
-
-
-
-
-
 
   /* ── 工具 / 子智能体选择列表 ── */
   .ai-aha-tool-list {
@@ -3248,11 +3201,7 @@
 
   /* 可折叠区块标题（chevron + 标签 + 计数） */
 
-
-
-
   /* 行为开关 */
-
 
   /* 分类选择芯片 */
   .ai-aha-category-chips {
@@ -4690,8 +4639,7 @@
     overflow: hidden;
     background:
       linear-gradient(rgba(79, 228, 221, 0.045) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(79, 228, 221, 0.045) 1px, transparent 1px),
-      var(--bg-sidebar);
+      linear-gradient(90deg, rgba(79, 228, 221, 0.045) 1px, transparent 1px), var(--bg-sidebar);
     background-size: 36px 36px;
   }
 
@@ -5196,7 +5144,6 @@
     }
   }
 
-
   .ai-toast-stack {
     position: fixed;
     right: 20px;
@@ -5256,11 +5203,6 @@
     color: var(--text-primary);
   }
 
-
-
-
-
-
   .ai-ssh-count-pill {
     flex-shrink: 0;
     border: 1px solid rgb(var(--accent-rgb) / 0.16);
@@ -5272,14 +5214,6 @@
     font-weight: 600;
   }
 
-
-
-
-
-
-
-
-
   .ai-aha-ghost-button.is-danger {
     color: var(--danger, var(--danger));
     border-color: rgb(var(--danger-rgb) / 0.3);
@@ -5290,7 +5224,6 @@
     background: rgb(var(--danger-rgb) / 0.1);
     color: var(--danger);
   }
-
 
   .ai-aha-category-chip:disabled {
     opacity: 0.5;
@@ -6031,65 +5964,10 @@
     background: var(--accent-subtle);
   }
 
-
-
-
-
   /* rail 项布局容器：承载项目按钮与悬浮关闭按钮的相对定位。
      项目切换按钮与关闭按钮是平级元素（不嵌套交互控件）。 */
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   /* 无 hover 的触屏设备没有悬停显示路径：直接常显，避免操作入口不可见。 */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   .ai-project-session-panel {
     width: 288px !important;
@@ -6257,14 +6135,10 @@
     color: var(--danger);
   }
 
-
-
   .ai-project-session-running {
     color: var(--accent);
     flex-shrink: 0;
   }
-
-
 
   .ai-project-session-empty {
     padding: 24px 16px;
@@ -6280,8 +6154,6 @@
     border-top: 1px solid rgb(var(--accent-rgb) / 0.12) !important;
     background: var(--bg-sidebar) !important;
   }
-
-
 
   /* Shared square icon button (used by RightToolbar, ProjectRail controls) */
   .ai-icon-button {
@@ -6313,38 +6185,6 @@
     cursor: not-allowed;
     opacity: 0.4;
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   /* ── Python Runner Drawer ─────────────────────────────────────────────── */
 
@@ -6543,9 +6383,6 @@
     .ai-home-search {
       min-width: 0;
     }
-
-
-
   }
 
   .ai-sidebar-footer-actions {
@@ -9045,11 +8882,6 @@
     padding-top: 16px;
   }
 
-
-
-
-
-
   .ai-set-provider-letter {
     display: inline-flex;
     flex: 0 0 auto;
@@ -9275,7 +9107,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
 
   /* 旧面板（子智能体管理）自带内部滚动与 flex 高度假设，嵌入滚动的 .ai-set-page
      时取消其内部滚动，统一随页面滚动，避免 flex:1 + min-height:0 塌缩 */
@@ -9980,7 +9811,6 @@
     color: var(--text-hint);
   }
 
-
   .ai-workflow-drawer-pre {
     max-height: 260px;
     overflow: auto;
@@ -10015,8 +9845,6 @@
 
   /* 依赖关系 chip（可点击跳转，带状态点） */
 
-
-
   .ai-workflow-drawer-deps-chips {
     display: flex;
     min-width: 0;
@@ -10050,15 +9878,7 @@
     color: var(--text-primary);
   }
 
-
-
-
-
-
   /* 影响文件列表 */
-
-
-
 
   /* 抽屉底部操作区（整个工作流级停止/重试） */
   .ai-workflow-drawer-footer {
@@ -10733,7 +10553,8 @@
     justify-content: center;
     border-radius: 8px;
     color: var(--text-secondary);
-    transition: background var(--motion-fast) var(--motion-ease),
+    transition:
+      background var(--motion-fast) var(--motion-ease),
       color var(--motion-fast) var(--motion-ease);
   }
 
@@ -10819,7 +10640,8 @@
     font-size: 12px;
     line-height: 18px;
     color: var(--text-secondary);
-    transition: background var(--motion-fast) var(--motion-ease),
+    transition:
+      background var(--motion-fast) var(--motion-ease),
       color var(--motion-fast) var(--motion-ease);
   }
 
@@ -10845,7 +10667,6 @@
   .ai-context-nav-menu {
     min-width: 200px;
   }
-
 
   .ai-context-nav-header-row > :first-child {
     flex: 1;
@@ -10996,8 +10817,6 @@
     color: var(--accent-strong);
   }
 
-
-
   .ai-project-recent-list {
     flex: 1;
     min-height: 0;
@@ -11091,8 +10910,7 @@
     margin-bottom: 0;
   }
 
-  .ai-streamdown [data-streamdown="code-block"] > .sticky
-    > [data-streamdown="code-block-actions"] {
+  .ai-streamdown [data-streamdown="code-block"] > .sticky > [data-streamdown="code-block-actions"] {
     margin-top: -4px;
   }
 }

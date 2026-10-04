@@ -23,7 +23,13 @@ export type EditorTab =
   /** 工作流工作视图（UI-13）：每会话单例标签，两级视图——planId 为 null 是
    * 会话工作流列表态，非 null 是该工作流详情态；标签 id 稳定于 sessionId。详情态内
    * 的初始一级视图由 view 指定（默认画布；列表行「结果」入口直达结果视图）。 */
-  | { id: string; kind: "workflow"; sessionId: string; planId: string | null; view?: WorkflowPanelView }
+  | {
+      id: string;
+      kind: "workflow";
+      sessionId: string;
+      planId: string | null;
+      view?: WorkflowPanelView;
+    }
   /** 浏览器预览（UI-18）：工作区单例，内容跟随活动会话（与旧右面板语义一致；
    * 每会话 id 会在切会话后留下无法渲染的死壳标签）。 */
   | { id: string; kind: "browser"; title: string };
@@ -58,9 +64,7 @@ export function openFileTab(state: EditorTabsState, path: string, name: string):
   const id = fileTabId(path);
   const existing = state.tabs.find((tab) => tab.id === id);
   const tabs = existing
-    ? state.tabs.map((tab) =>
-        tab.id === id ? { ...tab, name } : tab,
-      )
+    ? state.tabs.map((tab) => (tab.id === id ? { ...tab, name } : tab))
     : [...state.tabs, { id, kind: "file" as const, path, name }];
   return { tabs, activeTabId: id };
 }
@@ -157,9 +161,7 @@ export function closeTabsToRight(state: EditorTabsState, tabId: string): EditorT
   const index = state.tabs.findIndex((tab) => tab.id === tabId);
   if (index === -1) return state;
   const tabs = state.tabs.slice(0, index + 1);
-  const activeTabId = tabs.some((tab) => tab.id === state.activeTabId)
-    ? state.activeTabId
-    : tabId;
+  const activeTabId = tabs.some((tab) => tab.id === state.activeTabId) ? state.activeTabId : tabId;
   return { tabs, activeTabId };
 }
 
@@ -181,7 +183,11 @@ export function renameFileTab(
     )
     .map((tab) =>
       tab.kind === "diff" && tab.diff.kind === "file" && tab.diff.filePath === oldPath
-        ? { ...tab, id: diffTabId({ ...tab.diff, filePath: newPath }), diff: { ...tab.diff, filePath: newPath } }
+        ? {
+            ...tab,
+            id: diffTabId({ ...tab.diff, filePath: newPath }),
+            diff: { ...tab.diff, filePath: newPath },
+          }
         : tab,
     );
   const active = state.activeTabId === id ? fileTabId(newPath) : state.activeTabId;
@@ -208,5 +214,7 @@ export function activeTab(state: EditorTabsState): EditorTab | null {
 }
 
 export function fileTabs(state: EditorTabsState): Extract<EditorTab, { kind: "file" }>[] {
-  return state.tabs.filter((tab): tab is Extract<EditorTab, { kind: "file" }> => tab.kind === "file");
+  return state.tabs.filter(
+    (tab): tab is Extract<EditorTab, { kind: "file" }> => tab.kind === "file",
+  );
 }

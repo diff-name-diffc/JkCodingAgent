@@ -32,9 +32,7 @@ import {
  * useSessionListEventMerge 单一实现中，按 SessionListScope 过滤与写入。
  */
 
-export type SessionListScope =
-  | { kind: "chat" }
-  | { kind: "project"; projectId: string };
+export type SessionListScope = { kind: "chat" } | { kind: "project"; projectId: string };
 
 export const SESSION_QUERY_KEYS = {
   // 与 use-chat-queries.ts 中聊天列表的既有 key 完全一致（["chat","sessions","all"]）。
@@ -179,9 +177,7 @@ export function useSessionListEventMerge(scope: SessionListScope, enabled = true
     if (scopeKind === "project" && !scopeProjectId) return;
 
     const listPrefix: readonly unknown[] =
-      scopeKind === "chat"
-        ? ["chat", "sessions"]
-        : ["project", "sessions", scopeProjectId];
+      scopeKind === "chat" ? ["chat", "sessions"] : ["project", "sessions", scopeProjectId];
 
     let invalidateTimer: ReturnType<typeof setTimeout> | null = null;
     const scheduleInvalidate = () => {
@@ -357,9 +353,8 @@ export function useDeleteProjectSession() {
         SESSION_QUERY_KEYS.projectList(args.projectId),
         (data) => removeSessionFromPages(data, args.sessionId),
       );
-      qc.setQueriesData<SessionSearchResult[]>(
-        { queryKey: ["sessions", "search"] },
-        (results) => results?.filter((result) => result.sessionId !== args.sessionId),
+      qc.setQueriesData<SessionSearchResult[]>({ queryKey: ["sessions", "search"] }, (results) =>
+        results?.filter((result) => result.sessionId !== args.sessionId),
       );
       void qc.invalidateQueries({ queryKey: ["project", "sessions", args.projectId] });
     },

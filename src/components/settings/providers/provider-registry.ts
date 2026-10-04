@@ -38,18 +38,90 @@ export type PurposeDef = {
 };
 
 export const PURPOSE_DEFS: PurposeDef[] = [
-  { kind: "vision", title: "视觉模型", description: "用户上传图片时使用的多模态模型。", testKind: "vision", isModelListFetchable: true },
-  { kind: "image", title: "图片生成模型", description: "generate_image 工具使用的图片生成模型。", testKind: "image", isModelListFetchable: true },
-  { kind: "imageEdit", title: "图片编辑模型", description: "edit_image 工具使用的图片编辑模型。", testKind: "imageEdit", isModelListFetchable: true },
-  { kind: "asr", title: "语音识别（ASR）模型", description: "实时语音识别配置，URL 为 WebSocket 地址。", testKind: "asr", isModelListFetchable: false },
-  { kind: "tts", title: "语音合成（TTS）模型", description: "预留的文本转语音模型配置。", testKind: "tts", isModelListFetchable: false },
-  { kind: "embedding", title: "文本向量模型", description: "预留的向量模型配置。", testKind: "embedding", isModelListFetchable: true },
-  { kind: "projectChat", title: "项目主模型", description: "项目对话和工具调用的主模型。", testKind: "chat", isModelListFetchable: true },
-  { kind: "projectSummary", title: "项目摘要模型", description: "项目会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。", testKind: "summary", isModelListFetchable: true },
-  { kind: "projectVerifier", title: "项目验收模型", description: "工作流运行收尾的验收评审模型；留空时回退项目摘要模型。", testKind: "summary", isModelListFetchable: true },
-  { kind: "chatChat", title: "聊天主模型", description: "聊天对话和工具调用的主模型。", testKind: "chat", isModelListFetchable: true },
-  { kind: "chatSummary", title: "聊天摘要模型", description: "聊天会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。", testKind: "summary", isModelListFetchable: true },
-  { kind: "review", title: "SSH 审查模型", description: "SSH 命令执行前的安全审查模型。", testKind: "review", isModelListFetchable: true },
+  {
+    kind: "vision",
+    title: "视觉模型",
+    description: "用户上传图片时使用的多模态模型。",
+    testKind: "vision",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "image",
+    title: "图片生成模型",
+    description: "generate_image 工具使用的图片生成模型。",
+    testKind: "image",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "imageEdit",
+    title: "图片编辑模型",
+    description: "edit_image 工具使用的图片编辑模型。",
+    testKind: "imageEdit",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "asr",
+    title: "语音识别（ASR）模型",
+    description: "实时语音识别配置，URL 为 WebSocket 地址。",
+    testKind: "asr",
+    isModelListFetchable: false,
+  },
+  {
+    kind: "tts",
+    title: "语音合成（TTS）模型",
+    description: "预留的文本转语音模型配置。",
+    testKind: "tts",
+    isModelListFetchable: false,
+  },
+  {
+    kind: "embedding",
+    title: "文本向量模型",
+    description: "预留的向量模型配置。",
+    testKind: "embedding",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "projectChat",
+    title: "项目主模型",
+    description: "项目对话和工具调用的主模型。",
+    testKind: "chat",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "projectSummary",
+    title: "项目摘要模型",
+    description: "项目会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。",
+    testKind: "summary",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "projectVerifier",
+    title: "项目验收模型",
+    description: "工作流运行收尾的验收评审模型；留空时回退项目摘要模型。",
+    testKind: "summary",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "chatChat",
+    title: "聊天主模型",
+    description: "聊天对话和工具调用的主模型。",
+    testKind: "chat",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "chatSummary",
+    title: "聊天摘要模型",
+    description: "聊天会话中工具结果、子任务输出和会话标题的摘要；留空时使用默认模型。",
+    testKind: "summary",
+    isModelListFetchable: true,
+  },
+  {
+    kind: "review",
+    title: "SSH 审查模型",
+    description: "SSH 命令执行前的安全审查模型。",
+    testKind: "review",
+    isModelListFetchable: true,
+  },
 ];
 
 const SHARED_FIELD_MAP: Record<SharedPurposeKind, keyof AhaSharedModels> = {
@@ -63,7 +135,10 @@ const SHARED_FIELD_MAP: Record<SharedPurposeKind, keyof AhaSharedModels> = {
 
 // ── 用途配置读写 ──────────────────────────────────────────────────────────────
 
-export function getPurposeConfigs(settings: AhaSettingsV2, kind: PurposeKind): DispatcherModelConfig[] {
+export function getPurposeConfigs(
+  settings: AhaSettingsV2,
+  kind: PurposeKind,
+): DispatcherModelConfig[] {
   switch (kind) {
     case "projectChat":
       return settings.project.chatModelConfigs;
@@ -97,15 +172,27 @@ function setPurposeConfigs(
 ): AhaSettingsV2 {
   switch (kind) {
     case "projectChat":
-      return { ...settings, project: setContextConfigs(settings.project, "chatModelConfigs", configs) };
+      return {
+        ...settings,
+        project: setContextConfigs(settings.project, "chatModelConfigs", configs),
+      };
     case "projectSummary":
-      return { ...settings, project: setContextConfigs(settings.project, "summaryModelConfigs", configs) };
+      return {
+        ...settings,
+        project: setContextConfigs(settings.project, "summaryModelConfigs", configs),
+      };
     case "projectVerifier":
-      return { ...settings, project: setContextConfigs(settings.project, "verifierModelConfigs", configs) };
+      return {
+        ...settings,
+        project: setContextConfigs(settings.project, "verifierModelConfigs", configs),
+      };
     case "chatChat":
       return { ...settings, chat: setContextConfigs(settings.chat, "chatModelConfigs", configs) };
     case "chatSummary":
-      return { ...settings, chat: setContextConfigs(settings.chat, "summaryModelConfigs", configs) };
+      return {
+        ...settings,
+        chat: setContextConfigs(settings.chat, "summaryModelConfigs", configs),
+      };
     case "review": {
       const base = settings.review ?? { modelConfig: emptyModelConfig(), systemPrompt: "" };
       return {
@@ -172,4 +259,3 @@ export function modelCapabilityTags(model: string, contextWindow?: number): stri
   if (longContext) tags.push("长上下文");
   return tags;
 }
-

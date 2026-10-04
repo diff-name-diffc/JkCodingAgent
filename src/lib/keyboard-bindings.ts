@@ -89,8 +89,7 @@ export const RADIX_MODAL_OPEN_SELECTOR =
 
 /** Mod 键平台映射：macOS（含 iOS）用 Cmd，其余用 Ctrl。navigator 缺失时按非 Mac。 */
 export function isMacPlatform(
-  nav: { platform?: string; userAgent?: string } | undefined = typeof navigator ===
-  "undefined"
+  nav: { platform?: string; userAgent?: string } | undefined = typeof navigator === "undefined"
     ? undefined
     : { platform: navigator.platform, userAgent: navigator.userAgent },
 ): boolean {
@@ -110,12 +109,12 @@ export function isMacPlatform(
 export function isImeComposing(event: KeyEventLike): boolean {
   return Boolean(
     event.nativeEvent?.isComposing ||
-      event.nativeEvent?.keyCode === 229 ||
-      event.nativeEvent?.which === 229 ||
-      event.isComposing ||
-      event.keyCode === 229 ||
-      event.which === 229 ||
-      event.key === "Process",
+    event.nativeEvent?.keyCode === 229 ||
+    event.nativeEvent?.which === 229 ||
+    event.isComposing ||
+    event.keyCode === 229 ||
+    event.which === 229 ||
+    event.key === "Process",
   );
 }
 
@@ -140,9 +139,7 @@ export function matchesBinding(
 export function isTypingTarget(target: EventTargetLike | null | undefined): boolean {
   if (!target) return false;
   return Boolean(
-    target.tagName === "INPUT" ||
-      target.tagName === "TEXTAREA" ||
-      target.isContentEditable,
+    target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable,
   );
 }
 

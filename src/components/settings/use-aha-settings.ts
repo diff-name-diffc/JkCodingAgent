@@ -130,9 +130,7 @@ function ensureLoaded(): void {
     // 全局启用集合从 sub_agent_list 的 globalEnabled 字段过滤（原
     // sub_agent_get_global_enabled 命令已折叠）：enabled=1 ∩ 全局成员。
     invoke<SubAgentRecord[]>("sub_agent_list").then((agents) =>
-      agents
-        .filter((agent) => agent.enabled && agent.globalEnabled)
-        .map((agent) => agent.id),
+      agents.filter((agent) => agent.enabled && agent.globalEnabled).map((agent) => agent.id),
     ),
   ])
     .then(([loaded, categoryConfigs, enabledIds]) => {
@@ -231,10 +229,7 @@ function scheduleSave(fieldId?: string): void {
   notify();
 }
 
-function updateSettings(
-  updater: (prev: AhaSettingsV2) => AhaSettingsV2,
-  fieldId?: string,
-): void {
+function updateSettings(updater: (prev: AhaSettingsV2) => AhaSettingsV2, fieldId?: string): void {
   if (!settings) {
     // 加载未完成/失败时不能静默丢弃编辑：明确告知而不是假装已调度保存。
     toast.error("设置尚未加载完成，请稍后再试");

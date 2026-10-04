@@ -141,10 +141,7 @@ export function resolveWorkspaceBudget(input: WorkspaceBudgetInput): WorkspaceBu
   const chrome: WorkspaceChromeSizes = { ...DEFAULT_CHROME, ...input.chrome };
   const degradations: WorkspaceDegradation[] = [];
 
-  const availableWidth = Math.max(
-    0,
-    input.viewportWidth - chrome.railWidth - chrome.toolbarWidth,
-  );
+  const availableWidth = Math.max(0, input.viewportWidth - chrome.railWidth - chrome.toolbarWidth);
 
   // ── 导航 ────────────────────────────────────────────────
   let navWidth = 0;
@@ -199,10 +196,7 @@ export function resolveWorkspaceBudget(input: WorkspaceBudgetInput): WorkspaceBu
       });
     }
   }
-  const mainHeight = Math.max(
-    0,
-    input.viewportHeight - chrome.titlebarHeight - terminalHeight,
-  );
+  const mainHeight = Math.max(0, input.viewportHeight - chrome.titlebarHeight - terminalHeight);
   if (mainHeight < chrome.minMainHeight) {
     degradations.push({ kind: "main-height-below-min", height: mainHeight });
   }

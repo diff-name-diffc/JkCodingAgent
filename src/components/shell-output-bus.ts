@@ -35,10 +35,7 @@ function registerGlobalListener(): void {
 /**
  * 订阅指定终端（shellId）的输出。返回退订函数；当该终端无订阅者时删除其键。
  */
-export function subscribeShellOutput(
-  shellId: string,
-  callback: ShellOutputCallback,
-): () => void {
+export function subscribeShellOutput(shellId: string, callback: ShellOutputCallback): () => void {
   registerGlobalListener();
 
   let callbacks = subscribers.get(shellId);

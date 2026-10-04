@@ -293,7 +293,12 @@ impl RigArchitectureAgent {
                 request.user_segments_json.clone(),
             )
             .await?;
-        crate::agent::common::emit(&on_event, AgentEvent::UserMessage { message: Box::new(user) });
+        crate::agent::common::emit(
+            &on_event,
+            AgentEvent::UserMessage {
+                message: Box::new(user),
+            },
+        );
 
         let workspace = self.session_workspace(workspace_id).await?;
         if !self.is_configured() {

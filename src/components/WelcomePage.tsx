@@ -5,10 +5,7 @@ import { formatRelativeTime, shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { AiEmptyState, AiSectionHeader } from "./ui/sci-fi-shell";
 import { AppRail } from "./shell/AppRail";
-import {
-  HOME_PANE_UNMOUNTED,
-  nextHomePaneKeepAlive,
-} from "./home-view-state";
+import { HOME_PANE_UNMOUNTED, nextHomePaneKeepAlive } from "./home-view-state";
 
 const HomeChatPage = lazy(() =>
   import("./HomeChatPage").then((module) => ({ default: module.HomeChatPage })),
@@ -21,11 +18,7 @@ const ArchitectureView = lazy(() =>
 );
 
 function WelcomePaneFallback() {
-  return (
-    <div className="ai-home-pane ai-empty-state">
-      加载中...
-    </div>
-  );
+  return <div className="ai-home-pane ai-empty-state">加载中...</div>;
 }
 
 function WelcomeEmpty({ hasProjects, onOpen }: { hasProjects: boolean; onOpen: () => void }) {
@@ -114,74 +107,74 @@ export function WelcomePage({
 
           {view === "projects" && (
             <div className="ai-home-pane ai-home-projects">
-            <div className="ai-home-search-row">
-              <div className={`ai-field ai-home-search${searchFocused ? " is-focused" : ""}`}>
-                <Search
-                  size={15}
-                  strokeWidth={1.9}
-                  color="var(--text-muted)"
-                  style={{ flexShrink: 0 }}
-                />
-                <input
-                  placeholder="搜索项目"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onFocus={() => setSearchFocused(true)}
-                  onBlur={() => setSearchFocused(false)}
-                  autoFocus
-                />
+              <div className="ai-home-search-row">
+                <div className={`ai-field ai-home-search${searchFocused ? " is-focused" : ""}`}>
+                  <Search
+                    size={15}
+                    strokeWidth={1.9}
+                    color="var(--text-muted)"
+                    style={{ flexShrink: 0 }}
+                  />
+                  <input
+                    placeholder="搜索项目"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onFocus={() => setSearchFocused(true)}
+                    onBlur={() => setSearchFocused(false)}
+                    autoFocus
+                  />
+                </div>
+
+                <div className="ai-home-search-actions">
+                  <button className="ai-home-primary-btn" onClick={onOpen}>
+                    <Plus size={14} strokeWidth={2.3} />
+                    <span>打开项目</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="ai-home-search-actions">
-                <button className="ai-home-primary-btn" onClick={onOpen}>
-                  <Plus size={14} strokeWidth={2.3} />
-                  <span>打开项目</span>
-                </button>
-              </div>
-            </div>
+              <AiSectionHeader
+                title="最近项目"
+                caption={
+                  query.trim() ? `找到 ${filtered.length} 个结果` : `共 ${projects.length} 个项目`
+                }
+              />
 
-            <AiSectionHeader
-              title="最近项目"
-              caption={
-                query.trim() ? `找到 ${filtered.length} 个结果` : `共 ${projects.length} 个项目`
-              }
-            />
-
-            <div className="ai-project-recent-list">
-              {filtered.length === 0 ? (
-                <WelcomeEmpty hasProjects={projects.length > 0} onOpen={onOpen} />
-              ) : (
-                <ul role="list" className="ai-project-recent-ul">
-                  {filtered.map((p) => (
-                    <li key={p.id} className="ai-project-recent-item">
-                      <button
-                        type="button"
-                        className="ai-project-recent-row"
-                        onClick={() => onProjectClick(p)}
-                        title={`${p.name} · ${p.path}`}
-                      >
-                        <ProjectAvatar name={p.name} size={28} />
-                        <span className="ai-project-recent-main">
-                          <span className="ai-project-name">{p.name}</span>
-                          <span className="ai-project-meta">
-                            {shortenPath(p.path)} ·{" "}
-                            {formatRelativeTime(new Date(p.lastOpenedAt).toISOString())}
+              <div className="ai-project-recent-list">
+                {filtered.length === 0 ? (
+                  <WelcomeEmpty hasProjects={projects.length > 0} onOpen={onOpen} />
+                ) : (
+                  <ul role="list" className="ai-project-recent-ul">
+                    {filtered.map((p) => (
+                      <li key={p.id} className="ai-project-recent-item">
+                        <button
+                          type="button"
+                          className="ai-project-recent-row"
+                          onClick={() => onProjectClick(p)}
+                          title={`${p.name} · ${p.path}`}
+                        >
+                          <ProjectAvatar name={p.name} size={28} />
+                          <span className="ai-project-recent-main">
+                            <span className="ai-project-name">{p.name}</span>
+                            <span className="ai-project-meta">
+                              {shortenPath(p.path)} ·{" "}
+                              {formatRelativeTime(new Date(p.lastOpenedAt).toISOString())}
+                            </span>
                           </span>
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        className="ai-project-delete-btn"
-                        onClick={() => onDeleteProject(p.id)}
-                        title="删除项目"
-                        aria-label={`删除项目 ${p.name}`}
-                      >
-                        <Trash2 size={14} strokeWidth={1.8} />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                        </button>
+                        <button
+                          type="button"
+                          className="ai-project-delete-btn"
+                          onClick={() => onDeleteProject(p.id)}
+                          title="删除项目"
+                          aria-label={`删除项目 ${p.name}`}
+                        >
+                          <Trash2 size={14} strokeWidth={1.8} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           )}

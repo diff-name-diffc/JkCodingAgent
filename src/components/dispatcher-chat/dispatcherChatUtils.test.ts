@@ -65,7 +65,10 @@ describe("mergeDispatcherMessages — 归一化身份缓存（UI-24b-4）", () =
   });
 
   it("重入 merge：上一轮产物对象身份被复用（不重复 normalize）", () => {
-    const first = mergeDispatcherMessages([], [wire("m1", "a"), wire("m2", "b", "2026-08-25T00:00:01Z")]);
+    const first = mergeDispatcherMessages(
+      [],
+      [wire("m1", "a"), wire("m2", "b", "2026-08-25T00:00:01Z")],
+    );
     const second = mergeDispatcherMessages(first, [wire("m3", "c", "2026-08-25T00:00:02Z")]);
     // m1/m2 归一化产物应为同一对象引用（WeakMap 命中）
     expect(second.find((m) => m.id === "m1")).toBe(first.find((m) => m.id === "m1"));
@@ -109,16 +112,18 @@ describe("mergeDispatcherMessages — 乐观 pending 消息替换", () => {
   });
   // current 侧必须是归一化产物：wire 先经一次 merge 进入。
   const history = (ids: Array<[string, string]>): DispatcherMessage[] =>
-    mergeDispatcherMessages([], ids.map(([id, at]) => wire(id, at)));
+    mergeDispatcherMessages(
+      [],
+      ids.map(([id, at]) => wire(id, at)),
+    );
 
   it("权威消息到达时丢弃 pending（不出现两条同轮用户消息）", () => {
     const optimistic = buildOptimisticUserMessage("s1", "hi", []);
     expect(optimistic.pending).toBe(true);
 
-    const withPending = mergeDispatcherMessages(
-      history([["m0", "2026-08-25T00:00:00Z"]]),
-      [optimistic],
-    );
+    const withPending = mergeDispatcherMessages(history([["m0", "2026-08-25T00:00:00Z"]]), [
+      optimistic,
+    ]);
     expect(withPending).toHaveLength(2);
 
     const afterAcknowledge = mergeDispatcherMessages(withPending, [
@@ -136,10 +141,9 @@ describe("mergeDispatcherMessages — 乐观 pending 消息替换", () => {
 
   it("失败对账批次（不含该轮消息）同样清除 pending", () => {
     const optimistic = buildOptimisticUserMessage("s1", "hi", []);
-    const withPending = mergeDispatcherMessages(
-      history([["m0", "2026-08-25T00:00:00Z"]]),
-      [optimistic],
-    );
+    const withPending = mergeDispatcherMessages(history([["m0", "2026-08-25T00:00:00Z"]]), [
+      optimistic,
+    ]);
     const afterReconcile = mergeDispatcherMessages(withPending, [
       wire("m0", "2026-08-25T00:00:00Z"),
     ]);

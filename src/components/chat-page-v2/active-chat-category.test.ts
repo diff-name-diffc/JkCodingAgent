@@ -34,9 +34,7 @@ describe("resolveActiveChatCategory", () => {
   });
 
   it("会话未挂分类（空串）时返回 null", () => {
-    expect(
-      resolveActiveChatCategory([{ ...session, category: "" }], [category], "s1"),
-    ).toBeNull();
+    expect(resolveActiveChatCategory([{ ...session, category: "" }], [category], "s1")).toBeNull();
   });
 
   it("分类记录已删除（id 悬空）时返回 null，而不是造默认分类", () => {

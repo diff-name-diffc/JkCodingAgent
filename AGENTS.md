@@ -15,6 +15,8 @@ pnpm dev            # 启动 Vite 开发服务器（端口 1420）
 pnpm typecheck      # tsc 全量类型检查（与 build 解耦，CI 单独跑）
 pnpm build          # Vite 打包（不含类型检查）
 pnpm lint           # ESLint（--max-warnings 0）
+pnpm format         # Prettier 格式化 src/**/*.{ts,tsx,css}（写入，提交前必跑）
+pnpm format:check   # Prettier 格式化校验（CI 门禁）
 pnpm test           # Vitest（前端纯函数/归一化）
 pnpm contract:check # Tauri 命令双向契约检查（后端注册 ↔ 前端调用）
 pnpm styles:report  # .ai-* 类定义/引用双向 fail-closed 报告
@@ -133,6 +135,13 @@ App
 ---
 
 ## 开发规范
+
+### 格式化（强制，双端工具链统一）
+
+- **写完代码必须先格式化再提交**，排版以工具输出为准，不手写对齐、不在评审中讨论格式（格式问题一律交给工具收敛）。
+- **Rust**：在 `src-tauri/` 下执行 `cargo fmt`。无自定义 rustfmt.toml，统一走 rustfmt 默认风格；CI 门禁 `cargo fmt --all -- --check`，未格式化的代码无法合入。
+- **前端**：仓库根执行 `pnpm format`（Prettier）。配置在根目录 `.prettierrc`（printWidth 100、双引号、分号、尾逗号 all、2 空格缩进），作用域 `src/**/*.{ts,tsx,css}`；CI 门禁 `pnpm format:check`。ESLint 侧经 `eslint-config-prettier` 关闭与 Prettier 冲突的风格规则，lint 与 format 互不打架。
+- 两端格式化均为幂等操作，重复执行无额外 diff；生成文件（`dist/`、`src-tauri/target/`）不在作用域内。
 
 ### 样式（Tailwind 设计系统）
 

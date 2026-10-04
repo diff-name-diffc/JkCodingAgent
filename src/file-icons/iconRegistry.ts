@@ -17,12 +17,7 @@ const file = (
   category,
 });
 
-const folder = (
-  key: string,
-  badge: string,
-  accent: string,
-  accentSoft: string,
-): FileIconSpec => ({
+const folder = (key: string, badge: string, accent: string, accentSoft: string): FileIconSpec => ({
   key,
   kind: "folder",
   badge,

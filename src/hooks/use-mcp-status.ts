@@ -8,10 +8,7 @@ import type { McpStatus } from "../types";
  * 保留后端 aggregate 的 degraded / invalid_config 区分（不再都叫「异常」）；
  * 真实失败服务器与原因在 MCP 状态弹窗内按服务器展开。
  */
-export function getMcpConnectionStatus(
-  mcpStatus: McpStatus | null,
-  mcpChecking: boolean,
-): string {
+export function getMcpConnectionStatus(mcpStatus: McpStatus | null, mcpChecking: boolean): string {
   if (mcpChecking) return "checking";
   if (!mcpStatus) return "not_configured";
   return mcpStatus.aggregate;

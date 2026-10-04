@@ -39,14 +39,16 @@ const ImportEntryRow = memo(function ImportEntryRow({
             {entry.name || entry.id}
           </span>
           {entry.authMethod === "key" ? (
-            <KeyRound size={12} strokeWidth={1.5} className="flex-shrink-0 text-[var(--text-muted)]" />
+            <KeyRound
+              size={12}
+              strokeWidth={1.5}
+              className="flex-shrink-0 text-[var(--text-muted)]"
+            />
           ) : (
             <Lock size={12} strokeWidth={1.5} className="flex-shrink-0 text-[var(--text-muted)]" />
           )}
           {duplicated && (
-            <span className="flex-shrink-0 text-[11px] text-[var(--text-muted)]">
-              已存在
-            </span>
+            <span className="flex-shrink-0 text-[11px] text-[var(--text-muted)]">已存在</span>
           )}
         </span>
         <span className="truncate text-[11.5px] text-[var(--text-secondary)]">
@@ -80,9 +82,7 @@ export function SshImportDialog({
   const duplicated = useMemo(() => {
     const ids = new Set(existing.map((server) => server.id));
     const endpoints = new Set(existing.map(endpointKey));
-    return entries.map(
-      (entry) => ids.has(entry.id) || endpoints.has(endpointKey(entry)),
-    );
+    return entries.map((entry) => ids.has(entry.id) || endpoints.has(endpointKey(entry)));
   }, [entries, existing]);
 
   const [selected, setSelected] = useState<Set<number>>(
@@ -117,7 +117,8 @@ export function SshImportDialog({
             导入本机 SSH 配置
           </DialogPrimitive.Title>
           <DialogPrimitive.Description className="ai-set-confirm-description">
-            从 ~/.ssh/config 解析出 {entries.length} 台主机，勾选要导入的条目；密码等凭据不会被导入，导入后可在列表中补充。
+            从 ~/.ssh/config 解析出 {entries.length}{" "}
+            台主机，勾选要导入的条目；密码等凭据不会被导入，导入后可在列表中补充。
           </DialogPrimitive.Description>
 
           <div className="flex max-h-72 flex-col gap-1 overflow-y-auto py-1">
@@ -140,9 +141,7 @@ export function SshImportDialog({
             <Button
               size="sm"
               disabled={selectedCount === 0}
-              onClick={() =>
-                onConfirm(entries.filter((_, index) => selected.has(index)))
-              }
+              onClick={() => onConfirm(entries.filter((_, index) => selected.has(index)))}
             >
               导入 {selectedCount > 0 ? `（${selectedCount}）` : ""}
             </Button>

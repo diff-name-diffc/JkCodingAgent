@@ -1,6 +1,10 @@
 import { useCallback, useEffect } from "react";
 import { useWorkspaceStore } from "../stores/workspace-store";
-import type { EditorTab, EditorTabsState, WorkflowPanelView } from "../components/project/main-tabs";
+import type {
+  EditorTab,
+  EditorTabsState,
+  WorkflowPanelView,
+} from "../components/project/main-tabs";
 
 export type WorkflowTab = Extract<EditorTab, { kind: "workflow" }>;
 

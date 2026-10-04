@@ -8,7 +8,6 @@
  * 执行器在全部指令成功后一次性 updateScene 提交，天然 all-or-nothing。
  */
 
-
 import type {
   ArchCamera,
   ArchInstruction,
@@ -216,16 +215,28 @@ function applyUpdateArrow(
   restyleArrow(draft, arrow, next);
 }
 
-function applyMoveShape(ctx: ApplyContext, resolved: ResolvedInstruction, instruction: ArchMoveShape): void {
+function applyMoveShape(
+  ctx: ApplyContext,
+  resolved: ResolvedInstruction,
+  instruction: ArchMoveShape,
+): void {
   const { draft } = ctx;
   const el = draft.get(resolved.targetIds![0]);
   if (!el) return;
-  const dx = finite(instruction.dx) ?? (finite(instruction.x) !== undefined ? finite(instruction.x)! - el.x : 0);
-  const dy = finite(instruction.dy) ?? (finite(instruction.y) !== undefined ? finite(instruction.y)! - el.y : 0);
+  const dx =
+    finite(instruction.dx) ??
+    (finite(instruction.x) !== undefined ? finite(instruction.x)! - el.x : 0);
+  const dy =
+    finite(instruction.dy) ??
+    (finite(instruction.y) !== undefined ? finite(instruction.y)! - el.y : 0);
   for (const id of cascadeMove(draft, [el.id], dx, dy)) ctx.moved.add(id);
 }
 
-function applyLayout(ctx: ApplyContext, resolved: ResolvedInstruction, instruction: ArchLayout): void {
+function applyLayout(
+  ctx: ApplyContext,
+  resolved: ResolvedInstruction,
+  instruction: ArchLayout,
+): void {
   const { draft } = ctx;
   const ids = resolved.targetIds!;
   const items: LayoutItem[] = [];
@@ -263,7 +274,11 @@ function applyLayout(ctx: ApplyContext, resolved: ResolvedInstruction, instructi
  * 约束：箭头两端由绑定决定归属、不允许 reparent；frame 只能位于页面根；
  * 目标容器在被移动目标之中时拒绝（循环包含）。
  */
-function applyReparent(ctx: ApplyContext, resolved: ResolvedInstruction, instruction: ArchReparent): void {
+function applyReparent(
+  ctx: ApplyContext,
+  resolved: ResolvedInstruction,
+  instruction: ArchReparent,
+): void {
   const { draft } = ctx;
   const parentId = resolved.reparentParentId ?? null;
   if (parentId) {

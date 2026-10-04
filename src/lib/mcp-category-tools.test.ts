@@ -70,9 +70,7 @@ describe("trimMcpStatusToTools", () => {
     expect(trimmed).not.toBeNull();
     expect(trimmed!.servers).toHaveLength(1);
     expect(trimmed!.servers[0].name).toBe("files");
-    expect(trimmed!.servers[0].tools.map((tool) => tool.exposedName)).toEqual([
-      "mcp__files__list",
-    ]);
+    expect(trimmed!.servers[0].tools.map((tool) => tool.exposedName)).toEqual(["mcp__files__list"]);
     expect(trimmed!.servers[0].toolCount).toBe(1);
   });
 

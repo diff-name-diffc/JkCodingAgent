@@ -12,10 +12,7 @@ import {
   useUpdateChatCategory,
 } from "../../hooks/use-chat-queries";
 import { useSessionSearchQuery } from "../../hooks/use-session-queries";
-import {
-  cleanupDispatcherSession,
-  getDispatcherSessionRunning,
-} from "../dispatcherSessionStore";
+import { cleanupDispatcherSession, getDispatcherSessionRunning } from "../dispatcherSessionStore";
 import { toast } from "../Toast";
 import { resolveActiveChatCategory } from "./active-chat-category";
 

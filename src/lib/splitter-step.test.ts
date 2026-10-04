@@ -38,8 +38,12 @@ describe("nextSplitterValue — ratio 型（会话↔编辑区 splitter 语义�
   const ratio = { mode: "ratio", min: 0, max: 1 } as const;
 
   it("小步 0.02：0.5 → 0.52 / 0.48", () => {
-    expect(nextSplitterValue({ ...ratio, current: 0.5, delta: 1 })).toBeCloseTo(0.5 + SPLITTER_RATIO_STEP);
-    expect(nextSplitterValue({ ...ratio, current: 0.5, delta: -1 })).toBeCloseTo(0.5 - SPLITTER_RATIO_STEP);
+    expect(nextSplitterValue({ ...ratio, current: 0.5, delta: 1 })).toBeCloseTo(
+      0.5 + SPLITTER_RATIO_STEP,
+    );
+    expect(nextSplitterValue({ ...ratio, current: 0.5, delta: -1 })).toBeCloseTo(
+      0.5 - SPLITTER_RATIO_STEP,
+    );
   });
 
   it("Shift 大步 0.1：0.5 → 0.6", () => {

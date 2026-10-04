@@ -25,8 +25,7 @@ import {
 
 const DETACHED_RUN_POLL_INTERVAL_MS = 2000;
 
-const DETACHED_RUN_PLACEHOLDER =
-  "后台运行中…（页面已重载，无法显示实时进度；可停止或等待完成）";
+const DETACHED_RUN_PLACEHOLDER = "后台运行中…（页面已重载，无法显示实时进度；可停止或等待完成）";
 
 export interface DetachedRunPlan {
   /** 后端仍在跑、本地既未托管也没有存活事件通道，需补「后台运行中」的会话。 */
@@ -106,8 +105,10 @@ async function pollDetachedRuns(): Promise<void> {
     return;
   }
   bootRetryCount = 0;
-  const plan = planDetachedRuns(backendActive, trackedDetachedRuns, (sessionId) =>
-    getDispatcherActiveRunId(sessionId) !== undefined,
+  const plan = planDetachedRuns(
+    backendActive,
+    trackedDetachedRuns,
+    (sessionId) => getDispatcherActiveRunId(sessionId) !== undefined,
   );
   for (const sessionId of plan.adopt) {
     trackedDetachedRuns.add(sessionId);
@@ -121,24 +122,34 @@ async function pollDetachedRuns(): Promise<void> {
     applyDetachedRunState(sessionId, false);
     reconcileSessionMessages(sessionId);
   }
-  await Promise.all([...trackedDetachedRuns].map(async (sessionId) => {
-    try {
-      const snapshot = await invoke<DispatcherRuntimeSnapshot>("dispatcher_runtime_snapshot", { workspaceId: sessionId });
-      // 请求期间若已由新事件通道接管，不覆盖其状态。
-      if (getDispatcherActiveRunId(sessionId) !== undefined || !trackedDetachedRuns.has(sessionId)) return;
-      const current = getDispatcherLiveSessionState(sessionId) ?? createIdleLiveSessionState();
-      const cleaning = snapshot.scopes.some((scope) => scope.phase === "cleaning");
-      const next = {
-        ...current,
-        assistantPlaceholder: cleaning ? "正在清理工具任务，请等待实际操作结束..." : current.assistantPlaceholder,
-        liveToolCalls: snapshot.tasks.reduce(updateLiveToolRunActivity, current.liveToolCalls),
-      };
-      setDispatcherLiveSessionState(sessionId, next);
-      notifyDispatcherLiveSessionSubscribers(sessionId, next);
-    } catch (error) {
-      console.error("查询异步工具运行快照失败:", error);
-    }
-  }));
+  await Promise.all(
+    [...trackedDetachedRuns].map(async (sessionId) => {
+      try {
+        const snapshot = await invoke<DispatcherRuntimeSnapshot>("dispatcher_runtime_snapshot", {
+          workspaceId: sessionId,
+        });
+        // 请求期间若已由新事件通道接管，不覆盖其状态。
+        if (
+          getDispatcherActiveRunId(sessionId) !== undefined ||
+          !trackedDetachedRuns.has(sessionId)
+        )
+          return;
+        const current = getDispatcherLiveSessionState(sessionId) ?? createIdleLiveSessionState();
+        const cleaning = snapshot.scopes.some((scope) => scope.phase === "cleaning");
+        const next = {
+          ...current,
+          assistantPlaceholder: cleaning
+            ? "正在清理工具任务，请等待实际操作结束..."
+            : current.assistantPlaceholder,
+          liveToolCalls: snapshot.tasks.reduce(updateLiveToolRunActivity, current.liveToolCalls),
+        };
+        setDispatcherLiveSessionState(sessionId, next);
+        notifyDispatcherLiveSessionSubscribers(sessionId, next);
+      } catch (error) {
+        console.error("查询异步工具运行快照失败:", error);
+      }
+    }),
+  );
   scheduleNextPoll();
 }
 

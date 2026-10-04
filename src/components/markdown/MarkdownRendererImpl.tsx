@@ -42,9 +42,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   if (deferred) {
     return (
       <div className={`markdown-surface markdown-surface--${variant}`}>
-        <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-          {effectiveContent}
-        </pre>
+        <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{effectiveContent}</pre>
       </div>
     );
   }

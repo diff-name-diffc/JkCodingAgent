@@ -56,9 +56,9 @@ describe("formatPythonRunDuration", () => {
 
 describe("pythonRunSourceLabel", () => {
   it("含消息 id 前缀与 1 起代码块序号", () => {
-    expect(
-      pythonRunSourceLabel({ messageId: "msg-1234567890abcdef", codeBlockIndex: 0 }),
-    ).toBe("消息 msg-1234 · 代码块 #1");
+    expect(pythonRunSourceLabel({ messageId: "msg-1234567890abcdef", codeBlockIndex: 0 })).toBe(
+      "消息 msg-1234 · 代码块 #1",
+    );
     expect(pythonRunSourceLabel({ messageId: "ab", codeBlockIndex: 2 })).toBe(
       "消息 ab · 代码块 #3",
     );

@@ -21,10 +21,7 @@ import {
   type TerminalDockState,
 } from "./project/terminal-dock";
 import { useProjectMcpStatus } from "../hooks/use-mcp-status";
-import {
-  ProjectMainArea,
-  ProjectWorkspaceLayout,
-} from "./project/ProjectWorkspaceLayout";
+import { ProjectMainArea, ProjectWorkspaceLayout } from "./project/ProjectWorkspaceLayout";
 import { ProjectLazyPaneFallback } from "./project/ProjectLazyPaneFallback";
 import { ProjectOverlays } from "./project/ProjectOverlays";
 import { ProjectWorkbenchContent } from "./project/ProjectWorkbenchContent";
@@ -130,13 +127,11 @@ export function ProjectPage({
   // 仅可见工作区注册——多项目保活下隐藏实例不响应（UI-23a 门控）。
   const workspaceShortcuts = useMemo<ShortcutBinding[]>(
     () => [
-      ...CONTEXT_TABS.map(
-        (tab, index): ShortcutBinding => ({
-          key: String(index + 1),
-          mod: true,
-          handler: () => setWorkspacePref({ contextTab: tab }),
-        }),
-      ),
+      ...CONTEXT_TABS.map((tab, index): ShortcutBinding => ({
+        key: String(index + 1),
+        mod: true,
+        handler: () => setWorkspacePref({ contextTab: tab }),
+      })),
       {
         key: "j",
         mod: true,
@@ -147,7 +142,7 @@ export function ProjectPage({
   );
   useGlobalShortcuts(workspaceShortcuts, { enabled: visible });
 
-    // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
+  // 空间预算（UI-04）：偏好为冻结输入，窄窗临时适配只体现在 budget 输出。
   // 编辑区内容判定收敛到 panels 单一派生值（UI-13）。
   const hasEditorContent = panels.hasEditorContent;
   const budget = useWorkspaceBudget({
@@ -219,8 +214,7 @@ export function ProjectPage({
   // 自动弹出浏览器标签，仅用户点击链接时主动打开。
   const { activeEditorTab, handleOpenBrowserTab } = panels;
   // 导航列表 ↔ 主区 diff 对应（UI-17）：变更页按 (path, staged)、历史页按 hash 高亮。
-  const activeDiffTab =
-    activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
+  const activeDiffTab = activeEditorTab?.kind === "diff" ? activeEditorTab.diff : null;
   const activeFileDiff =
     activeDiffTab?.kind === "file"
       ? { path: activeDiffTab.filePath, staged: activeDiffTab.staged }
@@ -229,10 +223,7 @@ export function ProjectPage({
     activeDiffTab?.kind === "commit" || activeDiffTab?.kind === "commit-file"
       ? activeDiffTab.hash
       : null;
-  const openBrowserPanel = useCallback(
-    () => handleOpenBrowserTab(),
-    [handleOpenBrowserTab],
-  );
+  const openBrowserPanel = useCallback(() => handleOpenBrowserTab(), [handleOpenBrowserTab]);
   const { navigateToUrl: handleOpenMarkdownLink } = useBrowserSessionLinkNav({
     activeSessionId,
     projectPath: project.path,
@@ -250,66 +241,66 @@ export function ProjectPage({
 
   const sessionPanelNode =
     !sessionSidebarCollapsed && budget.navWidth > 0 ? (
-    <ContextNav
-      project={project}
-      openProjects={openProjects}
-      allProjects={allProjects}
-      activeTab={contextTab}
-      onTabChange={setContextTab}
-      width={contextNavWidth}
-      onWidthCommit={setContextNavWidth}
-      onSwitchProject={onSwitchProject}
-      onCloseProject={(target) => onCloseProject?.(target)}
-      onOpenProject={onOpen}
-      onCollapse={() => setSessionSidebarCollapsed(true)}
-      sessionContent={
-        <SessionPanel
-          project={project}
-          activeSessionId={activeSessionId}
-          onSelectSession={handleSelectSession}
-          onBack={onBack}
-          onCollapse={() => setSessionSidebarCollapsed(true)}
-          hideChrome
-        />
-      }
-      filesContent={
-        <ErrorBoundary label="文件浏览器">
-          <Suspense fallback={<ProjectLazyPaneFallback label="文件列表加载中..." />}>
-            <FileExplorer
-              projectPath={project.path}
-              onFileSelect={handleFileSelect}
-              onFileRename={handleFileTreeRename}
-              onFileDelete={handleFileTreeDelete}
-              openFilePaths={openFiles.map((tab) => tab.path)}
-              active={visible}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      }
-      changesContent={
-        <ErrorBoundary label="Git 变更">
-          <Suspense fallback={<ProjectLazyPaneFallback label="Git 变更加载中..." />}>
-            <GitChanges
-              projectPath={project.path}
-              onFileSelect={handleDiffFileSelect}
-              activeFileDiff={activeFileDiff}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      }
-      historyContent={
-        <ErrorBoundary label="Git 历史">
-          <Suspense fallback={<ProjectLazyPaneFallback label="Git 历史加载中..." />}>
-            <GitHistory
-              projectPath={project.path}
-              onCommitSelect={handleCommitSelect}
-              onFileClick={handleCommitFileClick}
-              activeCommitHash={activeCommitHash}
-            />
-          </Suspense>
-        </ErrorBoundary>
-      }
-    />
+      <ContextNav
+        project={project}
+        openProjects={openProjects}
+        allProjects={allProjects}
+        activeTab={contextTab}
+        onTabChange={setContextTab}
+        width={contextNavWidth}
+        onWidthCommit={setContextNavWidth}
+        onSwitchProject={onSwitchProject}
+        onCloseProject={(target) => onCloseProject?.(target)}
+        onOpenProject={onOpen}
+        onCollapse={() => setSessionSidebarCollapsed(true)}
+        sessionContent={
+          <SessionPanel
+            project={project}
+            activeSessionId={activeSessionId}
+            onSelectSession={handleSelectSession}
+            onBack={onBack}
+            onCollapse={() => setSessionSidebarCollapsed(true)}
+            hideChrome
+          />
+        }
+        filesContent={
+          <ErrorBoundary label="文件浏览器">
+            <Suspense fallback={<ProjectLazyPaneFallback label="文件列表加载中..." />}>
+              <FileExplorer
+                projectPath={project.path}
+                onFileSelect={handleFileSelect}
+                onFileRename={handleFileTreeRename}
+                onFileDelete={handleFileTreeDelete}
+                openFilePaths={openFiles.map((tab) => tab.path)}
+                active={visible}
+              />
+            </Suspense>
+          </ErrorBoundary>
+        }
+        changesContent={
+          <ErrorBoundary label="Git 变更">
+            <Suspense fallback={<ProjectLazyPaneFallback label="Git 变更加载中..." />}>
+              <GitChanges
+                projectPath={project.path}
+                onFileSelect={handleDiffFileSelect}
+                activeFileDiff={activeFileDiff}
+              />
+            </Suspense>
+          </ErrorBoundary>
+        }
+        historyContent={
+          <ErrorBoundary label="Git 历史">
+            <Suspense fallback={<ProjectLazyPaneFallback label="Git 历史加载中..." />}>
+              <GitHistory
+                projectPath={project.path}
+                onCommitSelect={handleCommitSelect}
+                onFileClick={handleCommitFileClick}
+                activeCommitHash={activeCommitHash}
+              />
+            </Suspense>
+          </ErrorBoundary>
+        }
+      />
     ) : (
       <div className="ai-context-nav-collapsed">
         <button
@@ -368,9 +359,7 @@ export function ProjectPage({
   const statusDockNode = (
     <StatusDockBar
       terminalActive={terminalDock.visible}
-      onToggleTerminal={() =>
-        setTerminalDock((state) => nextTerminalDockState(state, "toggle"))
-      }
+      onToggleTerminal={() => setTerminalDock((state) => nextTerminalDockState(state, "toggle"))}
       browserActive={panels.activeEditorTab?.kind === "browser"}
       onToggleBrowser={() =>
         panels.activeEditorTab?.kind === "browser"

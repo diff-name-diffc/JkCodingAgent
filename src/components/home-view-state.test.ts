@@ -30,9 +30,7 @@ describe("nextHomePaneKeepAlive", () => {
   });
 
   it("从未挂载且未激活 → 保持 UNMOUNTED（不产生隐藏空转态）", () => {
-    expect(nextHomePaneKeepAlive(HOME_PANE_UNMOUNTED, false)).toBe(
-      HOME_PANE_UNMOUNTED,
-    );
+    expect(nextHomePaneKeepAlive(HOME_PANE_UNMOUNTED, false)).toBe(HOME_PANE_UNMOUNTED);
   });
 
   it("激活态重复推进幂等", () => {

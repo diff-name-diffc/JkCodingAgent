@@ -248,7 +248,10 @@ export function ModelEntryCard({
         <div className="ai-set-provider-body">
           <div className="ai-set-field">
             <div className="ai-set-field-row">
-              <FieldLabel label="模型名称" tip="服务商接口中的模型标识，如 gpt-4o、deepseek-chat。" />
+              <FieldLabel
+                label="模型名称"
+                tip="服务商接口中的模型标识，如 gpt-4o、deepseek-chat。"
+              />
               {def.isModelListFetchable && (
                 <button
                   type="button"
@@ -293,7 +296,11 @@ export function ModelEntryCard({
                         onChange={(e) => setModelQuery(e.target.value)}
                         onKeyDown={(e) => {
                           if (e.key === "Escape") setFetchedModels(null);
-                          if (!isImeComposing(e) && e.key === "Enter" && filteredModels.length > 0) {
+                          if (
+                            !isImeComposing(e) &&
+                            e.key === "Enter" &&
+                            filteredModels.length > 0
+                          ) {
                             pickModel(filteredModels[0]);
                           }
                         }}
@@ -328,7 +335,10 @@ export function ModelEntryCard({
             </div>
           </div>
           <div className="ai-set-field">
-            <FieldLabel label="API 地址（URL）" tip="服务商的 OpenAI 兼容接口地址，通常以 /v1 结尾。" />
+            <FieldLabel
+              label="API 地址（URL）"
+              tip="服务商的 OpenAI 兼容接口地址，通常以 /v1 结尾。"
+            />
             <input
               className="ai-settings-input"
               value={url}

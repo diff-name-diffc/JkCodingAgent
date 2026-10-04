@@ -127,7 +127,9 @@ export function ProjectWorkbench({
         background: "var(--bg-panel)",
       }}
     >
-      {showSessionPane && <div className="ai-project-chat-pane ai-project-workbench-pane">{sessionPane}</div>}
+      {showSessionPane && (
+        <div className="ai-project-chat-pane ai-project-workbench-pane">{sessionPane}</div>
+      )}
 
       {columnCount === 2 && (
         <div

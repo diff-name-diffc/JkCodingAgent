@@ -1,4 +1,13 @@
-import { Gauge, GitBranch, Loader2, MoreHorizontal, Settings, Trash2, Waypoints, X } from "lucide-react";
+import {
+  Gauge,
+  GitBranch,
+  Loader2,
+  MoreHorizontal,
+  Settings,
+  Trash2,
+  Waypoints,
+  X,
+} from "lucide-react";
 import type { McpStatus } from "../../types";
 import { getMcpConnectionStatus } from "../../hooks/use-mcp-status";
 import { hexWithAlpha } from "../../lib/hex-alpha";
@@ -180,9 +189,7 @@ function CategoryBadge({ category }: { category: ChatHeaderCategory }) {
   const tint = hexWithAlpha(category.color, "14");
   const border = hexWithAlpha(category.color, "4d");
   const style =
-    tint && border
-      ? { color: category.color, background: tint, borderColor: border }
-      : undefined;
+    tint && border ? { color: category.color, background: tint, borderColor: border } : undefined;
   return (
     <span
       className="ai-chat-header-category-pill"

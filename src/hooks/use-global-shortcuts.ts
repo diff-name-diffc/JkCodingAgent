@@ -8,8 +8,7 @@ import {
 } from "../lib/keyboard-bindings";
 
 /** Radix 弹层打开态探测（UI-23 遗留 Mod 让路）：DOM 存在性判定，锚点单一出处。 */
-const isRadixModalOpen = (): boolean =>
-  document.querySelector(RADIX_MODAL_OPEN_SELECTOR) != null;
+const isRadixModalOpen = (): boolean => document.querySelector(RADIX_MODAL_OPEN_SELECTOR) != null;
 
 /**
  * 通用全局快捷键注册（UI-23d）：判定与让路规则全部走 lib/keyboard-bindings

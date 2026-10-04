@@ -39,10 +39,10 @@ describe("sidebar 分类分组", () => {
   });
 
   it("已知分类始终展示，未分类分组仅在有会话时展示", () => {
-    const groups = groupSessionsByCategory([session("s1", "cat-1")], [
-      category("cat-1", 0),
-      category("cat-2", 1),
-    ]);
+    const groups = groupSessionsByCategory(
+      [session("s1", "cat-1")],
+      [category("cat-1", 0), category("cat-2", 1)],
+    );
     expect(groups.map((group) => group.id)).toEqual(["cat-1", "cat-2"]);
 
     const withUncategorized = groupSessionsByCategory(

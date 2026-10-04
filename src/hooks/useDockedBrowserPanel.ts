@@ -44,7 +44,8 @@ export function useDockedBrowserPanel(storageKey: string, metrics: DockedPanelMe
 
   const panelMaxWidth = () => Math.max(minWidth, Math.floor(viewportWidth() * maxRatio));
   const defaultWidth = () => resolveDockedPanelDefaultWidth(viewportWidth(), metrics);
-  const loadWidth = () => clamp(load<number>(storageKey, defaultWidth()), minWidth, panelMaxWidth());
+  const loadWidth = () =>
+    clamp(load<number>(storageKey, defaultWidth()), minWidth, panelMaxWidth());
 
   const [width, setWidth] = useState(loadWidth);
   const [expanded, setExpanded] = useState(false);

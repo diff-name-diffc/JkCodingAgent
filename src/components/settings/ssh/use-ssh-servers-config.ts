@@ -34,7 +34,12 @@ export function useSshServersConfig() {
     }
   }, []);
 
-  const { scheduleSave, saveNow, flush, error: saveError } = useAutoSaveSource({
+  const {
+    scheduleSave,
+    saveNow,
+    flush,
+    error: saveError,
+  } = useAutoSaveSource({
     id: SAVE_SOURCE_ID,
     // hook 经 ref 持有最新渲染的 read 闭包，保存时读到的即最新 entries/config。
     read: () => config,

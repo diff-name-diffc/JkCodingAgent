@@ -238,7 +238,14 @@ function WorkflowPanelInner({
         },
       };
     });
-  }, [definition, runByNodeId, snapshot.liveOutputs, statusByNodeId, dragOverrides, selectedNodeId]);
+  }, [
+    definition,
+    runByNodeId,
+    snapshot.liveOutputs,
+    statusByNodeId,
+    dragOverrides,
+    selectedNodeId,
+  ]);
 
   /** 受控节点：吸收拖动位置；拖拽结束（dragging=false）才写入视图记忆，不高频打 store。 */
   const handleNodesChange = useCallback(

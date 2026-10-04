@@ -111,7 +111,12 @@ export function BrowserPanelHeader({
           </button>
         )}
         {onClose && (
-          <button type="button" title="关闭面板" onClick={onClose} className="ai-browser-icon-button">
+          <button
+            type="button"
+            title="关闭面板"
+            onClick={onClose}
+            className="ai-browser-icon-button"
+          >
             <X size={14} />
           </button>
         )}

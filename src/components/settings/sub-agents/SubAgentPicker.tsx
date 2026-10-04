@@ -26,11 +26,7 @@ export function SubAgentPicker({
   const enabledSet = useMemo(() => new Set(enabledIds), [enabledIds]);
 
   function toggle(id: string) {
-    onChange(
-      enabledSet.has(id)
-        ? enabledIds.filter((value) => value !== id)
-        : [...enabledIds, id],
-    );
+    onChange(enabledSet.has(id) ? enabledIds.filter((value) => value !== id) : [...enabledIds, id]);
   }
 
   return (
@@ -40,9 +36,7 @@ export function SubAgentPicker({
         {description}
       </div>
       <div className="ai-aha-hint">
-        {loading
-          ? "加载子智能体..."
-          : `共 ${agents.length} 个子智能体 · 已选 ${enabledIds.length}`}
+        {loading ? "加载子智能体..." : `共 ${agents.length} 个子智能体 · 已选 ${enabledIds.length}`}
       </div>
 
       <div className="ai-aha-tool-list">

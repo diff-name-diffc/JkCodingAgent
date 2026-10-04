@@ -252,15 +252,14 @@ impl McpRegistry {
                 } = spawned;
 
                 let result = async {
-                    let client =
-                        serve_with_timeout(transport, budget.remaining())
-                            .await
-                            .map_err(|error| {
-                                McpCallError::not_sent(match error {
-                                    ServeHandshakeError::Timeout => "MCP 初始化超时".to_string(),
-                                    ServeHandshakeError::Failed(message) => message,
-                                })
-                            })?;
+                    let client = serve_with_timeout(transport, budget.remaining())
+                        .await
+                        .map_err(|error| {
+                            McpCallError::not_sent(match error {
+                                ServeHandshakeError::Timeout => "MCP 初始化超时".to_string(),
+                                ServeHandshakeError::Failed(message) => message,
+                            })
+                        })?;
                     call::execute(client, call, budget.remaining(), cancel).await
                 }
                 .await;
@@ -278,14 +277,9 @@ impl McpRegistry {
             ResolvedMcpTransport::StreamableHttp { url, headers } => {
                 let transport = build_streamable_http_transport(url, headers)
                     .map_err(McpCallError::not_sent)?;
-                call_over_transport(
-                    transport,
-                    server_config.startup_timeout,
-                    call,
-                    cancel,
-                )
-                .await
-                .map_err(|error| (McpServerState::ConnectionFailed, error))
+                call_over_transport(transport, server_config.startup_timeout, call, cancel)
+                    .await
+                    .map_err(|error| (McpServerState::ConnectionFailed, error))
             }
             ResolvedMcpTransport::UnixSocketHttp {
                 socket_path,
@@ -294,14 +288,9 @@ impl McpRegistry {
             } => {
                 let transport = build_unix_socket_transport(socket_path, url, headers)
                     .map_err(McpCallError::not_sent)?;
-                call_over_transport(
-                    transport,
-                    server_config.startup_timeout,
-                    call,
-                    cancel,
-                )
-                .await
-                .map_err(|error| (McpServerState::ConnectionFailed, error))
+                call_over_transport(transport, server_config.startup_timeout, call, cancel)
+                    .await
+                    .map_err(|error| (McpServerState::ConnectionFailed, error))
             }
         }
         .map_err(|error| error.1)?;

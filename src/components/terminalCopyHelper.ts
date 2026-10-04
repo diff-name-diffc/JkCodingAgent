@@ -165,8 +165,7 @@ export function attachSmartCopy(terminal: Terminal): () => void {
   let copyInProgress = false;
 
   const handleCustomKeyEvent = (e: KeyboardEvent) => {
-    const isCopy =
-      (e.metaKey || e.ctrlKey) && e.key === "c" && e.type === "keydown";
+    const isCopy = (e.metaKey || e.ctrlKey) && e.key === "c" && e.type === "keydown";
 
     if (!isCopy) return true; // Let xterm handle other keys
     if (!terminal.hasSelection()) return true; // No selection → send SIGINT as normal

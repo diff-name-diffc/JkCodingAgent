@@ -86,10 +86,7 @@ export function ShellTerminalPanel({
     // 与 resolveWorkspaceBudget 同口径的视口钳制（拖拽期窗口尺寸不变，仅 mousedown 读一次）。
     const bounds = terminalDragBounds(window.innerHeight);
     const onMouseMove = (ev: MouseEvent) => {
-      const next = Math.max(
-        bounds.min,
-        Math.min(bounds.max, startHeight + (startY - ev.clientY)),
-      );
+      const next = Math.max(bounds.min, Math.min(bounds.max, startHeight + (startY - ev.clientY)));
       setDragHeight(next);
     };
     const onMouseUp = () => {
@@ -129,8 +126,7 @@ export function ShellTerminalPanel({
       // 会上报 0×0，此时不 fit、不 resize_pty；恢复显示时 RO 自然重触发。
       if (container.clientWidth === 0 || container.clientHeight === 0) return;
       const s = safeFit(fitAddon, term);
-      if (s)
-        invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
+      if (s) invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
     };
     const resizeScheduler = createResizeScheduler(fit);
 
@@ -239,8 +235,7 @@ export function ShellTerminalPanel({
       const term = terminalRef.current;
       if (!box || box.clientWidth === 0 || box.clientHeight === 0 || !fitAddon || !term) return;
       const s = safeFit(fitAddon, term);
-      if (s)
-        invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
+      if (s) invoke("resize_pty", { taskId: shellId, cols: s.cols, rows: s.rows }).catch(() => {});
       term.refresh(0, term.rows - 1);
       term.focus();
     });
@@ -272,9 +267,7 @@ export function ShellTerminalPanel({
       )}
       {/* Header：隐藏（保留会话）与结束会话是两个语义（设计 §3.3）。 */}
       <div className="ai-shell-terminal-header">
-        <span className="ai-shell-terminal-title">
-          终端
-        </span>
+        <span className="ai-shell-terminal-title">终端</span>
         <div className="ai-shell-terminal-actions">
           <button
             onClick={onHide}
@@ -295,10 +288,7 @@ export function ShellTerminalPanel({
         </div>
       </div>
       {/* Terminal */}
-      <div
-        ref={containerRef}
-        className="ai-shell-terminal-canvas"
-      />
+      <div ref={containerRef} className="ai-shell-terminal-canvas" />
     </div>
   );
 }

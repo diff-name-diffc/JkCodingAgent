@@ -1,6 +1,11 @@
 import { useCallback, useMemo, useRef } from "react";
 import { ArrowLeft, Play, RefreshCw, RotateCcw, Square, X } from "lucide-react";
-import type { WorkflowDefinition, WorkflowNodeStatus, WorkflowPlanRecord, WorkflowPlanStatus } from "../../types";
+import type {
+  WorkflowDefinition,
+  WorkflowNodeStatus,
+  WorkflowPlanRecord,
+  WorkflowPlanStatus,
+} from "../../types";
 import type { WorkflowPanelView } from "../project/main-tabs";
 import { cn } from "../../lib/cn";
 import { isRovingKey, nextRovingIndex } from "../../lib/roving-index";
@@ -73,7 +78,8 @@ export function WorkflowPanelHeader({
   const canCancel = planStatus === "running";
   // 重验收入口：存在已收尾的运行（非 running 的计划 + 最近一次 run 已出验收字段）
   // 才有意义——验收失败/未能验收时用户修复验收模型后在此补救，也可对既有结论复检。
-  const canReverify = planStatus !== "running" && planStatus !== "draft" && Boolean(plan?.runs?.[0]);
+  const canReverify =
+    planStatus !== "running" && planStatus !== "draft" && Boolean(plan?.runs?.[0]);
 
   // tablist 方向键（roving tabindex + automatic activation，与 ContextNav 同一
   // 模式）：方向键移动焦点即切换视图；非当前视图的页签 tabindex=-1 不占 Tab 序。
@@ -209,12 +215,13 @@ export function WorkflowPanelHeader({
           <span className={cn("ai-workflow-chip", statusMeta.className)}>{statusMeta.label}</span>
         </span>
         {latestVerdict && (
-          <span
-            className="ai-workflow-header-conclusion"
-            title={latestVerdict.reason ?? undefined}
-          >
+          <span className="ai-workflow-header-conclusion" title={latestVerdict.reason ?? undefined}>
             <span className="ai-workflow-header-pill-label">验收</span>
-            <StatusPill domain="verdict" status={latestVerdict.status} label={latestVerdict.label} />
+            <StatusPill
+              domain="verdict"
+              status={latestVerdict.status}
+              label={latestVerdict.label}
+            />
           </span>
         )}
         {canReverify && (
@@ -275,12 +282,7 @@ export function WorkflowPanelHeader({
           </Button>
         )}
         {canCancel && (
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={onCancel}
-            disabled={actionPending}
-          >
+          <Button size="sm" variant="destructive" onClick={onCancel} disabled={actionPending}>
             <Square className="h-3.5 w-3.5" />
             停止
           </Button>
@@ -315,7 +317,9 @@ export function WorkflowPanelHeader({
           <span className="ai-workflow-stat ai-workflow-stat--running">运行中 {stats.running}</span>
         )}
         {stats.succeeded > 0 && (
-          <span className="ai-workflow-stat ai-workflow-stat--succeeded">成功 {stats.succeeded}</span>
+          <span className="ai-workflow-stat ai-workflow-stat--succeeded">
+            成功 {stats.succeeded}
+          </span>
         )}
         {stats.failed > 0 && (
           <span className="ai-workflow-stat ai-workflow-stat--failed">失败 {stats.failed}</span>
@@ -326,7 +330,9 @@ export function WorkflowPanelHeader({
           </span>
         )}
         {stats.cancelled > 0 && (
-          <span className="ai-workflow-stat ai-workflow-stat--cancelled">已取消 {stats.cancelled}</span>
+          <span className="ai-workflow-stat ai-workflow-stat--cancelled">
+            已取消 {stats.cancelled}
+          </span>
         )}
         <div
           className="ai-workflow-progress"

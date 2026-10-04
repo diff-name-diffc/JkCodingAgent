@@ -78,7 +78,12 @@ export const WorkflowPlanCard = memo(function WorkflowPlanCard({
             <span className={cn("ai-workflow-chip", statusMeta.className)}>{statusMeta.label}</span>
           )}
           {resultBadge && (
-            <span className={cn("ai-workflow-chip", resultKindMeta(result?.resultKind ?? "unknown").className)}>
+            <span
+              className={cn(
+                "ai-workflow-chip",
+                resultKindMeta(result?.resultKind ?? "unknown").className,
+              )}
+            >
               {resultBadge}
             </span>
           )}

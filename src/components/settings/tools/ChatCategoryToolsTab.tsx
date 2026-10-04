@@ -61,9 +61,7 @@ export function ChatCategoryToolsTab({
               <button
                 key={config.categoryId}
                 type="button"
-                className={
-                  selected ? "ai-aha-category-chip is-active" : "ai-aha-category-chip"
-                }
+                className={selected ? "ai-aha-category-chip is-active" : "ai-aha-category-chip"}
                 onClick={() => onActiveCategoryChange(config.categoryId)}
               >
                 {config.categoryName}

@@ -127,7 +127,14 @@ describe("buildToolCallEntries", () => {
 describe("buildNodeNotices", () => {
   it("compaction 活动转为压缩通知", () => {
     const notices = buildNodeNotices([
-      activity({ id: "c1", kind: "compaction", status: "started", sequence: 20, content: "", payloadJson: JSON.stringify({ reason: "阈值触发" }) }),
+      activity({
+        id: "c1",
+        kind: "compaction",
+        status: "started",
+        sequence: 20,
+        content: "",
+        payloadJson: JSON.stringify({ reason: "阈值触发" }),
+      }),
       activity({ id: "c2", kind: "compaction", status: "finished", sequence: 30, content: "" }),
     ]);
     expect(notices.map((notice) => notice.title)).toEqual(["正在压缩上下文…", "上下文已压缩"]);
@@ -139,7 +146,14 @@ describe("buildNodeNotices", () => {
 
   it("retry 活动带尝试次数，失败标注错误", () => {
     const notices = buildNodeNotices([
-      activity({ id: "r1", kind: "retry", status: "started", sequence: 40, content: "", payloadJson: JSON.stringify({ attempt: 1, maxAttempts: 2, errorMessage: "超时" }) }),
+      activity({
+        id: "r1",
+        kind: "retry",
+        status: "started",
+        sequence: 40,
+        content: "",
+        payloadJson: JSON.stringify({ attempt: 1, maxAttempts: 2, errorMessage: "超时" }),
+      }),
       activity({ id: "r2", kind: "retry", status: "failed", sequence: 50, content: "最终失败" }),
     ]);
     expect(notices[0].title).toBe("自动重试（1/2）");
@@ -149,12 +163,20 @@ describe("buildNodeNotices", () => {
   });
 
   it("忽略工具调用与上下文占用活动", () => {
-    expect(buildNodeNotices([activity({ kind: "tool_call" }), activity({ kind: "context_usage" })])).toEqual([]);
+    expect(
+      buildNodeNotices([activity({ kind: "tool_call" }), activity({ kind: "context_usage" })]),
+    ).toEqual([]);
   });
 
   it("lifecycle 活动转为执行器诊断通知（标题透传）", () => {
     const notices = buildNodeNotices([
-      activity({ id: "l1", kind: "lifecycle", title: "未配置 ACP API Key", content: "凭据依赖 ~/.claude 登录态", sequence: 3 }),
+      activity({
+        id: "l1",
+        kind: "lifecycle",
+        title: "未配置 ACP API Key",
+        content: "凭据依赖 ~/.claude 登录态",
+        sequence: 3,
+      }),
     ]);
     expect(notices).toHaveLength(1);
     expect(notices[0].kind).toBe("lifecycle");
@@ -164,9 +186,7 @@ describe("buildNodeNotices", () => {
   });
 
   it("lifecycle 标题缺失时兜底通用文案", () => {
-    const notices = buildNodeNotices([
-      activity({ kind: "lifecycle", title: "", content: "诊断" }),
-    ]);
+    const notices = buildNodeNotices([activity({ kind: "lifecycle", title: "", content: "诊断" })]);
     expect(notices[0].title).toBe("执行器动态");
   });
 });
@@ -199,7 +219,10 @@ describe("buildPlanCards", () => {
 
   it("未知状态兜底为 pending；payload 损坏回退空条目", () => {
     const unknown = buildPlanCards([
-      activity({ kind: "plan", payloadJson: JSON.stringify({ entries: [{ content: "x", status: "blocked" }] }) }),
+      activity({
+        kind: "plan",
+        payloadJson: JSON.stringify({ entries: [{ content: "x", status: "blocked" }] }),
+      }),
     ]);
     expect(unknown[0].entries).toEqual([{ content: "x", status: "pending" }]);
 
@@ -215,7 +238,13 @@ describe("buildPlanCards", () => {
 describe("buildThinkingEntries", () => {
   it("thinking 活动提取内容与标题", () => {
     const entries = buildThinkingEntries([
-      activity({ id: "th1", kind: "thinking", title: "思考过程", content: "先分析再动手", sequence: 4 }),
+      activity({
+        id: "th1",
+        kind: "thinking",
+        title: "思考过程",
+        content: "先分析再动手",
+        sequence: 4,
+      }),
       activity({ id: "t1", kind: "tool_call", sequence: 5 }),
     ]);
     expect(entries).toEqual([
@@ -236,7 +265,12 @@ describe("buildExecutionTimeline", () => {
   it("plan / thinking / lifecycle 与工具调用按 sequence 混排", () => {
     const { timelineRows } = buildExecutionTimeline([
       activity({ id: "t1", kind: "tool_call", sequence: 30 }),
-      activity({ id: "p1", kind: "plan", sequence: 10, payloadJson: JSON.stringify({ entries: [] }) }),
+      activity({
+        id: "p1",
+        kind: "plan",
+        sequence: 10,
+        payloadJson: JSON.stringify({ entries: [] }),
+      }),
       activity({ id: "th1", kind: "thinking", sequence: 20, content: "嗯" }),
       activity({ id: "l1", kind: "lifecycle", title: "诊断", sequence: 40 }),
     ]);
@@ -247,8 +281,16 @@ describe("buildExecutionTimeline", () => {
 describe("latestContextUsage / formatContextUsage", () => {
   it("取最后一次读数并格式化", () => {
     const reading = latestContextUsage([
-      activity({ kind: "context_usage", sequence: 1, payloadJson: JSON.stringify({ tokens: 20_000, contextWindow: 128_000, percent: 15.6 }) }),
-      activity({ kind: "context_usage", sequence: 2, payloadJson: JSON.stringify({ tokens: 55_000, contextWindow: 128_000, percent: 42.97 }) }),
+      activity({
+        kind: "context_usage",
+        sequence: 1,
+        payloadJson: JSON.stringify({ tokens: 20_000, contextWindow: 128_000, percent: 15.6 }),
+      }),
+      activity({
+        kind: "context_usage",
+        sequence: 2,
+        payloadJson: JSON.stringify({ tokens: 55_000, contextWindow: 128_000, percent: 42.97 }),
+      }),
     ]);
     expect(reading).toEqual({ tokens: 55_000, contextWindow: 128_000, percent: 42.97 });
     expect(formatContextUsage(reading!)).toBe("43.0% · 55k/128k");
@@ -256,19 +298,28 @@ describe("latestContextUsage / formatContextUsage", () => {
 
   it("compaction 后 tokens 为 null 时提示重新估算", () => {
     const reading = latestContextUsage([
-      activity({ kind: "context_usage", payloadJson: JSON.stringify({ tokens: null, contextWindow: 128_000, percent: null }) }),
+      activity({
+        kind: "context_usage",
+        payloadJson: JSON.stringify({ tokens: null, contextWindow: 128_000, percent: null }),
+      }),
     ]);
     expect(formatContextUsage(reading!)).toBe("重新估算中…");
   });
 
   it("contextWindow 缺失或为 0 时只显示百分比", () => {
     const missing = latestContextUsage([
-      activity({ kind: "context_usage", payloadJson: JSON.stringify({ tokens: 55_000, percent: 43.21 }) }),
+      activity({
+        kind: "context_usage",
+        payloadJson: JSON.stringify({ tokens: 55_000, percent: 43.21 }),
+      }),
     ]);
     expect(formatContextUsage(missing!)).toBe("43.2%");
 
     const zero = latestContextUsage([
-      activity({ kind: "context_usage", payloadJson: JSON.stringify({ tokens: 55_000, contextWindow: 0, percent: 43.21 }) }),
+      activity({
+        kind: "context_usage",
+        payloadJson: JSON.stringify({ tokens: 55_000, contextWindow: 0, percent: 43.21 }),
+      }),
     ]);
     expect(formatContextUsage(zero!)).toBe("43.2%");
   });
@@ -280,9 +331,9 @@ describe("latestContextUsage / formatContextUsage", () => {
 
 describe("workflowNodeModelLabel（UI-14 遗留：节点真实运行模型显示）", () => {
   it("优先运行记录的 modelLabel（harness 运行期解析的别名/模型名）", () => {
-    expect(
-      workflowNodeModelLabel({ modelLabel: "qwen3-coder-plus" }, { modelRef: "m1" }),
-    ).toBe("qwen3-coder-plus");
+    expect(workflowNodeModelLabel({ modelLabel: "qwen3-coder-plus" }, { modelRef: "m1" })).toBe(
+      "qwen3-coder-plus",
+    );
   });
 
   it("无运行记录时回退计划 modelRef 的目录标签（与画布节点同口径）", () => {

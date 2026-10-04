@@ -27,10 +27,9 @@ export function toastDurationMs(kind: ToastKind): number {
  * 避免自动保存等高频场景堆叠），随后按上限截断丢最旧。
  */
 export function mergeToastList(prev: ToastItem[], next: ToastItem, cap = TOAST_CAP): ToastItem[] {
-  return [
-    ...prev.filter((t) => !(t.kind === next.kind && t.message === next.message)),
-    next,
-  ].slice(-cap);
+  return [...prev.filter((t) => !(t.kind === next.kind && t.message === next.message)), next].slice(
+    -cap,
+  );
 }
 
 function emit() {
@@ -53,7 +52,10 @@ function push(kind: ToastKind, message: string) {
   const id = nextId++;
   toasts = mergeToastList(toasts, { id, kind, message });
   emit();
-  timers.set(id, setTimeout(() => dismiss(id), toastDurationMs(kind)));
+  timers.set(
+    id,
+    setTimeout(() => dismiss(id), toastDurationMs(kind)),
+  );
 }
 
 /** 全局命令式 toast：组件、hooks 与模块级 store（非渲染路径）均可直接调用。 */

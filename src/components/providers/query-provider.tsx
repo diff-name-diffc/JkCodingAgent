@@ -7,7 +7,5 @@ import { queryClient } from "../../lib/query-client";
  * Mounted once, high in the tree (see main.tsx / App.tsx).
  */
 export function QueryProvider({ children }: { children: React.ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  );
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }

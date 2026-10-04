@@ -8,12 +8,7 @@ export type WorkflowNodeStatus =
   "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 
 export type WorkflowKnownNodePhase =
-  | "starting"
-  | "thinking"
-  | "responding"
-  | "tool_running"
-  | "cached"
-  | "finalizing";
+  "starting" | "thinking" | "responding" | "tool_running" | "cached" | "finalizing";
 /**
  * 应用侧阶段使用固定词表；节点执行器（sidecar）的 lifecycle 事件允许透传额外阶段。
  * 交互层必须为未知值提供展示兜底，不能假设这是封闭枚举。

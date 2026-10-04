@@ -153,9 +153,7 @@ export function CommitDetailPanel({
           <div
             key={f.path}
             onClick={clickable ? () => onFileClick(f.path) : undefined}
-            className={
-              clickable ? "ai-git-detail-file-row is-clickable" : "ai-git-detail-file-row"
-            }
+            className={clickable ? "ai-git-detail-file-row is-clickable" : "ai-git-detail-file-row"}
           >
             <span
               className="ai-git-detail-status"

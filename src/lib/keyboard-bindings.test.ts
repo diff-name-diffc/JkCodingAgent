@@ -55,9 +55,9 @@ describe("isMacPlatform", () => {
   });
 
   it("userAgent 形态的 mac 判定（platform 为空时兜底）", () => {
-    expect(
-      isMacPlatform({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" }),
-    ).toBe(true);
+    expect(isMacPlatform({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" })).toBe(
+      true,
+    );
   });
 
   it("平台信息缺失时按非 mac（保守回退，不读宿主 navigator）", () => {
@@ -130,9 +130,9 @@ describe("matchesBinding", () => {
 
   it("mod:false 要求修饰键未按下", () => {
     expect(matchesBinding(keyEvent({ key: "Escape" }), PLAIN_ESCAPE, true)).toBe(true);
-    expect(
-      matchesBinding(keyEvent({ key: "Escape", metaKey: true }), PLAIN_ESCAPE, true),
-    ).toBe(false);
+    expect(matchesBinding(keyEvent({ key: "Escape", metaKey: true }), PLAIN_ESCAPE, true)).toBe(
+      false,
+    );
   });
 
   it("shift/alt 精确匹配", () => {
@@ -193,12 +193,10 @@ describe("shouldSkipBinding", () => {
   it("输入目标内：非 Mod 键跳过，Mod 键放行（既有豁免语义）", () => {
     const input = targetStub({ tagName: "TEXTAREA" });
     expect(shouldSkipBinding(keyEvent({ key: "Escape" }), PLAIN_ESCAPE, true)).toBe(false);
-    expect(
-      shouldSkipBinding(keyEvent({ key: "Escape", target: input }), PLAIN_ESCAPE, true),
-    ).toBe(true);
-    expect(
-      shouldSkipBinding(keyEvent({ metaKey: true, target: input }), MOD_K, true),
-    ).toBe(false);
+    expect(shouldSkipBinding(keyEvent({ key: "Escape", target: input }), PLAIN_ESCAPE, true)).toBe(
+      true,
+    );
+    expect(shouldSkipBinding(keyEvent({ metaKey: true, target: input }), MOD_K, true)).toBe(false);
   });
 
   it("非 Mac + 终端内 + Mod 键 → 放行给 shell（Ctrl+K/L/N/J 不被抢）", () => {
@@ -208,7 +206,11 @@ describe("shouldSkipBinding", () => {
     });
     for (const key of ["k", "l", "n", "j"]) {
       expect(
-        shouldSkipBinding(keyEvent({ key, ctrlKey: true, target: xtermTextarea }), { key, mod: true }, false),
+        shouldSkipBinding(
+          keyEvent({ key, ctrlKey: true, target: xtermTextarea }),
+          { key, mod: true },
+          false,
+        ),
       ).toBe(true);
     }
   });
@@ -218,9 +220,9 @@ describe("shouldSkipBinding", () => {
       tagName: "TEXTAREA",
       containers: [TERMINAL_CONTAINER_SELECTOR],
     });
-    expect(
-      shouldSkipBinding(keyEvent({ metaKey: true, target: xtermTextarea }), MOD_K, true),
-    ).toBe(false);
+    expect(shouldSkipBinding(keyEvent({ metaKey: true, target: xtermTextarea }), MOD_K, true)).toBe(
+      false,
+    );
   });
 
   it("终端内的裸键仍按输入目标豁免（xterm-helper-textarea）", () => {
@@ -258,7 +260,13 @@ describe("shouldSkipBinding", () => {
   });
 
   it("普通焦点上下文不跳过", () => {
-    expect(shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true)).toBe(false);
+    expect(
+      shouldSkipBinding(
+        keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }),
+        MOD_K,
+        true,
+      ),
+    ).toBe(false);
     expect(shouldSkipBinding(keyEvent({ metaKey: true }), MOD_K, false)).toBe(false);
   });
 
@@ -267,14 +275,29 @@ describe("shouldSkipBinding", () => {
   it("Radix 弹层打开时 Mod 组合键跨栈让路（Cmd 与 Ctrl 平台一致）", () => {
     const modalOpen = () => true;
     expect(
-      shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true, modalOpen),
+      shouldSkipBinding(
+        keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }),
+        MOD_K,
+        true,
+        modalOpen,
+      ),
     ).toBe(true);
     expect(shouldSkipBinding(keyEvent({ ctrlKey: true }), MOD_K, false, modalOpen)).toBe(true);
     expect(
-      shouldSkipBinding(keyEvent({ key: "1", ctrlKey: true }), { key: "1", mod: true }, false, modalOpen),
+      shouldSkipBinding(
+        keyEvent({ key: "1", ctrlKey: true }),
+        { key: "1", mod: true },
+        false,
+        modalOpen,
+      ),
     ).toBe(true);
     expect(
-      shouldSkipBinding(keyEvent({ key: "j", metaKey: true }), { key: "j", mod: true }, true, modalOpen),
+      shouldSkipBinding(
+        keyEvent({ key: "j", metaKey: true }),
+        { key: "j", mod: true },
+        true,
+        modalOpen,
+      ),
     ).toBe(true);
     expect(
       shouldSkipBinding(
@@ -289,22 +312,38 @@ describe("shouldSkipBinding", () => {
   it("Radix 弹层打开时裸键（含 Escape）不走跨栈让路（由 handler 内既有路径裁决）", () => {
     const modalOpen = () => true;
     expect(
-      shouldSkipBinding(keyEvent({ key: "Escape", target: targetStub({ tagName: "DIV" }) }), PLAIN_ESCAPE, true, modalOpen),
+      shouldSkipBinding(
+        keyEvent({ key: "Escape", target: targetStub({ tagName: "DIV" }) }),
+        PLAIN_ESCAPE,
+        true,
+        modalOpen,
+      ),
     ).toBe(false);
   });
 
   it("Radix 弹层打开且焦点在其内部输入框时 Mod 键同样让路", () => {
     const input = targetStub({ tagName: "INPUT" });
-    expect(shouldSkipBinding(keyEvent({ metaKey: true, target: input }), MOD_K, true, () => true)).toBe(true);
+    expect(
+      shouldSkipBinding(keyEvent({ metaKey: true, target: input }), MOD_K, true, () => true),
+    ).toBe(true);
   });
 
   it("弹层关闭时行为与既有裁决一致；缺省注入（node 环境）恒不让路", () => {
     const modalClosed = () => false;
     expect(
-      shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true, modalClosed),
+      shouldSkipBinding(
+        keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }),
+        MOD_K,
+        true,
+        modalClosed,
+      ),
     ).toBe(false);
     expect(
-      shouldSkipBinding(keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }), MOD_K, true),
+      shouldSkipBinding(
+        keyEvent({ metaKey: true, target: targetStub({ tagName: "DIV" }) }),
+        MOD_K,
+        true,
+      ),
     ).toBe(false);
   });
 });
@@ -369,9 +408,7 @@ describe("应用级键位注册表无歧义", () => {
           ctrlKey: !mac && binding.mod === true,
           shiftKey: binding.shift === true,
         });
-        const hits = APP_SHORTCUT_REGISTRY.filter((other) =>
-          matchesBinding(event, other, mac),
-        );
+        const hits = APP_SHORTCUT_REGISTRY.filter((other) => matchesBinding(event, other, mac));
         expect(hits).toEqual([binding]);
       }
     }

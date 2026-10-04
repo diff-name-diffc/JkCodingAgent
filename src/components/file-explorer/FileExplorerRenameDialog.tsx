@@ -172,10 +172,20 @@ export function FileExplorerRenameDialog({
         </div>
 
         <div className="ai-dialog-footer">
-          <button type="button" onClick={onClose} disabled={saving} className="ai-button ai-button-ghost">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="ai-button ai-button-ghost"
+          >
             取消
           </button>
-          <button type="button" onClick={handleSubmit} disabled={saving} className="ai-button ai-button-primary">
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={saving}
+            className="ai-button ai-button-primary"
+          >
             {saving ? "重命名中..." : "确认重命名"}
           </button>
         </div>

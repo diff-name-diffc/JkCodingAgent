@@ -66,7 +66,10 @@ const TOOL_BLOCK_DISPLAY_LIMIT = 12_000;
 function truncateBlock(text: string, keep: "head" | "tail"): { text: string; omitted: number } {
   if (text.length <= TOOL_BLOCK_DISPLAY_LIMIT) return { text, omitted: 0 };
   return {
-    text: keep === "tail" ? text.slice(-TOOL_BLOCK_DISPLAY_LIMIT) : text.slice(0, TOOL_BLOCK_DISPLAY_LIMIT),
+    text:
+      keep === "tail"
+        ? text.slice(-TOOL_BLOCK_DISPLAY_LIMIT)
+        : text.slice(0, TOOL_BLOCK_DISPLAY_LIMIT),
     omitted: text.length - TOOL_BLOCK_DISPLAY_LIMIT,
   };
 }
@@ -89,13 +92,21 @@ export function ExecutionTimelineList({ rows, live }: { rows: TimelineRow[]; liv
   }, [following, rows.length, virtualizer]);
 
   if (rows.length === 0) {
-    return <p className="ai-workflow-drawer-hint ai-workflow-tool-empty">{live ? "等待执行动态…" : "尚未记录执行动态。"}</p>;
+    return (
+      <p className="ai-workflow-drawer-hint ai-workflow-tool-empty">
+        {live ? "等待执行动态…" : "尚未记录执行动态。"}
+      </p>
+    );
   }
 
   return (
     <div className="ai-workflow-tool-shell">
       {live && (
-        <button type="button" className="ai-workflow-follow-toggle" onClick={() => setFollowing((value) => !value)}>
+        <button
+          type="button"
+          className="ai-workflow-follow-toggle"
+          onClick={() => setFollowing((value) => !value)}
+        >
           {following ? <Pause className="h-3 w-3" /> : <ChevronsDown className="h-3 w-3" />}
           {following ? "暂停跟随" : "恢复跟随"}
         </button>
@@ -105,7 +116,8 @@ export function ExecutionTimelineList({ rows, live }: { rows: TimelineRow[]; liv
         className="ai-workflow-tool-scroll"
         onScroll={(event) => {
           const target = event.currentTarget;
-          if (target.scrollHeight - target.scrollTop - target.clientHeight > 40) setFollowing(false);
+          if (target.scrollHeight - target.scrollTop - target.clientHeight > 40)
+            setFollowing(false);
         }}
       >
         <div className="ai-workflow-tool-virtual" style={{ height: virtualizer.getTotalSize() }}>
@@ -169,7 +181,11 @@ const NoticeRow = memo(function NoticeRow({ notice }: { notice: NodeNotice }) {
     <div className={cn("ai-workflow-notice-row", `ai-workflow-notice-row--${notice.status}`)}>
       <NoticeIcon className="ai-workflow-notice-icon" aria-hidden />
       <span className="ai-workflow-notice-title">{notice.title}</span>
-      {notice.detail && <span className="ai-workflow-notice-detail" title={notice.detail}>{notice.detail}</span>}
+      {notice.detail && (
+        <span className="ai-workflow-notice-detail" title={notice.detail}>
+          {notice.detail}
+        </span>
+      )}
     </div>
   );
 });
@@ -180,13 +196,27 @@ const NoticeRow = memo(function NoticeRow({ notice }: { notice: NodeNotice }) {
 const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntry }) {
   const [open, setOpen] = useState(false);
   const statusMeta = TOOL_STATUS_META[entry.status];
-  const hasDetail = Boolean(entry.inputFormatted || entry.outputFormatted || entry.status === "running");
+  const hasDetail = Boolean(
+    entry.inputFormatted || entry.outputFormatted || entry.status === "running",
+  );
   // 截断结果按 entry 缓存，避免跟随滚动的高频重渲染重复计算。
-  const inputBlock = useMemo(() => truncateBlock(entry.inputFormatted, "head"), [entry.inputFormatted]);
-  const outputBlock = useMemo(() => truncateBlock(entry.outputFormatted, "tail"), [entry.outputFormatted]);
+  const inputBlock = useMemo(
+    () => truncateBlock(entry.inputFormatted, "head"),
+    [entry.inputFormatted],
+  );
+  const outputBlock = useMemo(
+    () => truncateBlock(entry.outputFormatted, "tail"),
+    [entry.outputFormatted],
+  );
 
   return (
-    <div className={cn("ai-workflow-tool-card", open && "ai-workflow-tool-card--open", `ai-workflow-tool-card--${entry.status}`)}>
+    <div
+      className={cn(
+        "ai-workflow-tool-card",
+        open && "ai-workflow-tool-card--open",
+        `ai-workflow-tool-card--${entry.status}`,
+      )}
+    >
       <button
         type="button"
         className="ai-workflow-tool-card-head"
@@ -195,30 +225,60 @@ const ToolCallCard = memo(function ToolCallCard({ entry }: { entry: ToolCallEntr
       >
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         <Wrench className="ai-workflow-tool-card-icon" aria-hidden />
-        <span className="ai-workflow-tool-card-name" title={entry.name}>{entry.name}</span>
-        <span className={cn("ai-workflow-tool-status", statusMeta.className)}>{statusMeta.label}</span>
-        <span className="ai-workflow-tool-card-chars" title="输入 / 输出字符数">入 {formatCharCount(entry.inputChars)} · 出 {formatCharCount(entry.outputChars)}</span>
-        {entry.durationMs != null && <span className="ai-workflow-tool-card-duration">{formatWorkflowDuration(entry.durationMs)}</span>}
+        <span className="ai-workflow-tool-card-name" title={entry.name}>
+          {entry.name}
+        </span>
+        <span className={cn("ai-workflow-tool-status", statusMeta.className)}>
+          {statusMeta.label}
+        </span>
+        <span className="ai-workflow-tool-card-chars" title="输入 / 输出字符数">
+          入 {formatCharCount(entry.inputChars)} · 出 {formatCharCount(entry.outputChars)}
+        </span>
+        {entry.durationMs != null && (
+          <span className="ai-workflow-tool-card-duration">
+            {formatWorkflowDuration(entry.durationMs)}
+          </span>
+        )}
       </button>
       {open && (
         <div className="ai-workflow-tool-card-body">
           {entry.inputFormatted ? (
             <div>
-              <div className="ai-workflow-tool-block-label">输入参数 <span className="ai-workflow-drawer-hint">{formatCharCount(entry.inputChars)} 字符</span></div>
+              <div className="ai-workflow-tool-block-label">
+                输入参数{" "}
+                <span className="ai-workflow-drawer-hint">
+                  {formatCharCount(entry.inputChars)} 字符
+                </span>
+              </div>
               <pre className="ai-workflow-tool-pre">{inputBlock.text}</pre>
-              {inputBlock.omitted > 0 && <div className="ai-workflow-tool-truncated">已截断后 {formatCharCount(inputBlock.omitted)} 字符（保留开头）</div>}
+              {inputBlock.omitted > 0 && (
+                <div className="ai-workflow-tool-truncated">
+                  已截断后 {formatCharCount(inputBlock.omitted)} 字符（保留开头）
+                </div>
+              )}
             </div>
           ) : (
             <div className="ai-workflow-tool-block-empty">无输入参数</div>
           )}
           {entry.outputFormatted ? (
             <div>
-              <div className="ai-workflow-tool-block-label">输出结果 <span className="ai-workflow-drawer-hint">{formatCharCount(entry.outputChars)} 字符</span></div>
+              <div className="ai-workflow-tool-block-label">
+                输出结果{" "}
+                <span className="ai-workflow-drawer-hint">
+                  {formatCharCount(entry.outputChars)} 字符
+                </span>
+              </div>
               <pre className="ai-workflow-tool-pre">{outputBlock.text}</pre>
-              {outputBlock.omitted > 0 && <div className="ai-workflow-tool-truncated">已截断前 {formatCharCount(outputBlock.omitted)} 字符（保留尾部）</div>}
+              {outputBlock.omitted > 0 && (
+                <div className="ai-workflow-tool-truncated">
+                  已截断前 {formatCharCount(outputBlock.omitted)} 字符（保留尾部）
+                </div>
+              )}
             </div>
           ) : (
-            <div className="ai-workflow-tool-block-empty">{entry.status === "running" ? "执行中，尚无输出…" : "无输出"}</div>
+            <div className="ai-workflow-tool-block-empty">
+              {entry.status === "running" ? "执行中，尚无输出…" : "无输出"}
+            </div>
           )}
         </div>
       )}
@@ -268,12 +328,26 @@ const PlanCardView = memo(function PlanCardView({ plan }: { plan: PlanCard }) {
               {plan.entries.map((entry, index) => {
                 const StatusIcon = PLAN_STATUS_ICONS[entry.status];
                 return (
-                  <li key={index} className="flex items-start gap-1.5 text-[12px] leading-relaxed text-[var(--text-secondary)]">
+                  <li
+                    key={index}
+                    className="flex items-start gap-1.5 text-[12px] leading-relaxed text-[var(--text-secondary)]"
+                  >
                     <StatusIcon
-                      className={cn("mt-0.5 h-3 w-3 flex-shrink-0", PLAN_STATUS_CLASS[entry.status], entry.status === "in_progress" && "animate-spin")}
+                      className={cn(
+                        "mt-0.5 h-3 w-3 flex-shrink-0",
+                        PLAN_STATUS_CLASS[entry.status],
+                        entry.status === "in_progress" && "animate-spin",
+                      )}
                       aria-hidden
                     />
-                    <span className={cn(entry.status === "completed" && "line-through decoration-[var(--text-muted)]")}>{entry.content}</span>
+                    <span
+                      className={cn(
+                        entry.status === "completed" &&
+                          "line-through decoration-[var(--text-muted)]",
+                      )}
+                    >
+                      {entry.content}
+                    </span>
                   </li>
                 );
               })}
@@ -300,7 +374,9 @@ const ThinkingCard = memo(function ThinkingCard({ entry }: { entry: ThinkingEntr
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         <BrainCircuit className="ai-workflow-tool-card-icon" aria-hidden />
         <span className="ai-workflow-tool-card-name">{entry.title}</span>
-        <span className="ai-workflow-tool-card-chars">{formatCharCount(entry.content.length)} 字符</span>
+        <span className="ai-workflow-tool-card-chars">
+          {formatCharCount(entry.content.length)} 字符
+        </span>
       </button>
       {open && (
         <div className="ai-workflow-tool-card-body">

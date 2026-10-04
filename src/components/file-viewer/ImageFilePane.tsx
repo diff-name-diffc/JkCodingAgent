@@ -55,7 +55,9 @@ export function ImageFilePane({
         projectPath={projectPath}
         filePath={filePath}
         meta={
-          imagePreview ? `${imagePreview.mimeType} · ${(imagePreview.byteLength / 1024).toFixed(1)} KB` : null
+          imagePreview
+            ? `${imagePreview.mimeType} · ${(imagePreview.byteLength / 1024).toFixed(1)} KB`
+            : null
         }
       />
 

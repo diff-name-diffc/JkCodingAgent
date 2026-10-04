@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertCircle } from "lucide-react";
 import { LargeFileViewer } from "./LargeFileViewer";
@@ -241,8 +235,11 @@ export function FileTabPane({
           />
         )}
 
-        {!loading && !error && content !== null && !isLargeFile && (
-          isMarkdown && previewMode ? (
+        {!loading &&
+          !error &&
+          content !== null &&
+          !isLargeFile &&
+          (isMarkdown && previewMode ? (
             <div className="md-preview-shell">
               <div className="md-preview-card">
                 <div className="md-preview-body">
@@ -258,8 +255,7 @@ export function FileTabPane({
               language={presentation.monacoLanguage}
               onChange={handleChange}
             />
-          )
-        )}
+          ))}
       </div>
     </div>
   );

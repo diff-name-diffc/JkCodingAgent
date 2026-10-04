@@ -93,9 +93,19 @@ export function parseUnifiedDiff(raw: string): ParsedDiffFile[] {
 
     if (currentHunk) {
       if (line.startsWith("+")) {
-        currentHunk.lines.push({ type: "add", content: line.slice(1), oldLn: null, newLn: newLn++ });
+        currentHunk.lines.push({
+          type: "add",
+          content: line.slice(1),
+          oldLn: null,
+          newLn: newLn++,
+        });
       } else if (line.startsWith("-")) {
-        currentHunk.lines.push({ type: "del", content: line.slice(1), oldLn: oldLn++, newLn: null });
+        currentHunk.lines.push({
+          type: "del",
+          content: line.slice(1),
+          oldLn: oldLn++,
+          newLn: null,
+        });
       } else if (line.startsWith(" ") || line === "") {
         currentHunk.lines.push({
           type: "ctx",

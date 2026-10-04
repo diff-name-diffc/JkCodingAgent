@@ -30,7 +30,11 @@ export function MarkdownCodeBlock({
   compact?: boolean;
 }) {
   const fallbackHtml = useMemo(() => renderPlainCodeHtml(code), [code]);
-  const [highlighted, setHighlighted] = useState<{ code: string; isDark: boolean; html: string } | null>(null);
+  const [highlighted, setHighlighted] = useState<{
+    code: string;
+    isDark: boolean;
+    html: string;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const isDark = useIsDarkTheme();
   const resolvedLanguage = useMemo(

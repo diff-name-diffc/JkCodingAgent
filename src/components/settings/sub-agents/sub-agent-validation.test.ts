@@ -39,7 +39,9 @@ describe("validateSubAgentDraft", () => {
   });
 
   it("Agent ID 超长", () => {
-    expect(validateSubAgentDraft(draft({ agentId: "a".repeat(65) })).error).toContain("长度不能超过 64");
+    expect(validateSubAgentDraft(draft({ agentId: "a".repeat(65) })).error).toContain(
+      "长度不能超过 64",
+    );
   });
 
   it("Agent ID 非法字符", () => {
@@ -68,14 +70,18 @@ describe("validateSubAgentDraft", () => {
       error: `最大迭代轮次必须在 1-${MAX_ITERATIONS} 之间`,
       focusTab: "runtime",
     });
-    expect(validateSubAgentDraft(draft({ maxIterations: MAX_ITERATIONS + 1 })).focusTab).toBe("runtime");
+    expect(validateSubAgentDraft(draft({ maxIterations: MAX_ITERATIONS + 1 })).focusTab).toBe(
+      "runtime",
+    );
     expect(
       validateSubAgentDraft(draft({ maxOutputTokens: MIN_OUTPUT_TOKENS - 1 })).error,
     ).toContain("最大输出 Token");
-    expect(
-      validateSubAgentDraft(draft({ maxOutputTokens: MAX_OUTPUT_TOKENS + 1 })).focusTab,
-    ).toBe("runtime");
-    expect(validateSubAgentDraft(draft({ temperature: 2.1 })).error).toBe("Temperature 必须在 0-2 之间");
+    expect(validateSubAgentDraft(draft({ maxOutputTokens: MAX_OUTPUT_TOKENS + 1 })).focusTab).toBe(
+      "runtime",
+    );
+    expect(validateSubAgentDraft(draft({ temperature: 2.1 })).error).toBe(
+      "Temperature 必须在 0-2 之间",
+    );
     expect(validateSubAgentDraft(draft({ temperature: -0.1 })).focusTab).toBe("runtime");
     expect(validateSubAgentDraft(draft({ timeoutSecs: 0 })).error).toContain("超时时间");
     expect(validateSubAgentDraft(draft({ timeoutSecs: 3601 })).focusTab).toBe("runtime");

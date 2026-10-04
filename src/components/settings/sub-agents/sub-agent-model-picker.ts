@@ -1,12 +1,5 @@
-import type {
-  ModelCategory,
-  ModelLibraryEntry,
-  SubAgentModelConfig,
-} from "../../../types";
-import {
-  categoryDef,
-  entriesForCategory,
-} from "../providers/model-library";
+import type { ModelCategory, ModelLibraryEntry, SubAgentModelConfig } from "../../../types";
+import { categoryDef, entriesForCategory } from "../providers/model-library";
 
 /**
  * 子智能体「自定义配置」模型选择器的纯函数层。
@@ -53,12 +46,12 @@ export function findMatchedLibraryEntry(
   const modelName = modelConfig.modelName?.trim();
   if (!apiBase || !modelName) return undefined;
   const apiKey = modelConfig.apiKey?.trim();
-  return PICKABLE_CATEGORIES.flatMap((category) =>
-    pickableEntries(library, category),
-  ).find((entry) => {
-    if (entry.url.trim() !== apiBase || entry.model.trim() !== modelName) return false;
-    // 同 url+model 可能有多个账号条目：apiKey 一致才算命中，否则下拉显示
-    // 与已回填的 Key 可能来自不同条目。
-    return !apiKey || !entry.apiKey.trim() || entry.apiKey.trim() === apiKey;
-  });
+  return PICKABLE_CATEGORIES.flatMap((category) => pickableEntries(library, category)).find(
+    (entry) => {
+      if (entry.url.trim() !== apiBase || entry.model.trim() !== modelName) return false;
+      // 同 url+model 可能有多个账号条目：apiKey 一致才算命中，否则下拉显示
+      // 与已回填的 Key 可能来自不同条目。
+      return !apiKey || !entry.apiKey.trim() || entry.apiKey.trim() === apiKey;
+    },
+  );
 }

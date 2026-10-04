@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_WORKSPACE_PREFS,
-  sanitizeWorkspacePrefs,
-} from "./workspace-prefs";
+import { DEFAULT_WORKSPACE_PREFS, sanitizeWorkspacePrefs } from "./workspace-prefs";
 
 describe("sanitizeWorkspacePrefs", () => {
   it("空/非法输入回退默认", () => {

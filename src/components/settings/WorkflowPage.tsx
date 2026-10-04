@@ -75,7 +75,10 @@ export function WorkflowPage() {
         description="工作流节点由 claude-agent-acp 子进程执行，要求本机已安装 Node.js ≥ 22。默认托管模式：应用把版本锁定的官方包安装到 ~/.jkcodingagent/acp-agent/ 后以固定路径启动（首次运行需联网安装），子进程仅继承白名单环境变量。凭据留空时依赖本机 ~/.claude 登录态；填写后注入子进程环境变量（ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL）。"
       >
         <div className="ai-set-field">
-          <FieldLabel label="启动命令" tip="留空 = 托管模式（推荐）：自动安装并锁定官方包版本，固定路径启动。填写自定义命令则按空白拆分为程序与参数原样执行。" />
+          <FieldLabel
+            label="启动命令"
+            tip="留空 = 托管模式（推荐）：自动安装并锁定官方包版本，固定路径启动。填写自定义命令则按空白拆分为程序与参数原样执行。"
+          />
           <input
             className="ai-settings-input"
             value={command}

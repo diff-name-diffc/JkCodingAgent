@@ -3,7 +3,7 @@ import type { Project } from "../types";
 import { sortProjectsByRecency } from "./project-sort";
 
 const project = (id: string, name: string, lastOpenedAt: number): Project =>
-  ({ id, name, path: `/tmp/${id}`, lastOpenedAt } as Project);
+  ({ id, name, path: `/tmp/${id}`, lastOpenedAt }) as Project;
 
 describe("sortProjectsByRecency", () => {
   it("按 lastOpenedAt 降序，与 id 形态无关（UUID 亦正确）", () => {

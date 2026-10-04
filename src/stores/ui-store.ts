@@ -25,7 +25,6 @@ export interface UIState {
 
   setCommandPaletteOpen: (open: boolean) => void;
   toggleCommandPalette: () => void;
-
 }
 
 export const useUIStore = create<UIState>()(
@@ -42,9 +41,7 @@ export const useUIStore = create<UIState>()(
       setArtifactPanelOpen: (open) => set({ artifactPanelOpen: open }),
 
       setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
-      toggleCommandPalette: () =>
-        set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
-
+      toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
     }),
     {
       name: "jkcodingagent:ui",

@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  inferModelNotConfiguredCategory,
-  isModelNotConfiguredError,
-} from "./run-error-classify";
+import { inferModelNotConfiguredCategory, isModelNotConfiguredError } from "./run-error-classify";
 
 describe("isModelNotConfiguredError", () => {
   it("命中 validate_provider_completeness 的三条缺项错误串", () => {
@@ -50,10 +47,14 @@ describe("isModelNotConfiguredError", () => {
 
   it("对上层包装串（聊天/调度执行失败前缀）仍命中", () => {
     expect(
-      isModelNotConfiguredError("聊天执行失败：错误：模型服务缺少 API Key，请先在设置中配置对应模型服务。"),
+      isModelNotConfiguredError(
+        "聊天执行失败：错误：模型服务缺少 API Key，请先在设置中配置对应模型服务。",
+      ),
     ).toBe(true);
     expect(
-      isModelNotConfiguredError("调度智能体执行失败：错误：聊天 LLM API Key 未配置。请在设置中配置。"),
+      isModelNotConfiguredError(
+        "调度智能体执行失败：错误：聊天 LLM API Key 未配置。请在设置中配置。",
+      ),
     ).toBe(true);
   });
 
@@ -79,7 +80,9 @@ describe("isModelNotConfiguredError", () => {
 
   it("安全审查门禁串不命中（修复入口非模型服务分类页，刻意排除）", () => {
     expect(
-      isModelNotConfiguredError("未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。"),
+      isModelNotConfiguredError(
+        "未配置安全审查，已拒绝执行命令。请先在应用设置中配置安全审查模型。",
+      ),
     ).toBe(false);
   });
 
@@ -121,7 +124,9 @@ describe("inferModelNotConfiguredCategory（工具级深链分类推断）", () 
     expect(
       inferModelNotConfiguredCategory("错误：聊天 LLM API Key 未配置。请在设置中配置。"),
     ).toBeNull();
-    expect(inferModelNotConfiguredCategory("错误：未配置视觉模型。请在设置中心添加后重试。")).toBeNull();
+    expect(
+      inferModelNotConfiguredCategory("错误：未配置视觉模型。请在设置中心添加后重试。"),
+    ).toBeNull();
   });
 
   it("未命中 / 空值返回 null", () => {

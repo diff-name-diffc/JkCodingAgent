@@ -250,17 +250,13 @@ describe("validateArchProgram", () => {
     expect(
       validateArchProgram({
         version: 1,
-        instructions: [
-          { _type: "update_arrow", target: "shape:x", kind: "spline" },
-        ],
+        instructions: [{ _type: "update_arrow", target: "shape:x", kind: "spline" }],
       }).ok,
     ).toBe(false);
     expect(
       validateArchProgram({
         version: 1,
-        instructions: [
-          { _type: "update_arrow", target: "shape:x", arrowheadEnd: "harpoon" },
-        ],
+        instructions: [{ _type: "update_arrow", target: "shape:x", arrowheadEnd: "harpoon" }],
       }).ok,
     ).toBe(false);
   });
@@ -277,9 +273,9 @@ describe("validateArchProgram", () => {
     // columns 必须是整数（Rust 侧为整数类型）。
     expect(validateArchProgram(layout({ columns: 2.5 })).ok).toBe(false);
     expect(validateArchProgram(layout({ origin: { x: NaN, y: 0 } })).ok).toBe(false);
-    expect(
-      validateArchProgram(layout({ gap: 40, columns: 2, origin: { x: 0, y: 0 } })).ok,
-    ).toBe(true);
+    expect(validateArchProgram(layout({ gap: 40, columns: 2, origin: { x: 0, y: 0 } })).ok).toBe(
+      true,
+    );
   });
 
   it("validates labelPosition range and w/h lower bound", () => {

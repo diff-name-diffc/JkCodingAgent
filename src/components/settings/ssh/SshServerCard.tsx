@@ -47,8 +47,7 @@ export function SshServerCard({
   onTested: (status: "ok" | "failed") => void;
 }) {
   const fid = (field: string) => `ssh.server.${server.id}.${field}`;
-  const fieldError = (field: string) =>
-    errorFieldId === fid(field) ? errorMessage : undefined;
+  const fieldError = (field: string) => (errorFieldId === fid(field) ? errorMessage : undefined);
 
   // 主机密钥 TOFU：测试失败且原因是「指纹与固定值不一致」时，提供显式的
   // 「信任新指纹并重测」恢复入口（服务器重建等合法变更场景）。
@@ -205,9 +204,7 @@ export function SshServerCard({
                 placeholder="生产 Web 节点"
                 // 与后端 NAME_MAX_LEN 一致：超长会导致整批配置保存被拒。
                 maxLength={64}
-                onCommit={(next) =>
-                  onUpdate((draft) => ({ ...draft, name: next }), fid("name"))
-                }
+                onCommit={(next) => onUpdate((draft) => ({ ...draft, name: next }), fid("name"))}
               />
             </Field>
             <Field label="描述" error={fieldError("description")}>
@@ -294,10 +291,7 @@ export function SshServerCard({
               </button>
               <button
                 type="button"
-                className={cn(
-                  "ai-aha-category-chip",
-                  server.authMethod === "key" && "is-active",
-                )}
+                className={cn("ai-aha-category-chip", server.authMethod === "key" && "is-active")}
                 onClick={() =>
                   onUpdate((draft) => ({ ...draft, authMethod: "key" }), fid("authMethod"))
                 }

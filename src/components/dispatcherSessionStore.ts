@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DispatcherMessage, DispatcherMessageWire } from "../types";
-import type { AssistantThinkingBlock, AssistantTurnSegment } from "./dispatcher-chat/assistant-segments";
+import type {
+  AssistantThinkingBlock,
+  AssistantTurnSegment,
+} from "./dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "./dispatcher-chat/tool-activity";
 
 export interface DispatcherLiveSessionState {
@@ -144,19 +147,14 @@ export function subscribeDispatcherMessages(
  * 竞态守卫：list_messages 在途期间若已开启新 run，过期全量快照不得推送
  * （merge 只增不删，可能把已删消息加回来）。
  */
-export function reconcileSessionMessages(
-  targetSessionId: string,
-  expectedCount?: number,
-): void {
+export function reconcileSessionMessages(targetSessionId: string, expectedCount?: number): void {
   void invoke<DispatcherMessageWire[]>("dispatcher_list_messages", {
     workspaceId: targetSessionId,
   })
     .then((fresh) => {
       if (getDispatcherActiveRunId(targetSessionId) !== undefined) return;
       if (expectedCount !== undefined && fresh.length !== expectedCount) {
-        console.warn(
-          `Finished 对账不一致：后端 ${expectedCount} 条，拉取到 ${fresh.length} 条`,
-        );
+        console.warn(`Finished 对账不一致：后端 ${expectedCount} 条，拉取到 ${fresh.length} 条`);
       }
       notifyDispatcherMessages(targetSessionId, fresh);
     })

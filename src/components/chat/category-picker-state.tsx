@@ -6,10 +6,7 @@ import { cn } from "../../lib/cn";
 import { hexWithAlpha } from "../../lib/hex-alpha";
 import { resolveCategoryIcon } from "../../lib/category-icon";
 import { Button } from "../ui/button";
-import {
-  ChatNewCategoryDialog,
-  type ChatCategoryCreateConfig,
-} from "../ChatNewCategoryDialog";
+import { ChatNewCategoryDialog, type ChatCategoryCreateConfig } from "../ChatNewCategoryDialog";
 
 /**
  * 「选择分类开始新对话」空态（未选会话时取代消息区渲染）。
@@ -61,11 +58,7 @@ export function CategoryPickerState({
       {loading ? (
         <div className="ai-category-picker-grid mt-9 w-full max-w-2xl">
           {Array.from({ length: 6 }).map((_, index) => (
-            <div
-              key={index}
-              className="ai-category-picker-card is-loading"
-              aria-hidden="true"
-            />
+            <div key={index} className="ai-category-picker-card is-loading" aria-hidden="true" />
           ))}
         </div>
       ) : categories.length === 0 ? (
@@ -127,13 +120,7 @@ export function CategoryPickerState({
   );
 }
 
-function CategoryCard({
-  category,
-  onPick,
-}: {
-  category: ChatCategory;
-  onPick: () => void;
-}) {
+function CategoryCard({ category, onPick }: { category: ChatCategory; onPick: () => void }) {
   const Icon = resolveCategoryIcon(category.icon);
   // 分类色是运行期数据，走内联 tint；非 hex 时回退 CSS 类中的中性令牌色。
   const tint = hexWithAlpha(category.color, "1f");

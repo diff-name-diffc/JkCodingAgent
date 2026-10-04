@@ -1,11 +1,5 @@
 import * as React from "react";
-import {
-  MessageSquarePlus,
-  PanelLeft,
-  Search,
-  Settings,
-  TerminalSquare,
-} from "lucide-react";
+import { MessageSquarePlus, PanelLeft, Search, Settings, TerminalSquare } from "lucide-react";
 import type { ChatSession } from "../../types";
 import { cn } from "../../lib/cn";
 import { useOverlayEscape } from "../../hooks/use-overlay-escape";
@@ -46,15 +40,12 @@ export function CommandPalette({
   // 列表键盘导航（UI-23d）：输入框 ArrowDown/ArrowUp 进入列表首/末项；
   // 列表内 ↑↓/Home/End 在动作与会话项间移动焦点（边界钳制不环绕），
   // Enter 激活=按钮既有 onClick。
-  const handleInputKeyDown = React.useCallback(
-    (event: React.KeyboardEvent<HTMLInputElement>) => {
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      if (moveListFocus(listRef.current, event.key, { selector: "button" })) {
-        event.preventDefault();
-      }
-    },
-    [],
-  );
+  const handleInputKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (moveListFocus(listRef.current, event.key, { selector: "button" })) {
+      event.preventDefault();
+    }
+  }, []);
   const handleListKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || !LIST_NAV_KEYS.has(event.key)) return;
     if (moveListFocus(listRef.current, event.key, { selector: "button", wrap: false })) {
@@ -167,13 +158,7 @@ export function CommandPalette({
   );
 }
 
-function CommandSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function CommandSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mb-2">
       <div className="px-2 py-1.5 text-[11px] font-medium uppercase text-muted-foreground">

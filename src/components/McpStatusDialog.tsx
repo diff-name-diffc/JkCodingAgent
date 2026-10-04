@@ -73,9 +73,7 @@ export function McpStatusDialog({
       ),
     );
     setExpandedTools((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(([key]) => validToolKeys.has(key)),
-      ),
+      Object.fromEntries(Object.entries(current).filter(([key]) => validToolKeys.has(key))),
     );
   }, [status]);
 
@@ -107,10 +105,7 @@ export function McpStatusDialog({
               </button>
             )}
             <button className="ai-mcp-header-button" onClick={onRefresh} disabled={checking}>
-              <RefreshCw
-                size={14}
-                className={checking ? "ai-mcp-spin" : undefined}
-              />
+              <RefreshCw size={14} className={checking ? "ai-mcp-spin" : undefined} />
               重新检查
             </button>
             <button
@@ -229,9 +224,7 @@ export function McpStatusDialog({
                               <span className="ai-mcp-switch-label">
                                 {busy ? "保存中" : server.enabled ? "启用" : "禁用"}
                               </span>
-                              <span
-                                className="ai-mcp-switch-thumb"
-                              />
+                              <span className="ai-mcp-switch-thumb" />
                             </button>
                           )}
                         </div>
@@ -246,9 +239,7 @@ export function McpStatusDialog({
                               当前 server 已禁用，不参与状态校验，也不会向智能体注入工具。
                             </div>
                           ) : server.tools.length === 0 ? (
-                            <div className="ai-mcp-hint">
-                              当前没有可展示的工具详情。
-                            </div>
+                            <div className="ai-mcp-hint">当前没有可展示的工具详情。</div>
                           ) : (
                             <div className="ai-mcp-tool-list">
                               {server.tools.map((tool) => {

@@ -10,10 +10,7 @@ import type {
 } from "../types";
 import { withDispatcherSessionsRunning } from "../components/dispatcherSessionStore";
 import { bindPurpose, type PurposeKind } from "../components/settings/providers/provider-registry";
-import {
-  SESSION_QUERY_KEYS,
-  useSessionListEventMerge,
-} from "./use-session-queries";
+import { SESSION_QUERY_KEYS, useSessionListEventMerge } from "./use-session-queries";
 
 /**
  * TanStack Query hooks for the Chat UI.
@@ -87,7 +84,7 @@ export function useChatCategorySessionsQuery(category: string, enabled = true) {
       };
     },
     initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+    getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextCursor : undefined),
     enabled,
   });
 }
@@ -121,9 +118,8 @@ export function useDeleteChatSession() {
       qc.setQueryData<ChatSession[]>(QUERY_KEYS.sessions(), (sessions) =>
         sessions?.filter((session) => session.id !== sessionId),
       );
-      qc.setQueriesData<SessionSearchResult[]>(
-        { queryKey: ["sessions", "search"] },
-        (results) => results?.filter((result) => result.sessionId !== sessionId),
+      qc.setQueriesData<SessionSearchResult[]>({ queryKey: ["sessions", "search"] }, (results) =>
+        results?.filter((result) => result.sessionId !== sessionId),
       );
       qc.removeQueries({ queryKey: QUERY_KEYS.messages(sessionId) });
       void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
@@ -168,12 +164,7 @@ export function useCreateChatCategory() {
 export function useUpdateChatCategory() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: {
-      categoryId: string;
-      name?: string;
-      icon?: string;
-      color?: string;
-    }) =>
+    mutationFn: (args: { categoryId: string; name?: string; icon?: string; color?: string }) =>
       invoke<ChatCategory | null>("chat_update_category", {
         categoryId: args.categoryId,
         name: args.name ?? null,
@@ -190,8 +181,7 @@ export function useUpdateChatCategory() {
 export function useDeleteChatCategory() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (categoryId: string) =>
-      invoke<void>("chat_delete_category", { categoryId }),
+    mutationFn: (categoryId: string) => invoke<void>("chat_delete_category", { categoryId }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QUERY_KEYS.categories });
       void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });

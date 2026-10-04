@@ -23,9 +23,7 @@ pub(crate) enum CancelWaitOutcome {
 /// 异步等待取消：信号置位或取消源掉线即完成。
 ///
 /// `None`（无取消源）永不完成，便于直接作为 `tokio::select!` 分支使用。
-pub(crate) async fn wait_for_cancel(
-    cancel: Option<watch::Receiver<bool>>,
-) -> CancelWaitOutcome {
+pub(crate) async fn wait_for_cancel(cancel: Option<watch::Receiver<bool>>) -> CancelWaitOutcome {
     let Some(mut rx) = cancel else {
         std::future::pending::<()>().await;
         unreachable!()
@@ -97,8 +95,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_without_source_never_resolves() {
-        let settled =
-            tokio::time::timeout(Duration::from_millis(50), wait_for_cancel(None)).await;
+        let settled = tokio::time::timeout(Duration::from_millis(50), wait_for_cancel(None)).await;
         assert!(settled.is_err());
     }
 
@@ -118,9 +115,12 @@ mod tests {
     async fn explicit_cancel_resolves_on_signal() {
         let (tx, rx) = channel(false);
         tx.send(true).unwrap();
-        tokio::time::timeout(Duration::from_millis(50), wait_for_explicit_cancel(Some(rx)))
-            .await
-            .expect("explicit cancel resolves on true");
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            wait_for_explicit_cancel(Some(rx)),
+        )
+        .await
+        .expect("explicit cancel resolves on true");
     }
 
     #[test]

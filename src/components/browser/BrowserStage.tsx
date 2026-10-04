@@ -33,9 +33,7 @@ export function BrowserStage({
         <div className="ai-browser-empty">
           {hasSession ? (
             <>
-              {pageClosed && (
-                <div className="ai-browser-empty-title">浏览器页面已关闭</div>
-              )}
+              {pageClosed && <div className="ai-browser-empty-title">浏览器页面已关闭</div>}
               {!connected && !pageClosed && (
                 <div className="ai-browser-empty-copy">点击上方 ⚡ 按钮启动浏览器</div>
               )}

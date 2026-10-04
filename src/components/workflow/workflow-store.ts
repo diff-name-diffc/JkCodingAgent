@@ -120,7 +120,14 @@ function evictOldestPlan(currentPlanId: string): void {
 function ensureSnapshot(planId: string): WorkflowPlanSnapshot {
   let snapshot = snapshots.get(planId);
   if (!snapshot) {
-    snapshot = { plan: null, liveOutputs: {}, liveActivities: {}, lastEvent: null, paused: false, pausedNodeId: null };
+    snapshot = {
+      plan: null,
+      liveOutputs: {},
+      liveActivities: {},
+      lastEvent: null,
+      paused: false,
+      pausedNodeId: null,
+    };
     snapshots.set(planId, snapshot);
     if (snapshots.size > MAX_TRACKED_PLANS) {
       evictOldestPlan(planId);
@@ -161,10 +168,7 @@ function notifyThrottled(): void {
   }, 100);
 }
 
-function patchPlan(
-  snapshot: WorkflowPlanSnapshot,
-  patch: Partial<WorkflowPlanRecord>,
-): void {
+function patchPlan(snapshot: WorkflowPlanSnapshot, patch: Partial<WorkflowPlanRecord>): void {
   if (!snapshot.plan) return;
   snapshot.plan = { ...snapshot.plan, ...patch };
 }
@@ -232,16 +236,23 @@ export function reduceWorkflowRunEvent(
     case "nodeActivity": {
       const activities = snapshot.liveActivities[payload.data.nodeId] ?? [];
       const index = activities.findIndex((item) => item.id === payload.data.activity.id);
-      if (index < 0 && payload.data.activity.kind === "tool_call" && payload.data.activity.status === "started") {
+      if (
+        index < 0 &&
+        payload.data.activity.kind === "tool_call" &&
+        payload.data.activity.status === "started"
+      ) {
         const current = snapshot.plan?.nodeRuns.find((run) => run.nodeId === payload.data.nodeId);
         upsertNodeRun(snapshot, payload.data.nodeId, {
           status: "running",
           toolCallCount: (current?.toolCallCount ?? 0) + 1,
         });
       }
-      snapshot.liveActivities[payload.data.nodeId] = index < 0
-        ? [...activities, payload.data.activity]
-        : activities.map((item, itemIndex) => itemIndex === index ? payload.data.activity : item);
+      snapshot.liveActivities[payload.data.nodeId] =
+        index < 0
+          ? [...activities, payload.data.activity]
+          : activities.map((item, itemIndex) =>
+              itemIndex === index ? payload.data.activity : item,
+            );
       return { notification: "throttled", hydrate: false };
     }
     case "nodeFinished":

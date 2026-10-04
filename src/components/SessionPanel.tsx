@@ -1,5 +1,13 @@
 import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
-import { Search, ChevronLeft, PanelLeftClose, Plus, Trash2, LoaderCircle, MoreHorizontal } from "lucide-react";
+import {
+  Search,
+  ChevronLeft,
+  PanelLeftClose,
+  Plus,
+  Trash2,
+  LoaderCircle,
+  MoreHorizontal,
+} from "lucide-react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cleanupDispatcherSession } from "./dispatcherSessionStore";
 import { cleanupSubAgentEvents } from "./subAgentEventStore";
@@ -230,10 +238,7 @@ export function SessionPanel({
     [deleteProjectSession, project.id, onSelectSession, handleNewSession],
   );
 
-  const handleSelect = useCallback(
-    (id: string) => onSelectSession(id),
-    [onSelectSession],
-  );
+  const handleSelect = useCallback((id: string) => onSelectSession(id), [onSelectSession]);
 
   // 列表键盘导航（UI-23d）：搜索框 ArrowDown 进入列表；列表内 ↑↓/Home/End
   // 在会话行间移动焦点（li>button 保持天然 tabbable，Enter 打开=既有 onClick）。
@@ -269,14 +274,14 @@ export function SessionPanel({
       {/* Project header（嵌入导航时由 ContextNav 提供外壳） */}
       {!hideChrome && (
         <div className="ai-project-session-header">
-        <button className="ai-project-session-icon-btn" onClick={onBack} title="返回项目页">
-          <ChevronLeft size={15} strokeWidth={2} />
-        </button>
-        <ProjectAvatar name={project.name} size={22} />
-        <span className="ai-project-session-title">{project.name}</span>
-        <button className="ai-project-session-icon-btn" onClick={onCollapse} title="折叠会话列表">
-          <PanelLeftClose size={15} strokeWidth={2} />
-        </button>
+          <button className="ai-project-session-icon-btn" onClick={onBack} title="返回项目页">
+            <ChevronLeft size={15} strokeWidth={2} />
+          </button>
+          <ProjectAvatar name={project.name} size={22} />
+          <span className="ai-project-session-title">{project.name}</span>
+          <button className="ai-project-session-icon-btn" onClick={onCollapse} title="折叠会话列表">
+            <PanelLeftClose size={15} strokeWidth={2} />
+          </button>
         </div>
       )}
 
@@ -358,19 +363,14 @@ export function SessionPanel({
                 />
               ))}
             </ul>
-            {hasNextPage && (
-              <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />
-            )}
+            {hasNextPage && <div ref={sentinelRef} style={{ height: 1, width: "100%" }} />}
           </>
         )}
       </div>
 
       {!hideChrome && (
         <div className="ai-project-session-footer">
-          <SidebarFooterActions
-            projectId={project.id}
-            projectPath={project.path}
-          />
+          <SidebarFooterActions projectId={project.id} projectPath={project.path} />
         </div>
       )}
     </div>

@@ -64,7 +64,9 @@ function ToolCallCard({
     <div
       className={cn(
         "ai-tool-call-card rounded-lg border bg-card/70",
-        item.status === "running" && !item.planned && "ai-tool-call-card--running border-primary/30",
+        item.status === "running" &&
+          !item.planned &&
+          "ai-tool-call-card--running border-primary/30",
         item.status === "error" && "ai-tool-call-card--error border-destructive/60",
         className,
       )}
@@ -143,23 +145,19 @@ function ToolCallCard({
                   {item.errorText}
                 </div>
               )}
-              {item.errorText &&
-                onConfigureModel &&
-                isModelNotConfiguredError(item.errorText) && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7"
-                    onClick={() =>
-                      onConfigureModel(
-                        inferModelNotConfiguredCategory(item.errorText) ?? undefined,
-                      )
-                    }
-                  >
-                    配置模型
-                  </Button>
-                )}
+              {item.errorText && onConfigureModel && isModelNotConfiguredError(item.errorText) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7"
+                  onClick={() =>
+                    onConfigureModel(inferModelNotConfiguredCategory(item.errorText) ?? undefined)
+                  }
+                >
+                  配置模型
+                </Button>
+              )}
               {item.name === "call_sub_agent" && onOpenSubAgent && (
                 <Button
                   type="button"
@@ -417,7 +415,9 @@ export function ToolCallList({
             transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
             className={cn("overflow-hidden", aggregated && "pt-2")}
           >
-            <div className="space-y-0">{items.map((item, index) => renderRow(item, index, items))}</div>
+            <div className="space-y-0">
+              {items.map((item, index) => renderRow(item, index, items))}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

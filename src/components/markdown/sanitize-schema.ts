@@ -10,14 +10,7 @@ import { defaultSchema } from "rehype-sanitize";
  */
 export const chatSafeSchema = {
   ...defaultSchema,
-  tagNames: [
-    ...(defaultSchema.tagNames || []),
-    "video",
-    "audio",
-    "source",
-    "details",
-    "summary",
-  ],
+  tagNames: [...(defaultSchema.tagNames || []), "video", "audio", "source", "details", "summary"],
   attributes: {
     ...defaultSchema.attributes,
     // "*" 不放行 style：模型输出的任意内联样式（如 background-image: url(...)）
@@ -30,14 +23,7 @@ export const chatSafeSchema = {
     audio: ["src", "controls"],
     source: ["src", "type"],
     details: ["open"],
-    img: [
-      "src",
-      "alt",
-      "width",
-      "height",
-      "loading",
-      ...(defaultSchema.attributes?.img || []),
-    ],
+    img: ["src", "alt", "width", "height", "loading", ...(defaultSchema.attributes?.img || [])],
     a: ["href", "target", "rel", ...(defaultSchema.attributes?.a || [])],
     code: ["className"],
     span: ["className", "style", ...(defaultSchema.attributes?.span || [])],

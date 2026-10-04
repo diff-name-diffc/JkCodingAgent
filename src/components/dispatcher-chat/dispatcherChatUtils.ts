@@ -108,9 +108,7 @@ export function buildOptimisticUserMessage(
  */
 const normalizeCache = new WeakMap<object, DispatcherMessage>();
 
-function normalizeCached(
-  message: DispatcherMessage | DispatcherMessageWire,
-): DispatcherMessage {
+function normalizeCached(message: DispatcherMessage | DispatcherMessageWire): DispatcherMessage {
   const hit = normalizeCache.get(message);
   if (hit) return hit;
   const normalized = normalizeDispatcherMessage(message);

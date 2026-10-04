@@ -93,12 +93,21 @@ describe("parseUnifiedDiff", () => {
 
   it("marks binary files", () => {
     const differ = parseUnifiedDiff(
-      ["diff --git a/logo.png b/logo.png", "index 111..222 100644", "Binary files a/logo.png and b/logo.png differ"].join("\n"),
+      [
+        "diff --git a/logo.png b/logo.png",
+        "index 111..222 100644",
+        "Binary files a/logo.png and b/logo.png differ",
+      ].join("\n"),
     );
     expect(differ[0].isBinary).toBe(true);
 
     const gitBinaryPatch = parseUnifiedDiff(
-      ["diff --git a/logo.png b/logo.png", "index 111..222 100644", "GIT binary patch", "literal 100"].join("\n"),
+      [
+        "diff --git a/logo.png b/logo.png",
+        "index 111..222 100644",
+        "GIT binary patch",
+        "literal 100",
+      ].join("\n"),
     );
     expect(gitBinaryPatch[0].isBinary).toBe(true);
   });
@@ -138,7 +147,15 @@ describe("parseUnifiedDiff", () => {
 
   it("drops hunk context after unknown non-meta lines, matching legacy behavior", () => {
     const files = parseUnifiedDiff(
-      ["diff --git a/x.ts b/x.ts", "--- a/x.ts", "+++ b/x.ts", "@@ -1 +1 @@", "+new", "garbage line", " +still context?"].join("\n"),
+      [
+        "diff --git a/x.ts b/x.ts",
+        "--- a/x.ts",
+        "+++ b/x.ts",
+        "@@ -1 +1 @@",
+        "+new",
+        "garbage line",
+        " +still context?",
+      ].join("\n"),
     );
     // "garbage line" 终止当前 hunk；后续以空格开头的行不再并入任何 hunk。
     expect(files[0].hunks[0].lines).toHaveLength(1);

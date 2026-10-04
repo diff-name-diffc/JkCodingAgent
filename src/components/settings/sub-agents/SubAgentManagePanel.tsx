@@ -44,13 +44,10 @@ function fromBackendConfig(record: SubAgentRecord): SubAgentConfig | null {
           : [],
       modelConfig: {
         inheritFromParent:
-          raw.model_config?.inherit_from_parent ??
-          raw.modelConfig?.inheritFromParent ??
-          true,
+          raw.model_config?.inherit_from_parent ?? raw.modelConfig?.inheritFromParent ?? true,
         apiBase: raw.model_config?.api_base ?? raw.modelConfig?.apiBase ?? undefined,
         apiKey: raw.model_config?.api_key ?? raw.modelConfig?.apiKey ?? undefined,
-        modelName:
-          raw.model_config?.model_name ?? raw.modelConfig?.modelName ?? undefined,
+        modelName: raw.model_config?.model_name ?? raw.modelConfig?.modelName ?? undefined,
       },
       maxIterations: raw.max_iterations ?? raw.maxIterations ?? 60,
       maxOutputTokens: raw.max_output_tokens ?? raw.maxOutputTokens ?? 4096,
@@ -168,7 +165,11 @@ export function SubAgentManagePanel() {
         ) : (
           <div className="ai-subagent-list">
             {!hasBrowserAgent && (
-              <button type="button" className="ai-aha-ghost-button" onClick={handleSeedBrowserAgent}>
+              <button
+                type="button"
+                className="ai-aha-ghost-button"
+                onClick={handleSeedBrowserAgent}
+              >
                 恢复内置「浏览器助手」
               </button>
             )}
@@ -176,18 +177,15 @@ export function SubAgentManagePanel() {
               const config = fromBackendConfig(record);
               const isConfirming = confirmDeleteId === record.id;
               return (
-                <div
-                  key={record.id}
-                  className="ai-subagent-card"
-                >
+                <div key={record.id} className="ai-subagent-card">
                   <div className="ai-subagent-card-head">
-                    <span className={record.enabled ? "ai-subagent-dot is-enabled" : "ai-subagent-dot"} />
+                    <span
+                      className={record.enabled ? "ai-subagent-dot is-enabled" : "ai-subagent-dot"}
+                    />
                     <span className="ai-subagent-name">{record.name}</span>
                     <span className="ai-subagent-id">({record.id})</span>
                   </div>
-                  <div className="ai-subagent-description">
-                    {record.description}
-                  </div>
+                  <div className="ai-subagent-description">{record.description}</div>
                   <div className="ai-subagent-card-footer">
                     <span className="ai-subagent-meta">
                       工具: {config?.allowedTools.length ?? 0} 个
@@ -202,9 +200,7 @@ export function SubAgentManagePanel() {
                       </button>
                       {isConfirming ? (
                         <>
-                          <span className="ai-subagent-confirm-text">
-                            确定删除？
-                          </span>
+                          <span className="ai-subagent-confirm-text">确定删除？</span>
                           <button
                             type="button"
                             className="ai-subagent-inline-button is-danger"
@@ -247,11 +243,7 @@ export function SubAgentManagePanel() {
           </div>
         )}
 
-        {feedback && (
-          <div className="ai-subagent-feedback">
-            {feedback}
-          </div>
-        )}
+        {feedback && <div className="ai-subagent-feedback">{feedback}</div>}
       </div>
 
       {editing && (

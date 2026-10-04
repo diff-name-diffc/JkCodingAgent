@@ -37,11 +37,7 @@ pub enum FsError {
 }
 
 impl crate::shared::io_error::PathIoError for FsError {
-    fn path_io(
-        action: &'static str,
-        path: std::path::PathBuf,
-        source: std::io::Error,
-    ) -> Self {
+    fn path_io(action: &'static str, path: std::path::PathBuf, source: std::io::Error) -> Self {
         FsError::Io {
             action,
             path,

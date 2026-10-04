@@ -25,7 +25,15 @@ export interface WorkflowResultViewProps {
 }
 
 /** 结果视图空态：图标 + 主文案 + 弱化说明（区别于设置域 EmptyState）。 */
-function ResultBlank({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint?: string }) {
+function ResultBlank({
+  icon: Icon,
+  title,
+  hint,
+}: {
+  icon: LucideIcon;
+  title: string;
+  hint?: string;
+}) {
   return (
     <div className="ai-workflow-result-blank">
       <Icon className="h-5 w-5" strokeWidth={1.5} aria-hidden />
@@ -144,7 +152,9 @@ export function WorkflowResultView({ plan, onOpenNode, onOpenFile }: WorkflowRes
             <div className="ai-workflow-result-section-label">
               {result.resultKind === "edit" ? "执行结论" : "审查结论"}
               {result.conclusionMd && result.conclusionNodeId && (
-                <span className="ai-workflow-result-hint">来自汇总节点 {result.conclusionNodeId}</span>
+                <span className="ai-workflow-result-hint">
+                  来自汇总节点 {result.conclusionNodeId}
+                </span>
               )}
               <CopyIconButton
                 value={result.conclusionMd}

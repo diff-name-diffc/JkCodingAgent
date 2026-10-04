@@ -41,15 +41,7 @@ export type ArchGeo = "rectangle" | "ellipse" | "diamond";
 export type ArchShapeKind = "geo" | "note" | "text" | "frame";
 export type ArchArrowKind = "arc" | "elbow";
 export type ArchArrowhead =
-  | "arrow"
-  | "triangle"
-  | "square"
-  | "dot"
-  | "pipe"
-  | "diamond"
-  | "inverted"
-  | "bar"
-  | "none";
+  "arrow" | "triangle" | "square" | "dot" | "pipe" | "diamond" | "inverted" | "bar" | "none";
 export type ArchLayoutMode = "grid" | "row" | "column";
 export type ArchLayoutAlign = "start" | "center" | "end";
 

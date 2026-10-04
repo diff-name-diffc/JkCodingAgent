@@ -230,9 +230,7 @@ export interface ToolActivitySummary {
  * 失败/等待/运行中计数单列，由调用方以 StatusPill 双编码露出，
  * 保证「折叠不隐藏错误」。
  */
-export function summarizeToolActivity(
-  items: readonly ToolActivityItem[],
-): ToolActivitySummary {
+export function summarizeToolActivity(items: readonly ToolActivityItem[]): ToolActivitySummary {
   const counts: Partial<Record<ToolVerbCategory, number>> = {};
   let failed = 0;
   let running = 0;

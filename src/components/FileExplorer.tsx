@@ -15,11 +15,7 @@ import { FileExplorerTreeItem, ROW_HEIGHT } from "./file-explorer/FileExplorerTr
 import { FileExplorerContextMenu } from "./file-explorer/FileExplorerContextMenu";
 import { buildFileContextActionGroups } from "./file-explorer/fileContextActions";
 import { useFileExplorerTree } from "./file-explorer/useFileExplorerTree";
-import {
-  buildSiblingPath,
-  getRelativePathDisplay,
-  isSameOrChildPath,
-} from "../utils/filePaths";
+import { buildSiblingPath, getRelativePathDisplay, isSameOrChildPath } from "../utils/filePaths";
 
 function resolveErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -90,19 +86,16 @@ export function FileExplorer({
     [isPathOpenInEditor],
   );
 
-  const copyPath = useCallback(
-    async (path: string, withMentionPrefix: boolean) => {
-      try {
-        // 必须走统一入口（原生插件优先）：右键菜单 onSelect 期间 Radix focus trap
-        // 仍生效，直接调 navigator.clipboard 的 execCommand 兜底会静默落空。
-        await copyTextToClipboard(withMentionPrefix ? `@${path}` : path);
-      } catch (error) {
-        console.error("复制路径失败:", error);
-        toast.error(`复制路径失败：${resolveErrorMessage(error)}`);
-      }
-    },
-    [],
-  );
+  const copyPath = useCallback(async (path: string, withMentionPrefix: boolean) => {
+    try {
+      // 必须走统一入口（原生插件优先）：右键菜单 onSelect 期间 Radix focus trap
+      // 仍生效，直接调 navigator.clipboard 的 execCommand 兜底会静默落空。
+      await copyTextToClipboard(withMentionPrefix ? `@${path}` : path);
+    } catch (error) {
+      console.error("复制路径失败:", error);
+      toast.error(`复制路径失败：${resolveErrorMessage(error)}`);
+    }
+  }, []);
 
   const handleDelete = useCallback(
     async (node: TreeNode) => {
@@ -172,14 +165,7 @@ export function FileExplorer({
         setRenameSaving(false);
       }
     },
-    [
-      confirmOpenFileMutation,
-      onFileRename,
-      projectPath,
-      refresh,
-      renameTarget,
-      updateSelectedPath,
-    ],
+    [confirmOpenFileMutation, onFileRename, projectPath, refresh, renameTarget, updateSelectedPath],
   );
 
   const handleCopyPath = useCallback(

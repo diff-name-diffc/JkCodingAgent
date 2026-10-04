@@ -18,11 +18,7 @@ import {
   type ArchInstruction,
   type ArchProgram,
 } from "./arch-program";
-import {
-  buildArchFailureReport,
-  buildArchSuccessReport,
-  type ArchRunStats,
-} from "./arch-report";
+import { buildArchFailureReport, buildArchSuccessReport, type ArchRunStats } from "./arch-report";
 import {
   applyResolvedInstruction,
   createApplyContext,
@@ -153,9 +149,7 @@ function resolveProgram(draft: SceneDraft, program: ArchProgram): ResolveResult 
         }
         // "page" 字面量 → 移回页面根（应用层换成 frameId=null）。
         const reparentParentId =
-          instruction.parent === REPARENT_PAGE_LITERAL
-            ? null
-            : resolveTarget(instruction.parent);
+          instruction.parent === REPARENT_PAGE_LITERAL ? null : resolveTarget(instruction.parent);
         if (instruction.parent !== REPARENT_PAGE_LITERAL && !reparentParentId) {
           return fail(`reparent 的目标容器不存在：${instruction.parent}`);
         }
@@ -227,7 +221,10 @@ export function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /** 区域截图导出选项（全画布感知截图与执行报告区域截图共用口径）。 */
-export function canvasExportOptions(elements: ExcalidrawElement[], files: ReturnType<ExcalidrawImperativeAPI["getFiles"]>) {
+export function canvasExportOptions(
+  elements: ExcalidrawElement[],
+  files: ReturnType<ExcalidrawImperativeAPI["getFiles"]>,
+) {
   const dark = isDarkActive();
   return {
     elements,
@@ -254,7 +251,10 @@ async function captureAffectedRegion(
   // 受影响元素 + 其绑定文本（截图要带标签才完整）
   const region: ExcalidrawElement[] = [];
   for (const el of draft.values()) {
-    if (touchedIds.has(el.id) || (el.type === "text" && touchedIds.has((el as { containerId?: string }).containerId ?? ""))) {
+    if (
+      touchedIds.has(el.id) ||
+      (el.type === "text" && touchedIds.has((el as { containerId?: string }).containerId ?? ""))
+    ) {
       region.push(el);
     }
   }
@@ -296,7 +296,11 @@ export async function runArchProgram(
   if (!resolveResult.ok) {
     return {
       ok: false,
-      reportText: buildArchFailureReport(resolveResult.index, resolveResult.type, resolveResult.reason),
+      reportText: buildArchFailureReport(
+        resolveResult.index,
+        resolveResult.type,
+        resolveResult.reason,
+      ),
     };
   }
 
@@ -357,7 +361,11 @@ export async function runArchProgram(
   api.updateScene({
     elements,
     ...(ctx.selected.size > 0
-      ? { appState: { selectedElementIds: Object.fromEntries([...ctx.selected].map((id) => [id, true])) } }
+      ? {
+          appState: {
+            selectedElementIds: Object.fromEntries([...ctx.selected].map((id) => [id, true])),
+          },
+        }
       : {}),
     captureUpdate: CaptureUpdateAction.IMMEDIATELY,
   });

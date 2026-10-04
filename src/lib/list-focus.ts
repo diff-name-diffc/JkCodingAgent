@@ -26,9 +26,9 @@ export function moveListFocus(
   options: MoveListFocusOptions,
 ): boolean {
   if (!container) return false;
-  const items = Array.from(
-    container.querySelectorAll<HTMLElement>(options.selector),
-  ).filter((element) => !element.hasAttribute("disabled"));
+  const items = Array.from(container.querySelectorAll<HTMLElement>(options.selector)).filter(
+    (element) => !element.hasAttribute("disabled"),
+  );
   if (items.length === 0) return false;
 
   const activeIndex = items.indexOf(document.activeElement as HTMLElement);

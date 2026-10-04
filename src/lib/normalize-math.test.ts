@@ -16,9 +16,7 @@ describe("normalizeMathCodeFences", () => {
   });
 
   it("rewrites latex/tex tagged fences", () => {
-    expect(normalizeMathCodeFences("```latex\n\\frac{a}{b}\n```")).toBe(
-      "$$\n\\frac{a}{b}\n$$",
-    );
+    expect(normalizeMathCodeFences("```latex\n\\frac{a}{b}\n```")).toBe("$$\n\\frac{a}{b}\n$$");
   });
 
   it("sniffs untagged fences with unicode math signals", () => {
@@ -28,9 +26,7 @@ describe("normalizeMathCodeFences", () => {
 
   it("sniffs pure-ASCII LaTeX via command + subscript structure", () => {
     const input = "```\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n```";
-    expect(normalizeMathCodeFences(input)).toBe(
-      "$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$",
-    );
+    expect(normalizeMathCodeFences(input)).toBe("$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$");
   });
 
   it("leaves untagged real code untouched (single weak signal)", () => {
@@ -61,9 +57,7 @@ describe("normalizeMathCodeFences", () => {
 
   it("preserves surrounding text and unrelated fences", () => {
     const input = "```js\nconst a = 1;\n```\n\n```math\nx^2\n```\n\nend";
-    expect(normalizeMathCodeFences(input)).toBe(
-      "```js\nconst a = 1;\n```\n\n$$\nx^2\n$$\n\nend",
-    );
+    expect(normalizeMathCodeFences(input)).toBe("```js\nconst a = 1;\n```\n\n$$\nx^2\n$$\n\nend");
   });
 
   it("keeps fence indentation on the emitted $$ delimiters", () => {
@@ -74,12 +68,8 @@ describe("normalizeMathCodeFences", () => {
 
 describe("pipeline order: fence rewrite then delimiter rewrite", () => {
   it("still rewrites \\(…\\) outside converted math blocks", () => {
-    const input = normalizeMathCodeFences(
-      "text \\(x^2\\) end\n\n```math\n\\frac{1}{2}\n```",
-    );
-    expect(normalizeLatexMathDelimiters(input)).toBe(
-      "text $x^2$ end\n\n$$\n\\frac{1}{2}\n$$",
-    );
+    const input = normalizeMathCodeFences("text \\(x^2\\) end\n\n```math\n\\frac{1}{2}\n```");
+    expect(normalizeLatexMathDelimiters(input)).toBe("text $x^2$ end\n\n$$\n\\frac{1}{2}\n$$");
   });
 
   it("does not double-process $$ delimiters emitted by the fence rewrite", () => {
@@ -90,7 +80,9 @@ describe("pipeline order: fence rewrite then delimiter rewrite", () => {
 
 describe("normalizeSingleLineMathBlocks", () => {
   it("expands single-line $$…$$ to multi-line display math", () => {
-    expect(normalizeSingleLineMathBlocks("before\n$$x^2$$\nafter")).toBe("before\n$$\nx^2\n$$\nafter");
+    expect(normalizeSingleLineMathBlocks("before\n$$x^2$$\nafter")).toBe(
+      "before\n$$\nx^2\n$$\nafter",
+    );
   });
 
   it("keeps fence indentation on expansion", () => {

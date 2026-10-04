@@ -6,7 +6,12 @@ import type {
   WorkflowPlanRecord,
   WorkflowRunEventPayload,
 } from "../../types";
-import { createSerialTaskQueue, pickEvictionTarget, reduceWorkflowRunEvent, type WorkflowPlanSnapshot } from "./workflow-store";
+import {
+  createSerialTaskQueue,
+  pickEvictionTarget,
+  reduceWorkflowRunEvent,
+  type WorkflowPlanSnapshot,
+} from "./workflow-store";
 
 function nodeRun(): WorkflowNodeRunRecord {
   return {
@@ -53,7 +58,14 @@ function plan(): WorkflowPlanRecord {
 }
 
 function snapshot(): WorkflowPlanSnapshot {
-  return { plan: plan(), liveOutputs: {}, liveActivities: {}, lastEvent: null, paused: false, pausedNodeId: null };
+  return {
+    plan: plan(),
+    liveOutputs: {},
+    liveActivities: {},
+    lastEvent: null,
+    paused: false,
+    pausedNodeId: null,
+  };
 }
 
 function payload(
@@ -212,7 +224,9 @@ describe("serial task queue", () => {
     const enqueue = createSerialTaskQueue();
     const order: string[] = [];
     let releaseFirst!: () => void;
-    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
 
     const first = enqueue(async () => {
       order.push("first:start");
@@ -223,7 +237,9 @@ describe("serial task queue", () => {
       order.push("second");
       throw new Error("save failed");
     });
-    const third = enqueue(async () => { order.push("third"); });
+    const third = enqueue(async () => {
+      order.push("third");
+    });
 
     await Promise.resolve();
     expect(order).toEqual(["first:start"]);

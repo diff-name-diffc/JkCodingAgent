@@ -27,12 +27,7 @@ export function ErrorRow({
       <button type="button" onClick={retry} className="ai-git-inline-error-action" title="重试">
         <RotateCcw size={12} />
       </button>
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="ai-git-inline-error-action"
-        title="关闭"
-      >
+      <button type="button" onClick={onDismiss} className="ai-git-inline-error-action" title="关闭">
         ×
       </button>
     </div>
@@ -51,19 +46,12 @@ export function TopSectionHeader({
   onToggleCollapse: () => void;
 }) {
   return (
-    <div
-      onClick={onToggleCollapse}
-      className="ai-git-top-section"
-    >
+    <div onClick={onToggleCollapse} className="ai-git-top-section">
       <span className="ai-git-section-chevron">
         {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
       </span>
-      <span className="ai-git-top-section-label">
-        {label}
-      </span>
-      <span className="ai-git-count-pill">
-        {count}
-      </span>
+      <span className="ai-git-top-section-label">{label}</span>
+      <span className="ai-git-count-pill">{count}</span>
     </div>
   );
 }
@@ -84,9 +72,7 @@ export function SectionHeader({
   return (
     <div className="ai-git-section-header">
       <span className="ai-git-section-label">{label}</span>
-      <span className="ai-git-section-count">
-        {count}
-      </span>
+      <span className="ai-git-section-count">{count}</span>
       {onAction && (
         <button
           onClick={(e) => {
@@ -120,7 +106,8 @@ export function FileRow({
   const color = getGitStatusColor(change.status);
   const label = getGitStatusLabel(change.status);
   const originName = change.origin_path ? fileName(change.origin_path) : null;
-  const isRename = change.status.toUpperCase() === "R" && originName !== null && originName !== name;
+  const isRename =
+    change.status.toUpperCase() === "R" && originName !== null && originName !== name;
   const displayName = isRename ? `${originName} → ${name}` : name;
   const titleText = isRename ? `${change.origin_path} → ${change.path}` : change.path;
 
@@ -131,10 +118,7 @@ export function FileRow({
       className={isActive ? "ai-git-file-row is-active" : "ai-git-file-row"}
     >
       {/* Status dot */}
-      <span
-        className="ai-git-status-dot"
-        style={{ background: color }}
-      />
+      <span className="ai-git-status-dot" style={{ background: color }} />
 
       {/* Status letter */}
       <span
@@ -149,12 +133,8 @@ export function FileRow({
 
       {/* Filename + dir */}
       <span className="ai-git-file-name-wrap">
-        <span className="ai-git-file-name">
-          {displayName}
-        </span>
-        {dir && (
-          <span className="ai-git-file-dir">{dir}</span>
-        )}
+        <span className="ai-git-file-name">{displayName}</span>
+        {dir && <span className="ai-git-file-dir">{dir}</span>}
       </span>
 
       {/* Stage/unstage toggle on hover */}

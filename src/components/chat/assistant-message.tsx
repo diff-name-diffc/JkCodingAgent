@@ -1,6 +1,13 @@
 import { motion } from "framer-motion";
-import type { DispatcherMessageUsageStats, DispatcherToolArtifactRef, ModelCategory } from "../../types";
-import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
+import type {
+  DispatcherMessageUsageStats,
+  DispatcherToolArtifactRef,
+  ModelCategory,
+} from "../../types";
+import type {
+  AssistantThinkingBlock,
+  AssistantTurnSegment,
+} from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
 import { ChatAvatar } from "./chat-avatar";
@@ -85,11 +92,7 @@ export function AssistantMessage({
       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
       className={cn("ai-assistant-message group relative", className)}
     >
-      <ChatAvatar
-        role="assistant"
-        hidden={!showAvatar}
-        className="absolute left-6 top-0.5"
-      />
+      <ChatAvatar role="assistant" hidden={!showAvatar} className="absolute left-6 top-0.5" />
 
       <div className="min-w-0 pl-[60px]">
         {thinking?.text && (
@@ -131,7 +134,9 @@ export function AssistantMessage({
         </div>
 
         <MessageActions
-          tokenLabel={usageStats ? `${formatTokenCountK(usageStats.totalTokens)} tokens` : undefined}
+          tokenLabel={
+            usageStats ? `${formatTokenCountK(usageStats.totalTokens)} tokens` : undefined
+          }
           onCopy={handleCopy}
           onRegenerate={onRegenerate}
         />

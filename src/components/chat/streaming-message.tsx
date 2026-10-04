@@ -1,6 +1,9 @@
 import { motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
-import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
+import type {
+  AssistantThinkingBlock,
+  AssistantTurnSegment,
+} from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef, ModelCategory } from "../../types";
 import { cn } from "../../lib/cn";

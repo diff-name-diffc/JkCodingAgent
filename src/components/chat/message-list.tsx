@@ -14,11 +14,7 @@ import { Button } from "../ui/button";
 import { EmptyChatState } from "./empty-chat-state";
 import type { ChatEmptyStateContent } from "./chat-empty-content";
 import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
-import {
-  OVERSCAN_ROWS,
-  ROW_ESTIMATE_PX,
-  shouldUseWindowing,
-} from "./message-list-metrics";
+import { OVERSCAN_ROWS, ROW_ESTIMATE_PX, shouldUseWindowing } from "./message-list-metrics";
 import { RowUiStateProvider, useRowUiStateStore } from "./row-ui-state";
 import { StreamingMessage } from "./streaming-message";
 import { ChatScrollAnchor } from "./chat-scroll-anchor";

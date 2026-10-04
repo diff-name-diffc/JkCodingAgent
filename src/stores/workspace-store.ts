@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { DEFAULT_WORKFLOW_PANEL_VIEW, type WorkflowPanelView } from "../components/project/main-tabs";
+import {
+  DEFAULT_WORKFLOW_PANEL_VIEW,
+  type WorkflowPanelView,
+} from "../components/project/main-tabs";
 import {
   DEFAULT_WORKSPACE_PREFS,
   sanitizeWorkspacePrefs,
@@ -72,15 +75,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         })),
       closeWorkflowPanel: (sessionId) =>
         set((state) =>
-          !sessionId || state.workflowPanel?.sessionId === sessionId
-            ? { workflowPanel: null }
-            : {},
+          !sessionId || state.workflowPanel?.sessionId === sessionId ? { workflowPanel: null } : {},
         ),
       setWorkflowView: (sessionId, patch) =>
         set((state) => ({
           workflowViewBySession: {
             ...state.workflowViewBySession,
-            [sessionId]: { ...state.workflowViewBySession[sessionId], ...patch } as WorkflowViewMemory,
+            [sessionId]: {
+              ...state.workflowViewBySession[sessionId],
+              ...patch,
+            } as WorkflowViewMemory,
           },
         })),
       clearWorkflowView: (sessionId) =>

@@ -88,15 +88,12 @@ export function Sidebar({
   // 列表键盘导航（UI-23d）：搜索框 ArrowDown 进入会话列表；列表内 ↑↓/Home/End
   // 在会话行间移动焦点。Radix 菜单/分类展开等内层按键以 defaultPrevented 让路。
   const navRef = React.useRef<HTMLElement | null>(null);
-  const handleSearchKeyDown = React.useCallback(
-    (event: React.KeyboardEvent<HTMLInputElement>) => {
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      if (moveListFocus(navRef.current, event.key, { selector: SIDEBAR_ROW_SELECTOR })) {
-        event.preventDefault();
-      }
-    },
-    [],
-  );
+  const handleSearchKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (moveListFocus(navRef.current, event.key, { selector: SIDEBAR_ROW_SELECTOR })) {
+      event.preventDefault();
+    }
+  }, []);
   const handleNavKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>) => {
     if (event.defaultPrevented || !LIST_NAV_KEYS.has(event.key)) return;
     if (moveListFocus(navRef.current, event.key, { selector: SIDEBAR_ROW_SELECTOR })) {

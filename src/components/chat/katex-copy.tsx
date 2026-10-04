@@ -34,9 +34,7 @@ function findKatexTarget(target: EventTarget | null): KatexTarget | null {
   if (!(target instanceof HTMLElement)) return null;
   const katex = target.closest<HTMLElement>(".katex");
   if (!katex) return null;
-  const tex = katex
-    .querySelector('annotation[encoding="application/x-tex"]')
-    ?.textContent?.trim();
+  const tex = katex.querySelector('annotation[encoding="application/x-tex"]')?.textContent?.trim();
   if (!tex) return null;
   return { tex, element: katex };
 }
@@ -90,9 +88,7 @@ export function useKatexCopy(): {
   // 悬停时补一个原生 tooltip 作为可发现性提示（只设置一次）。
   const onMouseOver = useCallback((event: ReactMouseEvent<HTMLElement>) => {
     const katex =
-      event.target instanceof HTMLElement
-        ? event.target.closest<HTMLElement>(".katex")
-        : null;
+      event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".katex") : null;
     if (katex && !katex.title) {
       katex.title = "点击复制公式源码";
     }
@@ -124,7 +120,12 @@ export function useKatexCopy(): {
 
   const menuElement = menu
     ? createPortal(
-        <div ref={menuRef} className="ai-katex-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
+        <div
+          ref={menuRef}
+          className="ai-katex-menu"
+          role="menu"
+          style={{ left: menu.x, top: menu.y }}
+        >
           <button
             type="button"
             role="menuitem"

@@ -29,15 +29,7 @@ import { RagKbConfigPanel } from "./settings/rag/RagKbConfigPanel";
 import type { ModelCategory } from "../types";
 
 export type SettingsNavKey =
-  | "general"
-  | "providers"
-  | "purposes"
-  | "tools"
-  | "workflow"
-  | "subAgents"
-  | "mcp"
-  | "ssh"
-  | "rag";
+  "general" | "providers" | "purposes" | "tools" | "workflow" | "subAgents" | "mcp" | "ssh" | "rag";
 
 type NavItem = { key: SettingsNavKey; label: string; icon: LucideIcon };
 
@@ -102,9 +94,7 @@ export function AppSettingsDialog({
   projectPath?: string;
 }) {
   const store = useAhaSettingsStore();
-  const [activeNav, setActiveNav] = useState<SettingsNavKey>(() =>
-    normalizeInitialTab(initialTab),
-  );
+  const [activeNav, setActiveNav] = useState<SettingsNavKey>(() => normalizeInitialTab(initialTab));
   const [confirmingClose, setConfirmingClose] = useState(false);
   // 「模型用途」跳转「模型服务」时携带的目标分类（激活对应标签）；
   // 外部深链（配置模型按钮）经 initialProvidersCategory 提供初值（UI-25 遗留）。

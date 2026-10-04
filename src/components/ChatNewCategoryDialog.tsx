@@ -97,10 +97,7 @@ export function ChatNewCategoryDialog({
   }
 
   return (
-    <div
-      className="ai-dialog-overlay"
-      onClick={onClose}
-    >
+    <div className="ai-dialog-overlay" onClick={onClose}>
       <form
         ref={formRef}
         role="dialog"
@@ -108,19 +105,16 @@ export function ChatNewCategoryDialog({
         aria-label={title}
         onSubmit={handleSubmit}
         onClick={(e) => e.stopPropagation()}
-        className={showAgentConfig ? "ai-dialog ai-category-dialog ai-category-dialog-wide" : "ai-dialog ai-category-dialog"}
+        className={
+          showAgentConfig
+            ? "ai-dialog ai-category-dialog ai-category-dialog-wide"
+            : "ai-dialog ai-category-dialog"
+        }
       >
-        <button
-          type="button"
-          onClick={onClose}
-          className="ai-dialog-close"
-          aria-label="关闭"
-        >
+        <button type="button" onClick={onClose} className="ai-dialog-close" aria-label="关闭">
           <X size={14} />
         </button>
-        <div className="ai-dialog-title">
-          {title}
-        </div>
+        <div className="ai-dialog-title">{title}</div>
         <input
           ref={inputRef}
           value={name}
@@ -136,10 +130,7 @@ export function ChatNewCategoryDialog({
               className="ai-category-advanced-toggle"
             >
               <span>提示词与工具集合</span>
-              <ChevronDown
-                size={14}
-                className={showAdvanced ? "ai-rotate-180" : undefined}
-              />
+              <ChevronDown size={14} className={showAdvanced ? "ai-rotate-180" : undefined} />
             </button>
             {showAdvanced && (
               <>
@@ -196,9 +187,7 @@ export function ChatNewCategoryDialog({
                             checked={selectedTools.includes(tool.name)}
                             onChange={() => toggleTool(tool.name)}
                           />
-                          <span>
-                            {tool.name}
-                          </span>
+                          <span>{tool.name}</span>
                         </label>
                       ))}
                     </div>
@@ -209,18 +198,10 @@ export function ChatNewCategoryDialog({
           </div>
         )}
         <div className="ai-dialog-actions">
-          <button
-            type="button"
-            onClick={onClose}
-            className="ai-secondary-button"
-          >
+          <button type="button" onClick={onClose} className="ai-secondary-button">
             取消
           </button>
-          <button
-            type="submit"
-            disabled={!name.trim()}
-            className="ai-primary-button"
-          >
+          <button type="submit" disabled={!name.trim()} className="ai-primary-button">
             {confirmLabel}
           </button>
         </div>

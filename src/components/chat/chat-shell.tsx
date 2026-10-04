@@ -356,112 +356,112 @@ export function ChatShell({
 
   return (
     <SessionScopeContext.Provider value={sessionId}>
-    <AppLayout
-      containerRef={shellRef}
-      chatHeader={projectHeader}
-      artifactOverlay={embedded}
-      sidebar={
-        embedded ? undefined : (
-          <Sidebar
-            sessions={sessions}
-            categories={categories}
-            activeSessionId={sessionId}
-            onActiveSessionChange={onActiveSessionChange}
-            onNewSessionInCategory={onNewSessionInCategory}
-            onDeleteSession={onDeleteSession}
-            searchValue={searchValue}
-            onSearchChange={onSearchChange}
-            onOpenSettings={onOpenSettings}
-            onCreateCategory={onCreateCategory}
-            onRenameCategory={onRenameCategory}
-            onDeleteCategory={onDeleteCategory}
-            onMoveSessionToCategory={onMoveSessionToCategory}
-            loading={sessionsLoading}
-            error={sessionsError}
-            onRetry={onSessionsRetry}
-            searchActive={searchActive}
-          />
-        )
-      }
-      chatFooter={
-        <PromptInput
-          value={input}
-          onValueChange={onInputChange}
-          mode={composerMode}
-          onSend={onSend}
-          onStop={onStop}
-          stopping={isStopping}
-          attachments={attachments}
-          onAttachImages={onAttachImages}
-          onRemoveAttachment={onRemoveAttachment}
-          editing={Boolean(editingMessageId)}
-          onCancelEdit={onCancelEdit}
-          disabled={composerDisabled}
-          placeholder={composerPlaceholder}
-          models={chatModelEntries}
-          activeEntryId={activeChatEntry?.id}
-          activeLabel={activeChatLabel}
-          modelMenuLabel={isPlainChat ? "聊天模型" : "项目模型"}
-          onSelectModel={(entryId) => {
-            const entry = chatModelEntries.find((item) => item.id === entryId);
-            if (entry) bindChatModel.mutate({ kind: modelPurposeKind, entry });
-          }}
-          onConfigureModel={handleConfigureModel}
-        />
-      }
-      artifactPanel={
-        // 门控（UI-09 遗留领取）：无详情内容或工作区隐藏（保活多项目）时不
-        // 提供面板——AppLayout 的 Sheet portal 挂 body，隐藏 pane 若继续渲染
-        // 会带着全局 artifactPanelOpen 弹出空抽屉；同时使会话切换清空内容后
-        // 详情面自动收起（旧覆盖层残留「暂无详情」空壳的过渡态一并消除）。
-        enabled && (selectedArtifact || selectedSubAgentToolCallId) ? (
-          <ArtifactPanel
-            title={selectedSubAgentToolCallId ? "子智能体执行轨迹" : "详情"}
-            workspaceId={sessionId}
-            artifact={selectedArtifact}
-            subAgentSession={selectedSubAgent}
-            traceLoading={traceLoading}
-            traceError={traceError}
-          />
-        ) : undefined
-      }
-    >
-      {categoryPicker && !sessionId ? (
-        categoryPicker
-      ) : (
-        <>
-          {activeSessionKeywords.length > 0 && (
-            <SessionKeywordBar keywords={activeSessionKeywords} />
-          )}
-          <MessageList
-            sessionId={sessionId}
-            messages={messages}
-            pythonRunRecords={pythonRunRecords}
-            onRunPython={onRunPython}
-            onCopyMessage={handleCopyMessage}
-            onRegenerateFromMessage={onRegenerateFromMessage}
-            onEditMessage={onEditMessage}
-            onOpenArtifact={handleOpenArtifact}
-            onOpenSubAgent={handleOpenSubAgent}
-            onPickPrompt={(prompt) => onInputChange(prompt)}
+      <AppLayout
+        containerRef={shellRef}
+        chatHeader={projectHeader}
+        artifactOverlay={embedded}
+        sidebar={
+          embedded ? undefined : (
+            <Sidebar
+              sessions={sessions}
+              categories={categories}
+              activeSessionId={sessionId}
+              onActiveSessionChange={onActiveSessionChange}
+              onNewSessionInCategory={onNewSessionInCategory}
+              onDeleteSession={onDeleteSession}
+              searchValue={searchValue}
+              onSearchChange={onSearchChange}
+              onOpenSettings={onOpenSettings}
+              onCreateCategory={onCreateCategory}
+              onRenameCategory={onRenameCategory}
+              onDeleteCategory={onDeleteCategory}
+              onMoveSessionToCategory={onMoveSessionToCategory}
+              loading={sessionsLoading}
+              error={sessionsError}
+              onRetry={onSessionsRetry}
+              searchActive={searchActive}
+            />
+          )
+        }
+        chatFooter={
+          <PromptInput
+            value={input}
+            onValueChange={onInputChange}
+            mode={composerMode}
+            onSend={onSend}
+            onStop={onStop}
+            stopping={isStopping}
+            attachments={attachments}
+            onAttachImages={onAttachImages}
+            onRemoveAttachment={onRemoveAttachment}
+            editing={Boolean(editingMessageId)}
+            onCancelEdit={onCancelEdit}
+            disabled={composerDisabled}
+            placeholder={composerPlaceholder}
+            models={chatModelEntries}
+            activeEntryId={activeChatEntry?.id}
+            activeLabel={activeChatLabel}
+            modelMenuLabel={isPlainChat ? "聊天模型" : "项目模型"}
+            onSelectModel={(entryId) => {
+              const entry = chatModelEntries.find((item) => item.id === entryId);
+              if (entry) bindChatModel.mutate({ kind: modelPurposeKind, entry });
+            }}
             onConfigureModel={handleConfigureModel}
-            emptyState={emptyState}
           />
-        </>
-      )}
-      {enabled && (
-        <CommandPalette
-          open={commandPaletteOpen}
-          sessions={sessions}
-          onOpenChange={setCommandPaletteOpen}
-          onNewConversation={onNewConversation}
-          onSelectSession={onActiveSessionChange}
-          onFocusPrompt={focusPrompt}
-          onToggleSidebar={toggleSidebar}
-          onOpenSettings={onOpenSettings}
-        />
-      )}
-    </AppLayout>
+        }
+        artifactPanel={
+          // 门控（UI-09 遗留领取）：无详情内容或工作区隐藏（保活多项目）时不
+          // 提供面板——AppLayout 的 Sheet portal 挂 body，隐藏 pane 若继续渲染
+          // 会带着全局 artifactPanelOpen 弹出空抽屉；同时使会话切换清空内容后
+          // 详情面自动收起（旧覆盖层残留「暂无详情」空壳的过渡态一并消除）。
+          enabled && (selectedArtifact || selectedSubAgentToolCallId) ? (
+            <ArtifactPanel
+              title={selectedSubAgentToolCallId ? "子智能体执行轨迹" : "详情"}
+              workspaceId={sessionId}
+              artifact={selectedArtifact}
+              subAgentSession={selectedSubAgent}
+              traceLoading={traceLoading}
+              traceError={traceError}
+            />
+          ) : undefined
+        }
+      >
+        {categoryPicker && !sessionId ? (
+          categoryPicker
+        ) : (
+          <>
+            {activeSessionKeywords.length > 0 && (
+              <SessionKeywordBar keywords={activeSessionKeywords} />
+            )}
+            <MessageList
+              sessionId={sessionId}
+              messages={messages}
+              pythonRunRecords={pythonRunRecords}
+              onRunPython={onRunPython}
+              onCopyMessage={handleCopyMessage}
+              onRegenerateFromMessage={onRegenerateFromMessage}
+              onEditMessage={onEditMessage}
+              onOpenArtifact={handleOpenArtifact}
+              onOpenSubAgent={handleOpenSubAgent}
+              onPickPrompt={(prompt) => onInputChange(prompt)}
+              onConfigureModel={handleConfigureModel}
+              emptyState={emptyState}
+            />
+          </>
+        )}
+        {enabled && (
+          <CommandPalette
+            open={commandPaletteOpen}
+            sessions={sessions}
+            onOpenChange={setCommandPaletteOpen}
+            onNewConversation={onNewConversation}
+            onSelectSession={onActiveSessionChange}
+            onFocusPrompt={focusPrompt}
+            onToggleSidebar={toggleSidebar}
+            onOpenSettings={onOpenSettings}
+          />
+        )}
+      </AppLayout>
     </SessionScopeContext.Provider>
   );
 }

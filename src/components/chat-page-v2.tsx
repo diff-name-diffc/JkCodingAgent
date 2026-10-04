@@ -158,7 +158,11 @@ export function ChatPageV2({
   // 多项目保活时页面同时挂载多套聊天 DOM，全局选择器会命中隐藏工作区。
   const shellContainerRef = useRef<HTMLDivElement>(null);
   const pythonRuns = usePythonRunController(activeSessionId, currentSessionIdRef);
-  const workflowPanel = useWorkflowPanelController(activeSessionId, isPlainChat, currentSessionIdRef);
+  const workflowPanel = useWorkflowPanelController(
+    activeSessionId,
+    isPlainChat,
+    currentSessionIdRef,
+  );
   // 头部任务语境（UI-11）：项目模式显示会话标题与当前分支；plain chat 传 null 关闭查询。
   const projectSessionTitle = useProjectSessionTitle(
     isPlainChat ? null : projectId,
@@ -290,14 +294,11 @@ export function ChatPageV2({
           const base64 = await readFileAsBase64(file);
           if (!base64) continue;
           try {
-            const saved = await invoke<{ imageId: string; mimeType: string }>(
-              "save_chat_image",
-              {
-                workspaceId,
-                imageDataBase64: base64,
-                mimeType: file.type || "image/png",
-              },
-            );
+            const saved = await invoke<{ imageId: string; mimeType: string }>("save_chat_image", {
+              workspaceId,
+              imageDataBase64: base64,
+              mimeType: file.type || "image/png",
+            });
             setAttachedImages((prev) => [
               ...prev,
               {

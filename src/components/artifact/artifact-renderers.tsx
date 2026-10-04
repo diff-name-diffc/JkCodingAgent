@@ -18,9 +18,7 @@ export const ARTIFACT_CONTENT_RENDERERS: Record<
 const CONTENT_CLASS = "min-h-40 rounded-lg border border-border bg-background p-3 text-foreground";
 
 function ArtifactTextContent({ artifact }: { artifact: DispatcherToolArtifact }) {
-  return (
-    <OutputBlock text={artifact.content} emptyHint="产物内容为空" className={CONTENT_CLASS} />
-  );
+  return <OutputBlock text={artifact.content} emptyHint="产物内容为空" className={CONTENT_CLASS} />;
 }
 
 export function renderArtifactContent(artifact: DispatcherToolArtifact): ReactNode {

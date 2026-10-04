@@ -19,10 +19,7 @@ const SYSTEM_CONFIG_GROUP_PATH_PREFIX = "__nezha_system_config__:";
 
 function isSameEntry(a: FsEntry, b: FsEntry) {
   return (
-    a.path === b.path &&
-    a.name === b.name &&
-    a.is_dir === b.is_dir &&
-    a.extension === b.extension
+    a.path === b.path && a.name === b.name && a.is_dir === b.is_dir && a.extension === b.extension
   );
 }
 
@@ -50,7 +47,11 @@ function unwrapRootNodes(nodes: TreeNode[]): TreeNode[] {
   return result;
 }
 
-function groupRootNodes(rootPath: string, nextNodes: TreeNode[], previousNodes: TreeNode[]): TreeNode[] {
+function groupRootNodes(
+  rootPath: string,
+  nextNodes: TreeNode[],
+  previousNodes: TreeNode[],
+): TreeNode[] {
   const systemNodes = nextNodes.filter(isRootSystemConfigDir);
   if (systemNodes.length === 0) {
     return hasSameNodeRefs(nextNodes, previousNodes) ? previousNodes : nextNodes;
@@ -195,7 +196,8 @@ export async function loadTreeNodes({
   const entries = await run(() => readEntries(path));
   if (entries === null) return null;
 
-  const comparablePreviousNodes = path === rootPath ? unwrapRootNodes(previousNodes) : previousNodes;
+  const comparablePreviousNodes =
+    path === rootPath ? unwrapRootNodes(previousNodes) : previousNodes;
   const previousByPath = new Map(comparablePreviousNodes.map((node) => [node.path, node]));
   let changed = entries.length !== comparablePreviousNodes.length;
 

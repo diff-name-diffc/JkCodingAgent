@@ -23,7 +23,11 @@ async function runBrowserCommand(command: string, args: Record<string, unknown>)
  * 无头化改造后浏览器执行细节不再自动弹出（也不再有最小化/停靠窗口），
  * 这里只保留用户主动点击聊天链接 → 会话浏览器内导航 → 打开浏览器标签的路径。
  */
-export function useBrowserSessionLinkNav({ activeSessionId, projectPath, onOpen }: BrowserLinkNavOptions) {
+export function useBrowserSessionLinkNav({
+  activeSessionId,
+  projectPath,
+  onOpen,
+}: BrowserLinkNavOptions) {
   const navigateToUrl = useCallback(
     async (url: string) => {
       if (!activeSessionId) return;

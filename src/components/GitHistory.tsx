@@ -276,11 +276,7 @@ export function GitHistory({
               <>推送 ↑{remoteCounts.ahead}</>
             )}
           </button>
-          <button
-            onClick={() => refresh()}
-            title="刷新"
-            className="ai-git-icon-button"
-          >
+          <button onClick={() => refresh()} title="刷新" className="ai-git-icon-button">
             <RefreshCw size={13} />
           </button>
         </div>

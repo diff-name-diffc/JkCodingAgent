@@ -385,7 +385,10 @@ export type DispatcherAgentEvent =
         detailRefs: DispatcherToolArtifactRef[];
       };
     }
-  | { event: "runPhaseChanged"; data: { agentRunId: string; scopeId: string; workspaceId: string; phase: string } }
+  | {
+      event: "runPhaseChanged";
+      data: { agentRunId: string; scopeId: string; workspaceId: string; phase: string };
+    }
   | { event: "toolAccepted"; data: { taskId: string; toolCallId: string; name: string } }
   | { event: "toolRunUpdated"; data: { run: DispatcherToolRunRecord } }
   | {

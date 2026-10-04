@@ -366,13 +366,7 @@ export function SshServersPage() {
 }
 
 /** 失焦提交多行文本框：本地草稿编辑，blur 时值有变化才回调。 */
-function CommitTextarea({
-  value,
-  onCommit,
-}: {
-  value: string;
-  onCommit: (next: string) => void;
-}) {
+function CommitTextarea({ value, onCommit }: { value: string; onCommit: (next: string) => void }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (

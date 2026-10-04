@@ -39,8 +39,7 @@ export function ArtifactPanel({
   className,
 }: ArtifactPanelProps) {
   const setArtifactPanelOpen = useUIStore((s) => s.setArtifactPanelOpen);
-  const [loadedArtifact, setLoadedArtifact] =
-    React.useState<DispatcherToolArtifact | null>(null);
+  const [loadedArtifact, setLoadedArtifact] = React.useState<DispatcherToolArtifact | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -83,9 +82,7 @@ export function ArtifactPanel({
   return (
     <div className={cn("flex h-full flex-col", className)}>
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <h3 className="flex-1 truncate text-sm font-semibold text-foreground">
-          {panelTitle}
-        </h3>
+        <h3 className="flex-1 truncate text-sm font-semibold text-foreground">{panelTitle}</h3>
         <Button
           variant="ghost"
           size="icon-sm"

@@ -42,9 +42,7 @@ export function ConfirmDialog({
           <div className="ai-set-confirm-icon">
             <TriangleAlert size={20} strokeWidth={1.5} />
           </div>
-          <DialogPrimitive.Title className="ai-set-confirm-title">
-            {title}
-          </DialogPrimitive.Title>
+          <DialogPrimitive.Title className="ai-set-confirm-title">{title}</DialogPrimitive.Title>
           <DialogPrimitive.Description className="ai-set-confirm-description">
             {description}
           </DialogPrimitive.Description>
@@ -52,11 +50,7 @@ export function ConfirmDialog({
             <Button variant="outline" size="sm" onClick={onCancel}>
               {cancelLabel}
             </Button>
-            <Button
-              variant={danger ? "destructive" : "default"}
-              size="sm"
-              onClick={onConfirm}
-            >
+            <Button variant={danger ? "destructive" : "default"} size="sm" onClick={onConfirm}>
               {confirmLabel}
             </Button>
           </div>

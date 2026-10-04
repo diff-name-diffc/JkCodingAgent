@@ -90,10 +90,7 @@ export function AppLayout({
     document.body.style.userSelect = "none";
 
     const handleMove = (e: PointerEvent) => {
-      const next = Math.min(
-        SIDEBAR_MAX,
-        Math.max(SIDEBAR_MIN, startWidth + e.clientX - startX),
-      );
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + e.clientX - startX));
       latest.current = next;
       setDragWidth(next);
     };
@@ -124,9 +121,7 @@ export function AppLayout({
               width: collapsed ? SIDEBAR_NARROW : (dragWidth ?? sidebarWidth),
             }}
             transition={
-              dragWidth != null
-                ? { duration: 0 }
-                : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }
+              dragWidth != null ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }
             }
             className={cn(
               "ai-chat-sidebar relative z-20 flex h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar",
@@ -152,9 +147,7 @@ export function AppLayout({
             </div>
           )}
           <div className="ai-chat-stage relative flex min-h-0 flex-1 justify-center">
-            <div className="ai-chat-column flex min-h-0 min-w-0 flex-1 flex-col">
-              {children}
-            </div>
+            <div className="ai-chat-column flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
           </div>
           {chatFooter && (
             // 无 px-4、也不再包一层 .ai-chat-column：footer 的左右边距由
@@ -162,9 +155,7 @@ export function AppLayout({
             // .ai-chat-column + .ai-chat-composer 的列宽/阅读宽约束；外层再套
             // 一层列会让 min()/max-width 基于外层列宽二次收缩。外层只提供
             // sticky 与渐隐背景。
-            <div className="ai-chat-footer sticky bottom-0 z-10 pb-3 pt-2">
-              {chatFooter}
-            </div>
+            <div className="ai-chat-footer sticky bottom-0 z-10 pb-3 pt-2">{chatFooter}</div>
           )}
         </main>
 

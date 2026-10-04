@@ -10,13 +10,21 @@ describe("nextRovingIndex", () => {
   });
 
   it("orientation=horizontal 时 ↑↓ 不参与（原样返回）", () => {
-    expect(nextRovingIndex({ count: 4, current: 1, key: "ArrowUp", orientation: "horizontal" })).toBe(1);
-    expect(nextRovingIndex({ count: 4, current: 1, key: "ArrowRight", orientation: "horizontal" })).toBe(2);
+    expect(
+      nextRovingIndex({ count: 4, current: 1, key: "ArrowUp", orientation: "horizontal" }),
+    ).toBe(1);
+    expect(
+      nextRovingIndex({ count: 4, current: 1, key: "ArrowRight", orientation: "horizontal" }),
+    ).toBe(2);
   });
 
   it("orientation=vertical 时 ←→ 不参与", () => {
-    expect(nextRovingIndex({ count: 4, current: 1, key: "ArrowLeft", orientation: "vertical" })).toBe(1);
-    expect(nextRovingIndex({ count: 4, current: 1, key: "ArrowDown", orientation: "vertical" })).toBe(2);
+    expect(
+      nextRovingIndex({ count: 4, current: 1, key: "ArrowLeft", orientation: "vertical" }),
+    ).toBe(1);
+    expect(
+      nextRovingIndex({ count: 4, current: 1, key: "ArrowDown", orientation: "vertical" }),
+    ).toBe(2);
   });
 
   it("wrap=true（默认）首尾环绕", () => {

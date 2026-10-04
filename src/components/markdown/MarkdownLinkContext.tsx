@@ -12,11 +12,7 @@ export function MarkdownLinkProvider({
   onOpenUrl: MarkdownLinkHandler;
   children: ReactNode;
 }) {
-  return (
-    <MarkdownLinkContext.Provider value={onOpenUrl}>
-      {children}
-    </MarkdownLinkContext.Provider>
-  );
+  return <MarkdownLinkContext.Provider value={onOpenUrl}>{children}</MarkdownLinkContext.Provider>;
 }
 
 export function useMarkdownLinkHandler() {

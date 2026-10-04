@@ -86,8 +86,7 @@ export function ArchitectureChatPanel({
     ? findEnabledEntryForConfig(settings.modelLibrary, visionBinding)
     : undefined;
   const activeEntryId = chat.prefs.modelLibraryId ?? defaultEntry?.id;
-  const activeEntry =
-    visionEntries.find((entry) => entry.id === activeEntryId) ?? defaultEntry;
+  const activeEntry = visionEntries.find((entry) => entry.id === activeEntryId) ?? defaultEntry;
 
   // 「本次发送将附带」上下文（UI-15c）：开关全关时为 null，不渲染提示行。
   const attachHint = formatAttachmentHint({

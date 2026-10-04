@@ -1,18 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
-import type {
-  ModelCategory,
-  SubAgentConfig,
-  SubAgentToolInfo,
-} from "../../../types";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../ui/select";
+import type { ModelCategory, SubAgentConfig, SubAgentToolInfo } from "../../../types";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
 import { useAhaSettings } from "../use-aha-settings";
 import { entryLabel } from "../providers/model-library";
 import {
@@ -68,8 +58,8 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
   // 模型选择器第一步（分类）：初值取当前配置命中的库条目分类，无命中则「对话模型」。
   const [pickerCategory, setPickerCategory] = useState<ModelCategory>(
     () =>
-      findMatchedLibraryEntry(modelLibrary, (config ?? DEFAULT_CONFIG).modelConfig)
-        ?.category ?? "text",
+      findMatchedLibraryEntry(modelLibrary, (config ?? DEFAULT_CONFIG).modelConfig)?.category ??
+      "text",
   );
 
   useEffect(() => {
@@ -132,7 +122,9 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
       <div className="ai-subagent-dialog">
         <div className="ai-subagent-dialog-header">
           <div className="ai-settings-title-stack">
-            <span className="ai-subagent-dialog-title">{isNew ? "新建子智能体" : "编辑子智能体"}</span>
+            <span className="ai-subagent-dialog-title">
+              {isNew ? "新建子智能体" : "编辑子智能体"}
+            </span>
           </div>
           <button type="button" className="ai-settings-close" onClick={onClose} aria-label="关闭">
             <X size={16} />
@@ -221,18 +213,9 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                       <span className="ai-settings-hint">尚未选择任何工具</span>
                     )}
                     {selectedToolList.map((tool) => (
-                      <label
-                        key={tool.name}
-                        className="ai-subagent-tool-row is-selected"
-                      >
-                        <input
-                          type="checkbox"
-                          checked
-                          onChange={() => toggleTool(tool.name)}
-                        />
-                        <span className="ai-subagent-tool-name">
-                          {tool.name}
-                        </span>
+                      <label key={tool.name} className="ai-subagent-tool-row is-selected">
+                        <input type="checkbox" checked onChange={() => toggleTool(tool.name)} />
+                        <span className="ai-subagent-tool-name">{tool.name}</span>
                         <span className="ai-subagent-tool-description">
                           {tool.description.slice(0, 40)}
                           {tool.description.length > 40 ? "..." : ""}
@@ -246,18 +229,13 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
                   <label className="ai-settings-field-label">可选工具</label>
                   <div className="ai-subagent-tool-list">
                     {unselectedToolList.map((tool) => (
-                      <label
-                        key={tool.name}
-                        className="ai-subagent-tool-row"
-                      >
+                      <label key={tool.name} className="ai-subagent-tool-row">
                         <input
                           type="checkbox"
                           checked={false}
                           onChange={() => toggleTool(tool.name)}
                         />
-                        <span className="ai-subagent-tool-name">
-                          {tool.name}
-                        </span>
+                        <span className="ai-subagent-tool-name">{tool.name}</span>
                         <span className="ai-subagent-tool-description">
                           {tool.description.slice(0, 40)}
                           {tool.description.length > 40 ? "..." : ""}
@@ -462,11 +440,7 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
           </div>
         </div>
 
-        {error && (
-          <div className="ai-subagent-dialog-error">
-            {error}
-          </div>
-        )}
+        {error && <div className="ai-subagent-dialog-error">{error}</div>}
 
         <div className="ai-subagent-dialog-footer">
           <button type="button" className="ai-secondary-button" onClick={onClose}>

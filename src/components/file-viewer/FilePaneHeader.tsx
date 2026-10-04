@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, Eye, PencilLine } from "lucide-react";
-import { collapseMiddlePath, getPathDirectory, getRelativePathDisplay } from "../../utils/filePaths";
+import {
+  collapseMiddlePath,
+  getPathDirectory,
+  getRelativePathDisplay,
+} from "../../utils/filePaths";
 
 /** 文件 pane 的保存语义状态；idle 不渲染 pill。 */
 export type FileSaveStatus = "idle" | "saving" | "saved" | "error";
@@ -15,7 +19,9 @@ export function FileStatusPill({
   return <span className={`ai-file-status-pill is-${tone}`}>{children}</span>;
 }
 
-function savePillProps(status: FileSaveStatus): { label: string; tone: "default" | "success" | "error" | "warning" } | null {
+function savePillProps(
+  status: FileSaveStatus,
+): { label: string; tone: "default" | "success" | "error" | "warning" } | null {
   switch (status) {
     case "saving":
       return { label: "保存中", tone: "default" };

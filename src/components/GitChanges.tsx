@@ -29,11 +29,7 @@ interface Props {
   activeFileDiff?: ActiveFileDiff | null;
 }
 
-export function GitChanges({
-  projectPath,
-  onFileSelect,
-  activeFileDiff = null,
-}: Props) {
+export function GitChanges({ projectPath, onFileSelect, activeFileDiff = null }: Props) {
   const [changes, setChanges] = useState<GitFileChange[]>([]);
   const [loading, setLoading] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
@@ -175,11 +171,7 @@ export function GitChanges({
       {/* Header */}
       <div className="ai-git-header">
         <span className="ai-git-title">变更</span>
-        <button
-          onClick={refresh}
-          title="刷新"
-          className="ai-git-icon-button"
-        >
+        <button onClick={refresh} title="刷新" className="ai-git-icon-button">
           <RefreshCw size={13} className={loading ? "spin" : ""} />
         </button>
       </div>
@@ -197,11 +189,7 @@ export function GitChanges({
           />
         )}
 
-        {changes.length === 0 && !loading && (
-          <div className="ai-git-empty">
-            暂无变更
-          </div>
-        )}
+        {changes.length === 0 && !loading && <div className="ai-git-empty">暂无变更</div>}
 
         {/* ── Tracked changes section ── */}
         {trackedFiles.length > 0 && (
@@ -307,7 +295,9 @@ export function GitChanges({
             }}
             placeholder={nothingStaged ? "先暂存要提交的变更…" : "提交信息…"}
             rows={3}
-            className={commitMsgError ? "ai-git-commit-textarea is-error" : "ai-git-commit-textarea"}
+            className={
+              commitMsgError ? "ai-git-commit-textarea is-error" : "ai-git-commit-textarea"
+            }
             onKeyDown={(e) => {
               if (!isImeComposing(e) && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 if (!commitDisabled) handleCommit();
@@ -318,16 +308,14 @@ export function GitChanges({
             onClick={handleGenerateMsg}
             disabled={generatingMsg || nothingStaged}
             title={nothingStaged ? "没有已暂存的变更" : "用 AI 生成提交信息"}
-            className={generatingMsg ? "ai-git-commit-generate is-active" : "ai-git-commit-generate"}
+            className={
+              generatingMsg ? "ai-git-commit-generate is-active" : "ai-git-commit-generate"
+            }
           >
             <Sparkles size={14} className={generatingMsg ? "spin" : ""} />
           </button>
         </div>
-        {commitMsgError && (
-          <div className="ai-git-commit-error">
-            请输入提交信息
-          </div>
-        )}
+        {commitMsgError && <div className="ai-git-commit-error">请输入提交信息</div>}
         {commitError && (
           <div className="ai-git-commit-failure">
             <div className="ai-git-commit-failure-message">{commitError.message}</div>

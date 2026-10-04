@@ -30,10 +30,14 @@ export function WorkflowCanvasControls({
       void fitView({ ...FIT_VIEW_OPTIONS, duration: 300 });
       return;
     }
-    void setCenter(node.position.x + WORKFLOW_NODE_WIDTH / 2, node.position.y + WORKFLOW_NODE_HEIGHT / 2, {
-      zoom: Math.max(getZoom(), 1),
-      duration: 300,
-    });
+    void setCenter(
+      node.position.x + WORKFLOW_NODE_WIDTH / 2,
+      node.position.y + WORKFLOW_NODE_HEIGHT / 2,
+      {
+        zoom: Math.max(getZoom(), 1),
+        duration: 300,
+      },
+    );
   }, [statusByNodeId, getNode, setCenter, getZoom, fitView]);
 
   return (
@@ -72,7 +76,10 @@ export function WorkflowCanvasControls({
       </button>
       <button
         type="button"
-        className={cn("ai-workflow-control-btn", hasCustomLayout && "ai-workflow-control-btn--active")}
+        className={cn(
+          "ai-workflow-control-btn",
+          hasCustomLayout && "ai-workflow-control-btn--active",
+        )}
         aria-label="重置节点布局"
         title="恢复自动排版"
         disabled={!hasCustomLayout}

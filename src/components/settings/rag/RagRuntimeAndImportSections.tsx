@@ -1,6 +1,11 @@
 import { FileText, RotateCw, Upload, X } from "lucide-react";
 import type { RagKbConfigController } from "./useRagKbConfig";
-import { deriveRagRuntimeState, LOG_LEVELS, normalizeLogLevel, type RagRuntimeState } from "./rag-config";
+import {
+  deriveRagRuntimeState,
+  LOG_LEVELS,
+  normalizeLogLevel,
+  type RagRuntimeState,
+} from "./rag-config";
 import { RagSidecarLogPanel } from "./RagSidecarLogPanel";
 import { fileName } from "../../../utils";
 
@@ -31,7 +36,11 @@ export function RagRuntimeAndImportSections({ controller }: { controller: RagKbC
           <span className={RAG_DOT_CLASS[runtime.state]} />
           <span
             className="ai-rag-status-text"
-            title={runtime.state === "running" ? undefined : "RAG 服务未运行时可查看下方「服务日志」排查原因"}
+            title={
+              runtime.state === "running"
+                ? undefined
+                : "RAG 服务未运行时可查看下方「服务日志」排查原因"
+            }
           >
             {runtime.text}
           </span>

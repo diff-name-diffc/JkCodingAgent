@@ -44,7 +44,9 @@ describe("rag config normalization", () => {
 
 describe("deriveRagRuntimeState（UI-22c）", () => {
   it("运行中优先，带端口", () => {
-    expect(deriveRagRuntimeState({ running: true, restarting: false, probing: false, port: 8200 })).toEqual({
+    expect(
+      deriveRagRuntimeState({ running: true, restarting: false, probing: false, port: 8200 }),
+    ).toEqual({
       state: "running",
       text: "已运行 · 端口 8200",
       reason: null,

@@ -20,10 +20,7 @@ export function ChatCategoryContextMenu({
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content className="ai-context-menu">
-          <ContextMenu.Item
-            onSelect={onRename}
-            className="ai-context-menu-item"
-          >
+          <ContextMenu.Item onSelect={onRename} className="ai-context-menu-item">
             <Pencil size={13} /> 重命名
           </ContextMenu.Item>
           <ContextMenu.Separator className="ai-context-menu-separator" />

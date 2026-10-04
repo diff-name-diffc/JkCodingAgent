@@ -102,9 +102,7 @@ export function FileViewer({
                 }
               >
                 <FileGlyph presentation={presentation} size={20} />
-                <span className="ai-file-viewer-tab-label">
-                  {tab.name}
-                </span>
+                <span className="ai-file-viewer-tab-label">{tab.name}</span>
                 {isDirty && <span className="ai-file-viewer-tab-dirty-dot" aria-label="未保存" />}
                 <span
                   onClick={(event) => {
@@ -204,9 +202,7 @@ export function FileViewer({
                 active={isActive}
                 tab={tab}
                 projectPath={projectPath}
-                onDirtyChange={
-                  (dirty) => handleDirtyChange(tab.id, dirty)
-                }
+                onDirtyChange={(dirty) => handleDirtyChange(tab.id, dirty)}
               />
             </div>
           );

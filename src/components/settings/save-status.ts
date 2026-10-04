@@ -44,7 +44,8 @@ export function aggregateSaveStatuses(
   if (primary.loading) return "loading";
   if (primary.hasError || sources.some((source) => source.hasError)) return "error";
   const saving =
-    primary.dirty || sources.some((source) => source.saving || (source.mode === "auto" && source.dirty));
+    primary.dirty ||
+    sources.some((source) => source.saving || (source.mode === "auto" && source.dirty));
   if (saving) return "saving";
   if (sources.some((source) => source.mode === "manual" && source.dirty)) return "unsaved";
   return "saved";

@@ -32,9 +32,7 @@ function defaultStorage(): DiffViewStorage | null {
   }
 }
 
-export function loadDiffViewMode(
-  storage: DiffViewStorage | null = defaultStorage(),
-): DiffViewMode {
+export function loadDiffViewMode(storage: DiffViewStorage | null = defaultStorage()): DiffViewMode {
   if (!storage) return "unified";
   try {
     return sanitizeDiffViewMode(storage.getItem(DIFF_VIEW_MODE_KEY));

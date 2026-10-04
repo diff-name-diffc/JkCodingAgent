@@ -128,10 +128,15 @@ function snapshotType(el: ExcalidrawElement): string {
 }
 
 /** 元素文本：容器取绑定文本，frame 取标题名，text 元素取正文。 */
-function elementText(el: ExcalidrawElement, byId: Map<string, ExcalidrawElement>): string | undefined {
+function elementText(
+  el: ExcalidrawElement,
+  byId: Map<string, ExcalidrawElement>,
+): string | undefined {
   if (el.type === "text") {
     // 容器绑定文本不单列（其文本随容器行展示），自由文本取正文。
-    return (el as ExcalidrawTextElement).containerId ? undefined : (el as ExcalidrawTextElement).text;
+    return (el as ExcalidrawTextElement).containerId
+      ? undefined
+      : (el as ExcalidrawTextElement).text;
   }
   if (el.type === "frame") return (el as { name?: string }).name ?? undefined;
   const binding = el.boundElements?.find((b) => b.type === "text");

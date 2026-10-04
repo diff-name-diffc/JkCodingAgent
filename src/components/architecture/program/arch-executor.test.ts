@@ -51,7 +51,10 @@ describe("runArchProgram", () => {
 
   it("校验失败不触碰画布", async () => {
     const { api, updateScene } = fakeApi();
-    const outcome = await runArchProgram(api, "ws", { version: 1, instructions: [{ _type: "nope" }] });
+    const outcome = await runArchProgram(api, "ws", {
+      version: 1,
+      instructions: [{ _type: "nope" }],
+    });
     expect(outcome.ok).toBe(false);
     expect(updateScene).not.toHaveBeenCalled();
   });
@@ -61,8 +64,24 @@ describe("runArchProgram", () => {
     const outcome = await runArchProgram(api, "ws", {
       ...base,
       instructions: [
-        { _type: "create_shape", ref: "gw", shape: "geo", geo: "rectangle", text: "网关", x: 0, y: 0 },
-        { _type: "create_shape", ref: "svc", shape: "geo", geo: "ellipse", text: "服务", x: 300, y: 0 },
+        {
+          _type: "create_shape",
+          ref: "gw",
+          shape: "geo",
+          geo: "rectangle",
+          text: "网关",
+          x: 0,
+          y: 0,
+        },
+        {
+          _type: "create_shape",
+          ref: "svc",
+          shape: "geo",
+          geo: "ellipse",
+          text: "服务",
+          x: 300,
+          y: 0,
+        },
         { _type: "create_arrow", from: "gw", to: "svc", label: "HTTP" },
         { _type: "layout", mode: "row", targets: ["gw", "svc"], gap: 40 },
       ],
@@ -112,7 +131,15 @@ describe("runArchProgram", () => {
       ...base,
       instructions: [
         { _type: "create_shape", ref: "a", shape: "geo", geo: "rectangle", text: "A", x: 0, y: 0 },
-        { _type: "create_shape", ref: "b", shape: "geo", geo: "rectangle", text: "B", x: 300, y: 0 },
+        {
+          _type: "create_shape",
+          ref: "b",
+          shape: "geo",
+          geo: "rectangle",
+          text: "B",
+          x: 300,
+          y: 0,
+        },
         { _type: "create_arrow", from: "a", to: "b" },
       ],
     });
@@ -137,17 +164,21 @@ describe("runArchProgram", () => {
     const remaining = getElements();
     expect(remaining.some((el) => el.type === "arrow")).toBe(false);
     expect(remaining.filter((el) => el.type === "rectangle")).toHaveLength(1);
-    expect(remaining.some((el) => el.type === "text" && (el as { text?: string }).text === "A")).toBe(false);
+    expect(
+      remaining.some((el) => el.type === "text" && (el as { text?: string }).text === "A"),
+    ).toBe(false);
     const bAfter = remaining.find((el) => el.id === b.id)!;
     // 只剩 b 自己的文本标签绑定，箭头绑定已清理
     expect(bAfter.boundElements?.map((be) => be.type) ?? []).toEqual(["text"]);
   });
 
   it("select_shapes 写入 appState 选中集合；camera fit 调用 scrollToContent", async () => {
-    const { api, updateScene, } = fakeApi();
+    const { api, updateScene } = fakeApi();
     await runArchProgram(api, "ws", {
       ...base,
-      instructions: [{ _type: "create_shape", ref: "a", shape: "geo", geo: "rectangle", x: 0, y: 0 }],
+      instructions: [
+        { _type: "create_shape", ref: "a", shape: "geo", geo: "rectangle", x: 0, y: 0 },
+      ],
     });
     const aId = getElementsId();
     function getElementsId() {
@@ -174,10 +205,17 @@ it("取消的草稿不提交画布", async () => {
   const { api, updateScene } = fakeApi();
   const controller = new AbortController();
   controller.abort();
-  const outcome = await runArchProgram(api, "ws", {
-    version: 1,
-    instructions: [{ _type: "create_shape", ref: "a", shape: "geo", geo: "rectangle", text: "A" }],
-  }, controller.signal);
+  const outcome = await runArchProgram(
+    api,
+    "ws",
+    {
+      version: 1,
+      instructions: [
+        { _type: "create_shape", ref: "a", shape: "geo", geo: "rectangle", text: "A" },
+      ],
+    },
+    controller.signal,
+  );
   expect(outcome.ok).toBe(false);
   expect(outcome.reportText).toContain("未提交");
   expect(updateScene).not.toHaveBeenCalled();

@@ -5,7 +5,10 @@ import type {
   ModelCategory,
   PythonCodeRunRecord,
 } from "../../types";
-import type { AssistantThinkingBlock, AssistantTurnSegment } from "../dispatcher-chat/assistant-segments";
+import type {
+  AssistantThinkingBlock,
+  AssistantTurnSegment,
+} from "../dispatcher-chat/assistant-segments";
 import { buildDispatcherDisplayItems } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { AssistantMessage } from "./assistant-message";
@@ -77,13 +80,7 @@ export const MessageItem = React.memo(function MessageItem({
   );
 
   if (item.kind === "user") {
-    return (
-      <UserMessage
-        message={item.message}
-        onEdit={onEditMessage}
-        className={className}
-      />
-    );
+    return <UserMessage message={item.message} onEdit={onEditMessage} className={className} />;
   }
   return (
     <AssistantMessage

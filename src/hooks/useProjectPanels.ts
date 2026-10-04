@@ -74,7 +74,12 @@ export function useProjectPanels(workspaceId: string) {
 
   const handleFileTreeRename = useCallback((currentPath: string, nextPath: string) => {
     setEditorTabs((prev) => {
-      const renamed = renameFileTab(prev, currentPath, nextPath, nextPath.split("/").pop() ?? nextPath);
+      const renamed = renameFileTab(
+        prev,
+        currentPath,
+        nextPath,
+        nextPath.split("/").pop() ?? nextPath,
+      );
       return renamed;
     });
   }, []);
@@ -105,7 +110,11 @@ export function useProjectPanels(workspaceId: string) {
   /** 打开/激活工作流标签（UI-13）；planId 为 null 进入列表态，reducer 幂等；
    * view 指定详情态初始一级视图（画布 / 执行结果）。 */
   const handleOpenWorkflowTab = useCallback(
-    (sessionId: string, planId: string | null, view: WorkflowPanelView = DEFAULT_WORKFLOW_PANEL_VIEW) => {
+    (
+      sessionId: string,
+      planId: string | null,
+      view: WorkflowPanelView = DEFAULT_WORKFLOW_PANEL_VIEW,
+    ) => {
       setEditorWorkbenchVisible(true);
       setEditorTabs((prev) => openWorkflowTab(prev, sessionId, planId, view));
     },

@@ -42,8 +42,10 @@ export function McpServerCard({
           <input
             type="checkbox"
             checked={server.enabled ?? true}
-            title={server.enabled ?? true ? "已启用" : "已停用"}
-            onChange={(event) => updateServer((draft) => ({ ...draft, enabled: event.target.checked }))}
+            title={(server.enabled ?? true) ? "已启用" : "已停用"}
+            onChange={(event) =>
+              updateServer((draft) => ({ ...draft, enabled: event.target.checked }))
+            }
           />
           <button type="button" className="ai-set-server-title-btn" onClick={onToggleExpand}>
             <ChevronDown
@@ -74,19 +76,23 @@ export function McpServerCard({
       {expanded && (
         <div className="flex flex-col gap-3 border-t pt-3">
           <div className="ai-set-field">
-            <FieldLabel label="名称" tip="工具将暴露为 mcp__<名称>__<工具名>；项目可用同名服务器覆盖此条目。" />
+            <FieldLabel
+              label="名称"
+              tip="工具将暴露为 mcp__<名称>__<工具名>；项目可用同名服务器覆盖此条目。"
+            />
             <input
               className="ai-settings-input font-mono"
               value={name}
               spellCheck={false}
-              onChange={(event) =>
-                onUpdate((prev) => ({ ...prev, name: event.target.value }))
-              }
+              onChange={(event) => onUpdate((prev) => ({ ...prev, name: event.target.value }))}
             />
           </div>
 
           <div className="ai-set-field">
-            <FieldLabel label="传输方式" tip="本地进程通过 stdin/stdout 通信；HTTP 与 Unix socket 适用于常驻服务。" />
+            <FieldLabel
+              label="传输方式"
+              tip="本地进程通过 stdin/stdout 通信；HTTP 与 Unix socket 适用于常驻服务。"
+            />
             <select
               className="ai-settings-input"
               value={transport}
@@ -138,7 +144,9 @@ export function McpServerCard({
                   className="ai-settings-textarea font-mono"
                   rows={2}
                   spellCheck={false}
-                  value={Object.entries(server.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n")}
+                  value={Object.entries(server.env ?? {})
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join("\n")}
                   placeholder={"API_TOKEN=xxx"}
                   onChange={(event) =>
                     updateServer((draft) => ({
@@ -149,7 +157,10 @@ export function McpServerCard({
                 />
               </div>
               <div className="ai-set-field">
-                <FieldLabel label="工作目录（可选）" tip="全局服务器必须使用绝对路径；相对路径仅项目级 mcp.json 可用。" />
+                <FieldLabel
+                  label="工作目录（可选）"
+                  tip="全局服务器必须使用绝对路径；相对路径仅项目级 mcp.json 可用。"
+                />
                 <input
                   className="ai-settings-input font-mono"
                   value={server.cwd ?? ""}
@@ -212,7 +223,9 @@ export function McpServerCard({
                 className="ai-settings-textarea font-mono"
                 rows={2}
                 spellCheck={false}
-                value={Object.entries(server.headers ?? {}).map(([k, v]) => `${k}: ${v}`).join("\n")}
+                value={Object.entries(server.headers ?? {})
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join("\n")}
                 placeholder={"Authorization: Bearer xxx"}
                 onChange={(event) =>
                   updateServer((draft) => ({

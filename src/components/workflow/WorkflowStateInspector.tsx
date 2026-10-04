@@ -35,14 +35,21 @@ export function WorkflowStateInspector({
 
   return (
     <section className="ai-workflow-state">
-      <button type="button" className="ai-workflow-state-header" onClick={onToggle} aria-expanded={open}>
+      <button
+        type="button"
+        className="ai-workflow-state-header"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
         <span className="ai-workflow-state-title">共享状态</span>
         <span className="ai-workflow-state-count">{rows.length} 个键</span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
       </button>
       {open && (
         <div className="ai-workflow-state-body">
-          {rows.length === 0 && <div className="ai-workflow-state-empty">该工作流未声明共享状态键。</div>}
+          {rows.length === 0 && (
+            <div className="ai-workflow-state-empty">该工作流未声明共享状态键。</div>
+          )}
           {rows.map((row) => {
             const hasValue = Object.prototype.hasOwnProperty.call(state, row.key);
             const expanded = expandedKey === row.key;
@@ -62,7 +69,12 @@ export function WorkflowStateInspector({
                   aria-expanded={expanded}
                   disabled={!hasValue}
                 >
-                  <span className={cn("ai-workflow-state-key", !row.declared && "ai-workflow-state-key--extra")}>
+                  <span
+                    className={cn(
+                      "ai-workflow-state-key",
+                      !row.declared && "ai-workflow-state-key--extra",
+                    )}
+                  >
                     {row.key}
                   </span>
                   {row.description && (

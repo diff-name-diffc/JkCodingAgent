@@ -302,7 +302,12 @@ impl RigPlainChatAgent {
                 request.user_segments_json.clone(),
             )
             .await?;
-        crate::agent::common::emit(&on_event, AgentEvent::UserMessage { message: Box::new(user) });
+        crate::agent::common::emit(
+            &on_event,
+            AgentEvent::UserMessage {
+                message: Box::new(user),
+            },
+        );
 
         // 工作区准备 + MCP 全局注册表新鲜度刷新（聊天恒为全局作用域）。
         let workspace = self.session_workspace(workspace_id).await?;

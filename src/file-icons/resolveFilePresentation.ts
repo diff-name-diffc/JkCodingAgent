@@ -288,7 +288,7 @@ const EXACT_FOLDER_ICON_RULES: Record<string, string> = {
   doc: "folder-docs",
   test: "folder-tests",
   tests: "folder-tests",
-  "__tests__": "folder-tests",
+  __tests__: "folder-tests",
   spec: "folder-tests",
   ".github": "folder-github",
   ".git": "folder-git",
@@ -453,7 +453,8 @@ export function resolveFilePresentation(input: ResolveFilePresentationInput): Fi
     : resolveFileIconKey(normalizedName, extension);
   const icon = getFileIconSpec(iconKey);
   const monacoLanguage = resolveMonacoLanguage(normalizedName, extension, isDir);
-  const isMarkdown = !isDir && (extension === "md" || extension === "mdx" || extension === "markdown");
+  const isMarkdown =
+    !isDir && (extension === "md" || extension === "mdx" || extension === "markdown");
   const isPreviewableImage = !isDir && PREVIEWABLE_IMAGE_EXTENSIONS.has(extension);
   const isBinaryLike = !isDir && BINARY_LIKE_ICON_KEYS.has(iconKey);
 

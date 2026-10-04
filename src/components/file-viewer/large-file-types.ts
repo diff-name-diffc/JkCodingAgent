@@ -1,4 +1,3 @@
-
 export const LARGE_FILE_LINE_HEIGHT = 22;
 export const LARGE_FILE_OVERSCAN = 40;
 export const LARGE_FILE_CHUNK_SIZE = 200;

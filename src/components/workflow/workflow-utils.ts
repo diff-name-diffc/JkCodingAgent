@@ -17,7 +17,9 @@ export function parseWorkflowPlanId(text: string): string | null {
 }
 
 /** 解析计划的工作流定义；定义缺失或 JSON 损坏时返回 null（调用方降级展示）。 */
-export function parseWorkflowDefinition(plan: WorkflowPlanRecord | null): WorkflowDefinition | null {
+export function parseWorkflowDefinition(
+  plan: WorkflowPlanRecord | null,
+): WorkflowDefinition | null {
   if (!plan) return null;
   try {
     const parsed: unknown = JSON.parse(plan.definitionJson);
@@ -170,8 +172,7 @@ export function formatWorkflowDuration(durationMs: number | null | undefined): s
 
 /** state 值的预览：对象/数组走 JSON 压缩，字符串截断。 */
 export function previewStateValue(value: unknown, maxChars = 240): string {
-  const raw =
-    typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
+  const raw = typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
   return raw.length > maxChars ? `${raw.slice(0, maxChars)}…` : raw;
 }
 
@@ -282,7 +283,10 @@ export function buildToolCallEntries(activities: AgentActivity[]): ToolCallEntry
         outputFormatted: formatToolPayload(outputRaw),
         inputChars: charCountOf(inputSource),
         outputChars: charCountOf(outputRaw),
-        durationMs: activity.finishedAt != null ? Math.max(0, activity.finishedAt - activity.startedAt) : null,
+        durationMs:
+          activity.finishedAt != null
+            ? Math.max(0, activity.finishedAt - activity.startedAt)
+            : null,
       };
     });
 }
@@ -305,7 +309,12 @@ function payloadString(payload: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function noticeTitle(kind: NodeNotice["kind"], status: string, title: string, payload: Record<string, unknown>): string {
+function noticeTitle(
+  kind: NodeNotice["kind"],
+  status: string,
+  title: string,
+  payload: Record<string, unknown>,
+): string {
   if (kind === "lifecycle") {
     // 生命周期诊断的标题由执行器给出（如「未配置 ACP API Key」），原文透传。
     return title || "执行器动态";
@@ -318,7 +327,9 @@ function noticeTitle(kind: NodeNotice["kind"], status: string, title: string, pa
   if (status === "started") {
     const attempt = typeof payload.attempt === "number" ? payload.attempt : null;
     const maxAttempts = typeof payload.maxAttempts === "number" ? payload.maxAttempts : null;
-    return attempt != null && maxAttempts != null ? `自动重试（${attempt}/${maxAttempts}）` : "自动重试";
+    return attempt != null && maxAttempts != null
+      ? `自动重试（${attempt}/${maxAttempts}）`
+      : "自动重试";
   }
   return status === "failed" ? "重试失败" : "重试成功";
 }
@@ -326,7 +337,12 @@ function noticeTitle(kind: NodeNotice["kind"], status: string, title: string, pa
 /** 提取 compaction / retry / lifecycle 活动为时间线通知（按执行顺序）。 */
 export function buildNodeNotices(activities: AgentActivity[]): NodeNotice[] {
   return activities
-    .filter((activity) => activity.kind === "compaction" || activity.kind === "retry" || activity.kind === "lifecycle")
+    .filter(
+      (activity) =>
+        activity.kind === "compaction" ||
+        activity.kind === "retry" ||
+        activity.kind === "lifecycle",
+    )
     .sort((left, right) => left.sequence - right.sequence)
     .map((activity) => {
       const payload = payloadOf(activity);
@@ -436,9 +452,21 @@ export function buildExecutionTimeline(activities: AgentActivity[]): ExecutionTi
   const toolEntries = buildToolCallEntries(activities);
   const rows: TimelineRow[] = [
     ...toolEntries.map((entry): TimelineRow => ({ kind: "tool", sequence: entry.sequence, entry })),
-    ...buildNodeNotices(activities).map((notice): TimelineRow => ({ kind: "notice", sequence: notice.sequence, notice })),
-    ...buildPlanCards(activities).map((plan): TimelineRow => ({ kind: "plan", sequence: plan.sequence, plan })),
-    ...buildThinkingEntries(activities).map((thinking): TimelineRow => ({ kind: "thinking", sequence: thinking.sequence, thinking })),
+    ...buildNodeNotices(activities).map((notice): TimelineRow => ({
+      kind: "notice",
+      sequence: notice.sequence,
+      notice,
+    })),
+    ...buildPlanCards(activities).map((plan): TimelineRow => ({
+      kind: "plan",
+      sequence: plan.sequence,
+      plan,
+    })),
+    ...buildThinkingEntries(activities).map((thinking): TimelineRow => ({
+      kind: "thinking",
+      sequence: thinking.sequence,
+      thinking,
+    })),
   ];
   rows.sort((left, right) => left.sequence - right.sequence);
   return { toolEntries, timelineRows: rows, contextUsage: latestContextUsage(activities) };

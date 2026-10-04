@@ -160,4 +160,3 @@ export interface BrowserLogEvent {
   sessionId: string;
   message: string;
 }
-

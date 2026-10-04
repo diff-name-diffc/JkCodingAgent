@@ -24,12 +24,7 @@ const AVATARS = {
   },
 } as const;
 
-export function ChatAvatar({
-  role,
-  active = false,
-  hidden = false,
-  className,
-}: ChatAvatarProps) {
+export function ChatAvatar({ role, active = false, hidden = false, className }: ChatAvatarProps) {
   const avatar = AVATARS[role];
   const FallbackIcon = avatar.fallback;
 

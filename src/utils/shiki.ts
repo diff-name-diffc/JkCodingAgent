@@ -73,8 +73,14 @@ export const TEAL_LIGHT_THEME: ThemeRegistration = {
     { scope: ["constant", "entity.name.constant"], settings: { foreground: "#0F766E" } },
     { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#B45309" } },
     { scope: ["keyword.control"], settings: { foreground: "#9A3412" } },
-    { scope: ["entity", "entity.name.function", "support.function"], settings: { foreground: "#1F665D" } },
-    { scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"], settings: { foreground: "#155E54" } },
+    {
+      scope: ["entity", "entity.name.function", "support.function"],
+      settings: { foreground: "#1F665D" },
+    },
+    {
+      scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"],
+      settings: { foreground: "#155E54" },
+    },
     { scope: ["entity.name.tag"], settings: { foreground: "#0F766E" } },
     { scope: ["entity.other.attribute-name"], settings: { foreground: "#B45309" } },
     { scope: ["variable", "variable.parameter"], settings: { foreground: "#17201D" } },
@@ -112,8 +118,14 @@ export const TEAL_DARK_THEME: ThemeRegistration = {
     { scope: ["constant", "entity.name.constant"], settings: { foreground: "#5eead4" } },
     { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#f5a97f" } },
     { scope: ["keyword.control"], settings: { foreground: "#fda883" } },
-    { scope: ["entity", "entity.name.function", "support.function"], settings: { foreground: "#70d6be" } },
-    { scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"], settings: { foreground: "#55c7ad" } },
+    {
+      scope: ["entity", "entity.name.function", "support.function"],
+      settings: { foreground: "#70d6be" },
+    },
+    {
+      scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"],
+      settings: { foreground: "#55c7ad" },
+    },
     { scope: ["entity.name.tag"], settings: { foreground: "#55c7ad" } },
     { scope: ["entity.other.attribute-name"], settings: { foreground: "#f5a97f" } },
     { scope: ["variable", "variable.parameter"], settings: { foreground: "#e7ece9" } },
@@ -135,15 +147,13 @@ async function getHighlighter() {
     highlighterPromise = Promise.all([
       import("shiki/core"),
       import("shiki/dist/engine-javascript.mjs"),
-    ]).then(
-      async ([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) => {
-        const highlighter = (await createHighlighterCore({
-          engine: createJavaScriptRegexEngine(),
-          themes: [TEAL_LIGHT_THEME, TEAL_DARK_THEME],
-        })) as unknown as ShikiHighlighter;
-        return highlighter;
-      },
-    );
+    ]).then(async ([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) => {
+      const highlighter = (await createHighlighterCore({
+        engine: createJavaScriptRegexEngine(),
+        themes: [TEAL_LIGHT_THEME, TEAL_DARK_THEME],
+      })) as unknown as ShikiHighlighter;
+      return highlighter;
+    });
   }
 
   return highlighterPromise;
@@ -167,10 +177,7 @@ function normalizeLanguage(language?: string | null) {
 
 /** 语言是否在本应用的按需加载集合内（供 streamdown 插件 supportsLanguage）。 */
 export function isSupportedHighlightLanguage(language?: string | null): boolean {
-  return Object.prototype.hasOwnProperty.call(
-    LANGUAGE_LOADERS,
-    normalizeLanguage(language),
-  );
+  return Object.prototype.hasOwnProperty.call(LANGUAGE_LOADERS, normalizeLanguage(language));
 }
 
 async function ensureLanguage(language?: string | null) {

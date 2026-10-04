@@ -1,13 +1,5 @@
-import type {
-  AhaSettingsV2,
-  ModelCategory,
-  ModelLibraryEntry,
-} from "../../../types";
-import {
-  PURPOSE_DEFS,
-  getPurposeConfigs,
-  type PurposeKind,
-} from "./provider-registry";
+import type { AhaSettingsV2, ModelCategory, ModelLibraryEntry } from "../../../types";
+import { PURPOSE_DEFS, getPurposeConfigs, type PurposeKind } from "./provider-registry";
 
 /**
  * 分类模型库（纯函数层）。
@@ -36,13 +28,62 @@ export const ENTRY_MAX_TOKENS_RANGE = { min: 1024, max: 1_048_576 } as const;
 export const ENTRY_CONTEXT_WINDOW_RANGE = { min: 1024, max: 100_000_000 } as const;
 
 export const CATEGORY_DEFS: ModelCategoryDef[] = [
-  { category: "text", label: "对话模型", description: "项目/聊天主模型、摘要模型与 SSH 审查等文本对话模型。", testKind: "chat", isModelListFetchable: true, hasCapacityFields: true },
-  { category: "vision", label: "视觉模型", description: "用户上传图片时使用的多模态模型。", testKind: "vision", isModelListFetchable: true, hasCapacityFields: true },
-  { category: "image", label: "图片生成", description: "generate_image 工具使用的图片生成模型。", testKind: "image", isModelListFetchable: true, hasCapacityFields: false },
-  { category: "imageEdit", label: "图片编辑", description: "edit_image 工具使用的图片编辑模型。", testKind: "imageEdit", isModelListFetchable: true, hasCapacityFields: false },
-  { category: "asr", label: "语音识别", description: "实时语音识别配置，URL 为 WebSocket 地址。", testKind: "asr", isModelListFetchable: false, hasCapacityFields: false },
-  { category: "tts", label: "语音合成", description: "预留的文本转语音模型配置。", testKind: "tts", isModelListFetchable: false, hasCapacityFields: false },
-  { category: "embedding", label: "向量模型", description: "预留的向量模型配置。", testKind: "embedding", isModelListFetchable: true, hasCapacityFields: false },
+  {
+    category: "text",
+    label: "对话模型",
+    description: "项目/聊天主模型、摘要模型与 SSH 审查等文本对话模型。",
+    testKind: "chat",
+    isModelListFetchable: true,
+    hasCapacityFields: true,
+  },
+  {
+    category: "vision",
+    label: "视觉模型",
+    description: "用户上传图片时使用的多模态模型。",
+    testKind: "vision",
+    isModelListFetchable: true,
+    hasCapacityFields: true,
+  },
+  {
+    category: "image",
+    label: "图片生成",
+    description: "generate_image 工具使用的图片生成模型。",
+    testKind: "image",
+    isModelListFetchable: true,
+    hasCapacityFields: false,
+  },
+  {
+    category: "imageEdit",
+    label: "图片编辑",
+    description: "edit_image 工具使用的图片编辑模型。",
+    testKind: "imageEdit",
+    isModelListFetchable: true,
+    hasCapacityFields: false,
+  },
+  {
+    category: "asr",
+    label: "语音识别",
+    description: "实时语音识别配置，URL 为 WebSocket 地址。",
+    testKind: "asr",
+    isModelListFetchable: false,
+    hasCapacityFields: false,
+  },
+  {
+    category: "tts",
+    label: "语音合成",
+    description: "预留的文本转语音模型配置。",
+    testKind: "tts",
+    isModelListFetchable: false,
+    hasCapacityFields: false,
+  },
+  {
+    category: "embedding",
+    label: "向量模型",
+    description: "预留的向量模型配置。",
+    testKind: "embedding",
+    isModelListFetchable: true,
+    hasCapacityFields: false,
+  },
 ];
 
 export function categoryDef(category: ModelCategory): ModelCategoryDef {
@@ -81,8 +122,7 @@ export function entriesForCategory(
 ): ModelLibraryEntry[] {
   return library
     .filter(
-      (entry) =>
-        entry.category === category && (!options?.enabledOnly || entry.enabled !== false),
+      (entry) => entry.category === category && (!options?.enabledOnly || entry.enabled !== false),
     )
     .sort((a, b) => entryLabel(a).localeCompare(entryLabel(b)));
 }
@@ -100,9 +140,7 @@ export function upsertLibraryEntry(
   const library = settings.modelLibrary ?? [];
   const index = library.findIndex((item) => item.id === entry.id);
   const next =
-    index >= 0
-      ? library.map((item) => (item.id === entry.id ? entry : item))
-      : [...library, entry];
+    index >= 0 ? library.map((item) => (item.id === entry.id ? entry : item)) : [...library, entry];
   return { ...settings, modelLibrary: next };
 }
 
@@ -129,10 +167,7 @@ export function removeLibraryEntry(settings: AhaSettingsV2, id: string): AhaSett
 // ── 引用统计 ──────────────────────────────────────────────────────────────────
 
 /** 用途绑定与库条目的匹配：一律按 libraryId 引用（凭据由后端从库解析）。 */
-function configMatchesEntry(
-  config: { libraryId?: string },
-  entry: ModelLibraryEntry,
-): boolean {
+function configMatchesEntry(config: { libraryId?: string }, entry: ModelLibraryEntry): boolean {
   const libraryId = config.libraryId?.trim();
   return Boolean(libraryId) && libraryId === entry.id;
 }

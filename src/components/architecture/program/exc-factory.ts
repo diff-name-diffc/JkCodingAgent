@@ -167,11 +167,7 @@ export function createShapeElement(
   return { ...baseElement(id, geo, init), type: geo } as unknown as MutableElement;
 }
 
-export function createFrameElement(
-  id: string,
-  init: BaseInit,
-  name: string,
-): MutableFrameElement {
+export function createFrameElement(id: string, init: BaseInit, name: string): MutableFrameElement {
   return {
     ...baseElement(id, "frame", init),
     type: "frame",
@@ -233,7 +229,10 @@ export function borderPointToward(
   if (dx === 0 && dy === 0) return center;
   const halfW = Math.max(el.width / 2, 1);
   const halfH = Math.max(el.height / 2, 1);
-  const scale = Math.min(halfW / Math.max(Math.abs(dx), 1e-6), halfH / Math.max(Math.abs(dy), 1e-6));
+  const scale = Math.min(
+    halfW / Math.max(Math.abs(dx), 1e-6),
+    halfH / Math.max(Math.abs(dy), 1e-6),
+  );
   return { x: center.x + dx * scale, y: center.y + dy * scale };
 }
 
@@ -283,7 +282,10 @@ export function recomputeArrowGeometry(arrow: MutableArrowElement, draft: SceneD
   ] as unknown as ExcalidrawArrowElement["points"];
 }
 
-export function boundTextOf(container: MutableElement, draft: SceneDraft): MutableTextElement | null {
+export function boundTextOf(
+  container: MutableElement,
+  draft: SceneDraft,
+): MutableTextElement | null {
   const binding = container.boundElements?.find((b) => b.type === "text");
   if (!binding) return null;
   const el = draft.get(binding.id);
@@ -370,7 +372,8 @@ export function cascadeDelete(draft: SceneDraft, rootIds: Iterable<string>): Set
     }
     if (el.type === "arrow") {
       const arrow = el as MutableArrowElement;
-      if (arrow.startBinding && deleting.has(arrow.startBinding.elementId)) arrow.startBinding = null;
+      if (arrow.startBinding && deleting.has(arrow.startBinding.elementId))
+        arrow.startBinding = null;
       if (arrow.endBinding && deleting.has(arrow.endBinding.elementId)) arrow.endBinding = null;
     }
   }

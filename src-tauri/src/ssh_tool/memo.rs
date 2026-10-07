@@ -606,14 +606,9 @@ fn file_mtime_rfc3339(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn temp_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "aha-ssh-memo-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        root
+    fn temp_root() -> (PathBuf, crate::test_util::TempDirGuard) {
+        let guard = crate::test_util::TempDirGuard::new("aha-ssh-memo");
+        (guard.path().to_path_buf(), guard)
     }
 
     #[test]
@@ -754,7 +749,7 @@ mod tests {
 
     #[test]
     fn upsert_strips_copied_title_line_and_converges_duplicates() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let path = memo_path_in(&root, "srv-upsert").unwrap();
         // 历史残留形态：同名两段 + 其他段。
         atomic_write_at(
@@ -788,7 +783,7 @@ mod tests {
 
     #[test]
     fn upsert_rejects_heading_lines_in_content() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let path = memo_path_in(&root, "srv-guard").unwrap();
         let error = upsert_section_at(&path, "T", "正文\n## 子标题\n更多").unwrap_err();
         assert!(error.contains("二级标题行"), "{error}");
@@ -804,7 +799,7 @@ mod tests {
 
     #[test]
     fn replace_in_section_partial_update_and_local_delete() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let path = memo_path_in(&root, "srv-replace").unwrap();
         upsert_section_at(&path, "命令", "a\nb\nc").unwrap();
 
@@ -830,7 +825,7 @@ mod tests {
 
     #[test]
     fn replace_in_section_rejects_bad_targets() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let path = memo_path_in(&root, "srv-bad").unwrap();
         upsert_section_at(&path, "重复", "x\nx").unwrap();
         upsert_section_at(&path, "唯一", "目标").unwrap();
@@ -871,7 +866,7 @@ mod tests {
 
     #[test]
     fn save_memo_full_rejects_duplicate_titles() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let path = memo_path_in(&root, "srv-full").unwrap();
         let error = save_memo_full_at(
             &path,
@@ -889,7 +884,7 @@ mod tests {
 
     #[test]
     fn atomic_write_read_delete_roundtrip() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let path = memo_path_in(&root, "srv-1").unwrap();
         assert_eq!(read_content_at(&path).unwrap(), "");
 
@@ -913,7 +908,7 @@ mod tests {
 
     #[test]
     fn read_memo_at_missing_file_is_empty_success() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let path = memo_path_in(&root, "no-such").unwrap();
         let payload = read_memo_at(&path).unwrap();
         assert_eq!(payload.content, "");

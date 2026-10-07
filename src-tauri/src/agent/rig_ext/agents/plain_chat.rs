@@ -32,7 +32,7 @@ use crate::agent::rig_ext::r#loop::{
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::sub_agent::{call_sub_agent_tool, list_sub_agents_tool};
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
-use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps};
+use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolTimeoutDefaults};
 use crate::agent::rig_ext::tools::exec::exec_tools;
 use crate::agent::rig_ext::tools::mcp::mcp_tools;
 use crate::agent::rig_ext::tools::media::media_tools;
@@ -69,6 +69,9 @@ pub struct RigPlainChatAgent {
     /// 审查配置（settings.review；未配置 → None，命令类工具 fail-closed）。
     review_config: Mutex<Option<crate::agent::db::settings::SshReviewConfig>>,
     image_credentials: Mutex<crate::agent::db::settings::ImageModelCredentials>,
+    /// 用户配置的工具超时默认（AhaSettingsV2.toolTimeouts 解析产物）：
+    /// run 期注入执行策略 deadline 与工具 HTTP 预算（同一解析，防口径漂移）。
+    tool_timeouts: Mutex<ToolTimeoutDefaults>,
     /// 本 run 会话已启用的子智能体快照（run 入口异步拉取一次）。
     sub_agent_exposure: Mutex<Option<SubAgentExposure>>,
 }
@@ -97,6 +100,7 @@ impl RigPlainChatAgent {
             category_context: Mutex::new(None),
             review_config: Mutex::new(None),
             image_credentials: Mutex::new(Default::default()),
+            tool_timeouts: Mutex::new(Default::default()),
             sub_agent_exposure: Mutex::new(None),
         }
     }
@@ -121,6 +125,7 @@ impl RigPlainChatAgent {
             .is_configured()
             .then(|| settings.review.clone());
         *self.image_credentials.lock() = settings.shared.image_model_credentials();
+        *self.tool_timeouts.lock() = ToolTimeoutDefaults::from(&settings.tool_timeouts);
         // 基础设置重应用时同步清除分类叠加（对齐旧实现的顺序契约）。
         *self.category_context.lock() = None;
     }
@@ -376,6 +381,9 @@ impl RigPlainChatAgent {
             ))
         }));
 
+        // 先取出锁内值再进字面量（与 build_deps 同法）：review 字段携带 await，
+        // MutexGuard 临时值若留在字面量内，后续新增 await 字段会静默跨锁。
+        let tool_timeouts = self.tool_timeouts.lock().clone();
         let policy = AppToolExecutionPolicy::new(
             db,
             &on_event,
@@ -385,6 +393,7 @@ impl RigPlainChatAgent {
                 review: self.review_context(db, workspace_id, None).await,
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
+                tool_timeouts,
             },
         );
 
@@ -414,6 +423,8 @@ impl RigPlainChatAgent {
         workspace: &std::path::Path,
         cancel_rx: &watch::Receiver<bool>,
     ) -> RigToolDeps {
+        // 先取出锁内值再进字面量：review 字段的 await 不能跨越 MutexGuard。
+        let tool_timeouts = self.tool_timeouts.lock().clone();
         RigToolDeps {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
@@ -431,6 +442,7 @@ impl RigPlainChatAgent {
             cancel_rx: Some(cancel_rx.clone()),
             vision_spec: self.specs.vision.clone(),
             image: self.image_tool_config(),
+            tool_timeouts,
             review: self.review_context(db, workspace_id, None).await,
         }
     }
@@ -532,6 +544,9 @@ impl RigPlainChatAgent {
             cancel_rx: None,
             vision_spec: self.specs.vision.clone(),
             image: self.image_tool_config(),
+            // 清单枚举只取名称/描述不执行，超时默认不影响结果，但保持与
+            // 真实装配同源，避免清单面与执行面出现两套配置口径。
+            tool_timeouts: self.tool_timeouts.lock().clone(),
             review: RigReviewContext::unconfigured(),
         }
     }

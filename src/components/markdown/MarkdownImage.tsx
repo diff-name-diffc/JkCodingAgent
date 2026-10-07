@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { X } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
@@ -11,6 +11,11 @@ function isLocalImagePath(src: string): boolean {
 interface MarkdownImageProps {
   src?: string;
   alt?: string;
+  /**
+   * full：正文中的图片，撑满所在内容列宽（默认；AI 消息 / 文档渲染出口）；
+   * thumb：用户消息附件等小图场景，小尺寸缩略、纵横比完整不裁剪。
+   */
+  variant?: "full" | "thumb";
 }
 
 /**
@@ -19,10 +24,18 @@ interface MarkdownImageProps {
  * `chat-image://localhost/{id}` / `http://chat-image.localhost/{id}`）同步
  * 直出 <img src>——不再走 invoke resolve 两阶段渲染。本地路径分支仅为
  * 兼容旧消息 markdown 里的绝对路径引用（asset 协议）。
+ *
+ * 尺寸变体见 App.css `.markdown-image-thumbnail-wrap--full/--thumb`；
+ * 输入框附件预览由 `.chat-attachment-preview` 作用域覆盖（prompt-input）。
  */
-export function MarkdownImage({ src, alt }: MarkdownImageProps) {
+export const MarkdownImage = memo(function MarkdownImage({
+  src,
+  alt,
+  variant = "full",
+}: MarkdownImageProps) {
   const [isEnlarged, setIsEnlarged] = useState(false);
   const [failed, setFailed] = useState(false);
+  const wrapClassName = `markdown-image-thumbnail-wrap markdown-image-thumbnail-wrap--${variant}`;
 
   let resolvedSrc = "";
   if (src?.startsWith(CHAT_IMAGE_PROTOCOL)) {
@@ -45,7 +58,7 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
 
   if (failed) {
     return (
-      <div className="markdown-image-thumbnail-wrap">
+      <div className={wrapClassName}>
         <div className="markdown-image-error" title={src}>
           图片加载失败
         </div>
@@ -55,11 +68,7 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
 
   return (
     <>
-      <div
-        className="markdown-image-thumbnail-wrap"
-        onClick={() => setIsEnlarged(true)}
-        title="点击放大"
-      >
+      <div className={wrapClassName} onClick={() => setIsEnlarged(true)} title="点击放大">
         <img
           src={resolvedSrc}
           alt={alt}
@@ -90,4 +99,4 @@ export function MarkdownImage({ src, alt }: MarkdownImageProps) {
       )}
     </>
   );
-}
+});

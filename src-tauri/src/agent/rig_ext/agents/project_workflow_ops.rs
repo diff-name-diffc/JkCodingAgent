@@ -593,11 +593,15 @@ mod tests {
         }
     }
 
-    fn test_db() -> crate::agent::db::DispatcherDb {
-        crate::agent::db::DispatcherDb::new(
-            std::env::temp_dir().join(format!("aha-workflow-ops-{}.sqlite3", uuid::Uuid::new_v4())),
+    fn test_db() -> (
+        crate::agent::db::DispatcherDb,
+        crate::test_util::TempDirGuard,
+    ) {
+        let dir = crate::test_util::TempDirGuard::new("aha-workflow-ops");
+        (
+            crate::agent::db::DispatcherDb::new(dir.path().join("jkbot.sqlite3")).unwrap(),
+            dir,
         )
-        .unwrap()
     }
 
     #[test]
@@ -640,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn workflow_get_returns_definition_and_latest_run() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = store
             .create_plan_async("w", &definition(), "需求", "{}")
@@ -670,7 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn node_update_applies_patch_and_persists() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = store
             .create_plan_async("w", &definition(), "需求", "{}")
@@ -702,7 +706,7 @@ mod tests {
 
     #[tokio::test]
     async fn node_update_rejects_unknown_node_and_lists_available() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         store
             .create_plan_async("w", &definition(), "需求", "{}")
@@ -727,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn node_update_rejects_non_draft_plan_and_bad_patch() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = store
             .create_plan_async("w", &definition(), "需求", "{}")
@@ -807,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn node_add_inserts_between_and_appends() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = store
             .create_plan_async("w", &chain_definition(), "需求", "{}")
@@ -872,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn node_add_rejects_duplicate_bad_insert_and_cycles() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         store
             .create_plan_async("w", &chain_definition(), "需求", "{}")
@@ -965,7 +969,7 @@ mod tests {
 
     #[tokio::test]
     async fn node_delete_leaf_rejects_dependent_and_cascades() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = store
             .create_plan_async("w", &chain_definition(), "需求", "{}")

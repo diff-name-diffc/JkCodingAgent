@@ -432,14 +432,12 @@ mod tests {
     use crate::agent::db::DispatcherDb;
     use crate::agent::sub_agent::config::SubAgentModelConfig;
 
-    fn setup() -> (DispatcherDb, SubAgentDb) {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-subagent-category-{}.sqlite3",
-            uuid::Uuid::new_v4(),
-        ));
-        let dispatcher = DispatcherDb::new(path).expect("create dispatcher db");
+    fn setup() -> (DispatcherDb, SubAgentDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-subagent-category");
+        let dispatcher =
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create dispatcher db");
         let sub_agent = SubAgentDb::new(dispatcher.pool());
-        (dispatcher, sub_agent)
+        (dispatcher, sub_agent, dir)
     }
 
     fn seed_sub_agent(sub_agent: &SubAgentDb, id: &str) {
@@ -474,7 +472,7 @@ mod tests {
 
     #[test]
     fn loads_sub_agents_per_chat_category() {
-        let (dispatcher, sub_agent) = setup();
+        let (dispatcher, sub_agent, _dir) = setup();
         // schema 初始化会自动 seed browser-agent 到 global，这里清空 global 以隔离分类级配置。
         sub_agent.set_global_enabled(&[]).expect("clear global");
         seed_sub_agent(&sub_agent, "tech-agent");
@@ -503,7 +501,7 @@ mod tests {
 
     #[test]
     fn invalid_category_sub_agent_json_does_not_break_other_sessions() {
-        let (dispatcher, sub_agent) = setup();
+        let (dispatcher, sub_agent, _dir) = setup();
         sub_agent.set_global_enabled(&[]).expect("clear global");
         seed_sub_agent(&sub_agent, "tech-agent");
         set_category_sub_agents(&dispatcher, "tech", &["tech-agent"]);
@@ -542,7 +540,7 @@ mod tests {
 
     #[test]
     fn empty_category_sub_agents_yields_only_global() {
-        let (dispatcher, sub_agent) = setup();
+        let (dispatcher, sub_agent, _dir) = setup();
         sub_agent.set_global_enabled(&[]).expect("clear global");
         seed_sub_agent(&sub_agent, "tech-agent");
 
@@ -560,7 +558,7 @@ mod tests {
 
     #[test]
     fn global_sub_agents_apply_to_all_sessions() {
-        let (dispatcher, sub_agent) = setup();
+        let (dispatcher, sub_agent, _dir) = setup();
         seed_sub_agent(&sub_agent, "global-agent");
         // 显式设置 global（覆盖 schema 自动 seed 的 browser-agent），以隔离断言。
         sub_agent
@@ -581,7 +579,7 @@ mod tests {
 
     #[test]
     fn run_traces_are_isolated_and_removed_with_session_resources() {
-        let (dispatcher, sub_agent) = setup();
+        let (dispatcher, sub_agent, _dir) = setup();
         let session = dispatcher
             .create_chat_session("轨迹测试", Some("tech"))
             .expect("create trace session");
@@ -650,7 +648,7 @@ mod tests {
 
     #[test]
     fn run_trace_rejects_invalid_json() {
-        let (dispatcher, sub_agent) = setup();
+        let (dispatcher, sub_agent, _dir) = setup();
         let session = dispatcher
             .create_chat_session("无效轨迹", Some("tech"))
             .expect("create session");

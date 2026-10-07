@@ -429,9 +429,8 @@ mod tests {
     /// `ready` 里等各自宿主取走（整体 clear 会把它们丢掉）。
     #[tokio::test]
     async fn take_completion_removes_only_the_target_entry() {
-        let dir = std::env::temp_dir().join(format!("rig-scheduler-take-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let db = DispatcherDb::new(dir.join("jkbot.sqlite3")).expect("open temp db");
+        let dir = crate::test_util::TempDirGuard::new("rig-scheduler-take");
+        let db = DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("open temp db");
         let (_cancel_tx, cancel) = watch::channel(false);
         let mut scheduler = TaskScheduler::new(
             db,

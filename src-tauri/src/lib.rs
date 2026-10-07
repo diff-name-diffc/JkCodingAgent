@@ -11,6 +11,8 @@ mod scm;
 mod shared;
 mod ssh_tool;
 mod task_runtime;
+#[cfg(test)]
+mod test_util;
 mod workspace;
 
 pub use app::run;

@@ -6,29 +6,44 @@ use std::path::PathBuf;
 use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use serde_json::{json, Value};
 
-use super::super::common::{bounded_dimension_arg, resolve_path, string_arg, u64_arg};
+use super::super::common::{
+    bounded_dimension_arg, resolve_path, string_arg, u64_arg, with_call_timeout_parameters,
+};
 use super::super::deps::RigToolDeps;
 use super::image_api::{self, ImageGenerationInput};
+use crate::agent::rig_ext::tools::spec::{
+    effective_timeout_secs, IMAGE_TOOL_CALL_TIMEOUT_RANGE, IMAGE_TOOL_TIMEOUT_SECS,
+};
 use crate::chat_images::{is_chat_image_path, resolve_chat_image_id_async};
 
 pub(super) fn generate_image_tool(deps: &RigToolDeps) -> PortableDynamicTool {
     let deps = deps.clone();
-    PortableDynamicTool::new(
-        "generate_image",
-        "根据文本描述生成图片。支持指定尺寸、风格等参数。调用外部图片生成模型（如 qwen-image-2.0-pro）生成图片，保存到本地后返回路径。",
+    let parameters = with_call_timeout_parameters(
         json!({
             "type": "object",
             "properties": {
-                "prompt": { "type": "string", "description": "图片描述文本，详细描述要生成的图片内容" },
+                "prompt": { "type": "string", "description": "图片描述文本，详细描述要生成的图片内容（场景、构图、配色、风格）。若图片需要包含文字（标题、标签、流程节点名、注释等），必须逐处写清文字的具体内容，并显式要求这些文字全部使用简体中文（例如：图中标题为「检索增强生成流程」，所有节点标签均为简体中文）；仅当用户明确要求其他语言时才使用对应语言，且同样需在 prompt 中显式声明" },
                 "width": { "type": "integer", "description": "图片宽度（可选，支持范围 256-4096）" },
                 "height": { "type": "integer", "description": "图片高度（可选，支持范围 256-4096）" },
                 "style": { "type": "string", "description": "图片风格（可选）" },
-                "negative_prompt": { "type": "string", "description": "负面提示词，指定不希望在图片中出现的内容（可选）" },
+                "negative_prompt": { "type": "string", "description": "负面提示词，指定不希望在图片中出现的内容（可选）。当图中文字要求为简体中文时，建议加入「英文文字、乱码文字」避免混入非中文文字" },
                 "model": { "type": "string", "description": "使用的图片生成模型名称（可选，默认使用配置中的模型）" },
                 "seed": { "type": "integer", "description": "随机种子（可选）" }
             },
             "required": ["prompt"]
         }),
+        IMAGE_TOOL_CALL_TIMEOUT_RANGE,
+        // 描述文案里的「默认」须与生效默认一致（用户配置 ?? 表默认），
+        // 否则模型对预算的心智模型失真。
+        deps.tool_timeouts
+            .generate_image
+            .unwrap_or(IMAGE_TOOL_TIMEOUT_SECS),
+        "复杂提示词、大尺寸或 prompt_expand 扩写生成明显偏慢时可声明更长；常规生成无需填写。",
+    );
+    PortableDynamicTool::new(
+        "generate_image",
+        "根据文本描述生成图片。支持指定尺寸、风格等参数。调用外部图片生成模型（如 qwen-image-2.0-pro）生成图片，保存到本地后返回路径。语言要求：图片中出现的所有文字（标题、标签、流程节点名、注释、界面文案等）默认必须全部为简体中文——撰写 prompt 时必须把图中每处文字的具体中文内容写清楚，并在 prompt 中显式声明「图片中所有文字均使用简体中文」；仅当用户明确要求其他语言时才可使用对应语言（同样需显式声明）。",
+        parameters,
         move |args: Value| {
             let deps = deps.clone();
             Box::pin(async move { execute_image_generation(&args, &deps).await })
@@ -74,6 +89,18 @@ async fn execute_image_generation(
         ));
     }
 
+    // 取消信号在工具边界（task-local 作用域）读取一次后显式下传；无
+    // task-local（脱离循环的调用）时为 None，按无取消源处理。
+    let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+        .map(|context| context.cancel_rx);
+    // 预算与策略层 deadline 同源（spec::effective_timeout_secs）：调用声明 >
+    // 用户配置默认（deps.tool_timeouts）> 策略表默认，防止两处口径漂移。
+    let timeout_secs = effective_timeout_secs(
+        "generate_image",
+        u64_arg(args, "timeout_secs"),
+        deps.tool_timeouts.generate_image,
+    );
+
     match image_api::generate_image(
         input,
         deps.db.clone(),
@@ -81,6 +108,8 @@ async fn execute_image_generation(
         &config.api_key,
         &config.url,
         &config.model,
+        timeout_secs,
+        cancel_rx,
     )
     .await
     {
@@ -99,19 +128,28 @@ async fn execute_image_generation(
 
 pub(super) fn edit_image_tool(deps: &RigToolDeps) -> PortableDynamicTool {
     let deps = deps.clone();
-    PortableDynamicTool::new(
-        "edit_image",
-        "根据用户提供的图片引用和编辑描述，对图片进行编辑（如修改风格、添加元素、调整细节等）。支持 chat-image://uuid 协议引用、本地绝对路径或相对路径。支持指定输出尺寸。",
+    let parameters = with_call_timeout_parameters(
         json!({
             "type": "object",
             "properties": {
                 "image_path": { "type": "string", "description": "要编辑的图片引用。支持：chat-image://uuid（对话中图片引用）、本地绝对路径、相对工作区路径" },
-                "prompt": { "type": "string", "description": "编辑描述文本，详细描述要进行的修改" },
+                "prompt": { "type": "string", "description": "编辑描述文本，详细描述要进行的修改。涉及图中文字（新增、修改、翻译）时必须写清文字的具体内容；图中文字默认保持/使用简体中文，需在 prompt 中显式声明（仅当用户明确要求其他语言时除外）" },
                 "width": { "type": "integer", "description": "输出图片宽度（可选，支持范围 256-4096）" },
                 "height": { "type": "integer", "description": "输出图片高度（可选，支持范围 256-4096）" }
             },
             "required": ["image_path", "prompt"]
         }),
+        IMAGE_TOOL_CALL_TIMEOUT_RANGE,
+        // 描述文案里的「默认」须与生效默认一致（用户配置 ?? 表默认）。
+        deps.tool_timeouts
+            .edit_image
+            .unwrap_or(IMAGE_TOOL_TIMEOUT_SECS),
+        "编辑大图或修改幅度较大时生成偏慢，可声明更长；常规编辑无需填写。",
+    );
+    PortableDynamicTool::new(
+        "edit_image",
+        "根据用户提供的图片引用和编辑描述，对图片进行编辑（如修改风格、添加元素、调整细节等）。支持 chat-image://uuid 协议引用、本地绝对路径或相对路径。支持指定输出尺寸。语言要求：编辑涉及图中文字（新增、修改、翻译）时，目标文字默认必须为简体中文，必须在 prompt 中写清具体中文内容并显式声明语言要求；仅当用户明确要求其他语言时除外。",
+        parameters,
         move |args: Value| {
             let deps = deps.clone();
             Box::pin(async move { execute_image_edit(&args, &deps).await })
@@ -217,6 +255,15 @@ async fn execute_image_edit(
     };
     let image_path_str = image_path_str.to_string();
 
+    // 取消信号与超时预算与 generate_image 同构（见 execute_image_generation）。
+    let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+        .map(|context| context.cancel_rx);
+    let timeout_secs = effective_timeout_secs(
+        "edit_image",
+        u64_arg(args, "timeout_secs"),
+        deps.tool_timeouts.edit_image,
+    );
+
     match image_api::edit_image(
         &image_path_str,
         prompt,
@@ -227,6 +274,8 @@ async fn execute_image_edit(
         &config.api_key,
         &config.url,
         default_model,
+        timeout_secs,
+        cancel_rx,
     )
     .await
     {

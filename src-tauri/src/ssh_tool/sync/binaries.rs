@@ -145,13 +145,12 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    struct Fixture(PathBuf);
+    /// (路径, 守卫)：`.0` 保持路径语义，`.1` Drop 时整目录回收。
+    struct Fixture(PathBuf, #[allow(dead_code)] crate::test_util::TempDirGuard);
     impl Fixture {
         fn new() -> Self {
-            let root =
-                std::env::temp_dir().join(format!("rsync-discovery-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&root).unwrap();
-            Self(root)
+            let guard = crate::test_util::TempDirGuard::new("rsync-discovery");
+            Self(guard.path().to_path_buf(), guard)
         }
         fn program(&self, directory: &str, output: &str) -> PathBuf {
             let dir = self.0.join(directory);
@@ -160,11 +159,6 @@ mod tests {
             std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n")).unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
             dir
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 

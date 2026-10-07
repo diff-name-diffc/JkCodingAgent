@@ -29,12 +29,14 @@ use tokio::sync::watch;
 
 use super::scheduler::SETTLE_CEILING;
 use super::surface::{ToolCallGuard, ToolExecutionPolicy};
-use crate::agent::common::cancellation_requested;
+use crate::agent::common::{cancellation_requested, wait_for_optional_cancellation};
 use crate::agent::db::{DispatcherDb, ToolRunTraceContext};
 use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::review::RigReviewContext;
+use crate::agent::rig_ext::tools::common::u64_arg;
+use crate::agent::rig_ext::tools::deps::ToolTimeoutDefaults;
 use crate::agent::rig_ext::tools::run_record::prepare_arguments;
-use crate::agent::rig_ext::tools::spec::{ToolSafety, ToolSpec};
+use crate::agent::rig_ext::tools::spec::{effective_timeout_secs, ToolSafety, ToolSpec};
 use crate::mcp::registry::MCP_TOOL_NAME_PREFIX;
 
 /// 应用级策略的构造输入。
@@ -48,6 +50,10 @@ pub struct AppToolPolicyConfig {
     pub cancel_rx: Option<watch::Receiver<bool>>,
     /// 子智能体工具调用的台账 trace 上下文（根 Agent 为默认值）。
     pub trace: ToolRunTraceContext,
+    /// 用户配置的工具超时默认（AhaSettingsV2.toolTimeouts 解析产物）：
+    /// 统一超时白名单工具的 deadline 经 `spec::effective_timeout_secs`
+    /// 参与「调用声明 > 用户默认 > 表默认」解析；空 = 全部用表默认。
+    pub tool_timeouts: ToolTimeoutDefaults,
 }
 
 /// 应用级执行策略：门禁输入；策略层不再持有 DB / 事件通道——台账单写路径
@@ -165,8 +171,10 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
                 .map_err(|error| ToolExecutionError::invalid_args(error.message))?,
         };
 
-        // 等待上限：统一超时工具用自身 `timeout_secs`；自管工具（unified_timeout=false）用
-        // 兜底上限 `settle_ceiling_secs`（工具自身预算之外的最后防线，取值 = 最坏合法预算）。
+        // 等待上限：统一超时工具用有效超时（白名单工具为「调用声明 > 用户配置
+        // 默认 > 表默认」，经 spec::effective_timeout_secs 夹紧；白名单外恒为
+        // 表值）；自管工具（unified_timeout=false）用兜底上限 `settle_ceiling_secs`
+        // （工具自身预算之外的最后防线，取值 = 最坏合法预算），策略层不夹紧其单次值。
         // 两者共用同一套「到点 → 发取消 → 宽限收敛 → 交接后台」流程，差别只在文案与
         // 「是否值得发取消」：统一超时工具恒发，自管工具按 `cancellable` 声明。
         // `timeout_secs == 0` 维持文档语义（不设统一超时限制）；策略表内工具恒 > 0。
@@ -174,7 +182,16 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
         let deadline_secs = if ceiling_mode {
             spec.execution.settle_ceiling_secs
         } else {
-            spec.execution.timeout_secs
+            // 声明值来自经 schema 校验的 effective 参数（minimum/maximum 在
+            // 准入期已拒绝越界声明，这里再夹紧一次作纵深防御）。提取走
+            // `common::u64_arg`（与工具侧同出口）：JSON Schema 2020-12 放行
+            // 整值浮点（40.0），提取层不接受会把声明静默丢弃。
+            let declared = u64_arg(&arguments, "timeout_secs");
+            effective_timeout_secs(
+                &spec.name,
+                declared,
+                self.config.tool_timeouts.for_tool(&spec.name),
+            )
         };
         if deadline_secs == 0 {
             return tool.execute(arguments).await;
@@ -236,7 +253,7 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
                 }
                 .with_retryable(false))
             }
-            _ = cancellation(upstream) => {
+            _ = wait_for_optional_cancellation(upstream) => {
                 cancel.send_replace(true);
                 let Some(settled) = settle_in_flight(execution).await else {
                     return Err(ToolExecutionError::cancelled(format!(
@@ -252,17 +269,6 @@ impl ToolExecutionPolicy for AppToolExecutionPolicy {
                     ))),
                 }
             }
-        }
-    }
-}
-
-async fn cancellation(rx: Option<watch::Receiver<bool>>) {
-    let Some(mut rx) = rx else {
-        return std::future::pending().await;
-    };
-    while !*rx.borrow() {
-        if rx.changed().await.is_err() {
-            break;
         }
     }
 }
@@ -360,30 +366,105 @@ mod tests {
         }
     }
 
-    fn policy() -> AppToolExecutionPolicy {
-        let temp_dir =
-            std::env::temp_dir().join(format!("rig-app-policy-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
-        let db = DispatcherDb::new(temp_dir.join("jkbot.sqlite3")).expect("open temp db");
+    fn policy_with(
+        tool_timeouts: ToolTimeoutDefaults,
+    ) -> (AppToolExecutionPolicy, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("rig-app-policy");
+        let db = DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("open temp db");
         let events = Channel::new(|_| Ok(()));
-        AppToolExecutionPolicy::new(
+        let policy = AppToolExecutionPolicy::new(
             &db,
             &events,
             AppToolPolicyConfig {
                 workspace_id: "workspace".into(),
-                workspace: temp_dir,
+                workspace: dir.path().to_path_buf(),
                 review: RigReviewContext::unconfigured(),
                 cancel_rx: None,
                 trace: Default::default(),
+                tool_timeouts,
             },
-        )
+        );
+        (policy, dir)
+    }
+
+    fn policy() -> (AppToolExecutionPolicy, crate::test_util::TempDirGuard) {
+        policy_with(ToolTimeoutDefaults::default())
+    }
+
+    /// 带用户配置超时默认的策略（deadline 解析测试用）。
+    fn policy_with_timeouts(
+        tool_timeouts: ToolTimeoutDefaults,
+    ) -> (AppToolExecutionPolicy, crate::test_util::TempDirGuard) {
+        policy_with(tool_timeouts)
+    }
+
+    /// 永不返回的桩工具：deadline 触发后不收敛，错误文案携带实际 deadline
+    /// 秒数（「执行超时（N秒）」），据此断言解析结果。
+    fn stuck_tool(name: &'static str) -> PortableDynamicTool {
+        PortableDynamicTool::new(name, "卡死工具", json!({"type":"object"}), move |_| {
+            Box::pin(async move {
+                std::future::pending::<Result<ToolOutput, ToolExecutionError>>().await
+            })
+        })
+    }
+
+    /// 白名单工具的调用声明超时优先于策略表默认：声明 40 秒的 generate_image
+    /// 必须在 40 秒（而非表默认 120 秒）触发统一超时。
+    #[tokio::test(start_paused = true)]
+    async fn declared_call_timeout_overrides_table_default() {
+        let (policy, _dir) = policy();
+        let tool = stuck_tool("generate_image");
+        let call = ToolCall::from_wire(
+            "call",
+            ToolFunction {
+                name: "generate_image".into(),
+                arguments: json!({ "timeout_secs": 40 }),
+            },
+        );
+        let task = tokio::spawn(async move { policy.execute(&tool, &call).await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(40)).await;
+        tokio::time::advance(SETTLE_CEILING + Duration::from_secs(1)).await;
+        let error = task.await.expect("join").expect_err("必须返回错误");
+        assert!(
+            error.message().contains("执行超时（40秒）"),
+            "声明 40 秒必须生效，实际错误：{}",
+            error.message()
+        );
+    }
+
+    /// 未声明时用户配置默认优先于表默认：配置 90 秒后 deadline 为 90 秒。
+    #[tokio::test(start_paused = true)]
+    async fn user_default_timeout_applies_without_declaration() {
+        let (policy, _dir) = policy_with_timeouts(ToolTimeoutDefaults {
+            generate_image: Some(90),
+            ..Default::default()
+        });
+        let tool = stuck_tool("generate_image");
+        let call = ToolCall::from_wire(
+            "call",
+            ToolFunction {
+                name: "generate_image".into(),
+                arguments: json!({}),
+            },
+        );
+        let task = tokio::spawn(async move { policy.execute(&tool, &call).await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(90)).await;
+        tokio::time::advance(SETTLE_CEILING + Duration::from_secs(1)).await;
+        let error = task.await.expect("join").expect_err("必须返回错误");
+        assert!(
+            error.message().contains("执行超时（90秒）"),
+            "用户默认 90 秒必须生效，实际错误：{}",
+            error.message()
+        );
     }
 
     /// 上限只兜住真正卡死的工具：发出取消信号后仍不收敛时，不丢弃在途执行
     /// （移交后台继续收敛），调用方拿到明确的「结算未确认」错误而不是无限等待。
     #[tokio::test(start_paused = true)]
     async fn settle_ceiling_hands_off_stuck_execution_without_dropping_it() {
-        let policy = policy();
+        let (policy, _dir) = policy();
         let dropped = Arc::new(AtomicUsize::new(0));
         let tool_dropped = dropped.clone();
         // 忽略取消信号且永不返回：模拟取消后仍不收敛的工具。
@@ -430,7 +511,7 @@ mod tests {
     /// 到上限 → 按 `cancellable` 发取消 → 宽限收敛 → 仍不收则交接后台并按「结算未确认」收口。
     #[tokio::test(start_paused = true)]
     async fn self_managed_tool_hits_settle_ceiling_and_hands_off() {
-        let policy = policy();
+        let (policy, _dir) = policy();
         let dropped = Arc::new(AtomicUsize::new(0));
         let tool_dropped = dropped.clone();
         // local_zsh：策略表里的自管工具（声明预算 60 秒、兜底上限 600 秒）。
@@ -482,7 +563,7 @@ mod tests {
         use super::super::invocation::ToolInvocationContext;
         use crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS;
 
-        let policy = policy();
+        let (policy, _dir) = policy();
         let received = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
         let captured = received.clone();
         let tool = PortableDynamicTool::new(
@@ -539,7 +620,7 @@ mod tests {
         use super::super::invocation::ToolInvocationContext;
         use crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS;
 
-        let policy = policy();
+        let (policy, _dir) = policy();
         let tool = PortableDynamicTool::new(
             "read_file",
             "只读工具",
@@ -578,7 +659,7 @@ mod tests {
     async fn bare_before_call_prepares_arguments_exactly_once() {
         use crate::agent::rig_ext::tools::run_record::PREPARE_ARGUMENTS_CALLS;
 
-        let policy = policy();
+        let (policy, _dir) = policy();
         let tool = PortableDynamicTool::new(
             "read_file",
             "只读工具",

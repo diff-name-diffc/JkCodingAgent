@@ -17,6 +17,7 @@ async fn unified_timeout_signals_callback_and_waits_for_actual_settlement() {
             review: crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
             cancel_rx: None,
             trace: Default::default(),
+            tool_timeouts: Default::default(),
         },
     );
     let (noticed, cancellation) = oneshot::channel();

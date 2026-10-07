@@ -212,14 +212,12 @@ pub(crate) fn cleanup_project_files(plan: &ProjectCleanupPlan) {
 mod tests {
     use super::*;
 
-    fn test_db() -> (DispatcherDb, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "aha-projects-db-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        (DispatcherDb::new(root.join("jkbot.sqlite3")).unwrap(), root)
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-projects-db");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).unwrap(),
+            dir,
+        )
     }
 
     fn sample_project(id: &str, path: &str) -> Project {

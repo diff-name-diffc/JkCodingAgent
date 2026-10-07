@@ -253,8 +253,19 @@ export interface AhaSettingsV2 {
   modelLibrary: ModelLibraryEntry[];
   /** 工作流编排运行期设置。 */
   workflow?: WorkflowExecutionConfig;
+  /** 工具超时默认；权威源为后端（db/settings.rs 手工同步，越界键归一化时剥离）。 */
+  toolTimeouts?: ToolTimeoutSettings;
   /** 外观主题偏好；权威源为后端 aha_get/save_settings_v2。 */
   theme?: ThemePreference;
+}
+
+/** 白名单工具的用户配置默认超时（秒）：未配置回退策略表默认，Agent 调用
+ * 参数 timeout_secs 的声明值优先于此。与 db/settings.rs 的
+ * ToolTimeoutSettings 保持一致。 */
+export interface ToolTimeoutSettings {
+  generateImageSecs?: number;
+  editImageSecs?: number;
+  fetchImageSecs?: number;
 }
 
 export type DispatcherSessionTokenUsageSource = "primary" | "summary";

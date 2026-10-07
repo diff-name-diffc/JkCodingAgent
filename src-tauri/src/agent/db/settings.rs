@@ -274,10 +274,47 @@ pub struct AhaSettingsV2 {
     /// 前置条件，不得移除。
     #[serde(default, alias = "graph")]
     pub workflow: WorkflowExecutionConfig,
+    /// 工具超时默认：仅对「调用可声明超时」白名单工具生效（白名单与区间见
+    /// `rig_ext::tools::spec` 的 call_timeout_range），运行期经
+    /// `spec::effective_timeout_secs` 参与「调用声明 > 用户默认 > 表默认」
+    /// 解析。前端 src/types/chat.ts 的 ToolTimeoutSettings 手工同步。
+    #[serde(default)]
+    pub tool_timeouts: ToolTimeoutSettings,
     /// 外观主题偏好（system / light / dark）。应用级偏好，随设置统一存取；
     /// 前端 `lib/theme.ts` 据此切换根节点 `.dark` 类。
     #[serde(default = "default_theme_preference")]
     pub theme: String,
+}
+
+/// 白名单工具的用户配置默认超时（秒）。未配置（None）= 用策略表默认；
+/// 越界值在归一化时视同未配置（与库条目容量的 `normalize_capacity` 同
+/// 语义——宁可回退默认也不静默夹紧用户的显式输入）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolTimeoutSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate_image_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_image_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetch_image_secs: Option<u32>,
+}
+
+impl ToolTimeoutSettings {
+    /// 越界键剥离：各键对照 spec.rs 的声明区间常量。
+    fn normalized(self) -> Self {
+        fn within(value: Option<u32>, range: (u64, u64)) -> Option<u32> {
+            value.filter(|secs| u64::from(*secs) >= range.0 && u64::from(*secs) <= range.1)
+        }
+        use crate::agent::rig_ext::tools::spec::{
+            FETCH_IMAGE_CALL_TIMEOUT_RANGE, IMAGE_TOOL_CALL_TIMEOUT_RANGE,
+        };
+        Self {
+            generate_image_secs: within(self.generate_image_secs, IMAGE_TOOL_CALL_TIMEOUT_RANGE),
+            edit_image_secs: within(self.edit_image_secs, IMAGE_TOOL_CALL_TIMEOUT_RANGE),
+            fetch_image_secs: within(self.fetch_image_secs, FETCH_IMAGE_CALL_TIMEOUT_RANGE),
+        }
+    }
 }
 
 fn default_theme_preference() -> String {
@@ -297,6 +334,7 @@ impl Default for AhaSettingsV2 {
             review: SshReviewConfig::default(),
             model_library: Vec::new(),
             workflow: WorkflowExecutionConfig::default(),
+            tool_timeouts: ToolTimeoutSettings::default(),
             theme: default_theme_preference(),
         }
     }
@@ -456,6 +494,7 @@ impl AhaSettingsV2 {
         };
         self.chat.verifier_model_configs = Vec::new();
         self.model_library = normalized_library_entries(&self.model_library);
+        self.tool_timeouts = std::mem::take(&mut self.tool_timeouts).normalized();
         self.theme = normalize_theme_preference(&self.theme);
     }
 
@@ -478,8 +517,9 @@ impl AhaSettingsV2 {
             prompt
         };
         stored.chat.verifier_model_configs = Vec::new();
-        stored.model_library = normalized_library_entries(&self.model_library);
-        stored.theme = normalize_theme_preference(&self.theme);
+        stored.model_library = normalized_library_entries(&stored.model_library);
+        stored.tool_timeouts = std::mem::take(&mut stored.tool_timeouts).normalized();
+        stored.theme = normalize_theme_preference(&stored.theme);
         stored
     }
 }
@@ -516,8 +556,13 @@ impl DispatcherDb {
                 params![&json],
             )
             .context("save dispatcher settings")?;
-        // 直接返回落盘的规范化结果，保证返回值与 DB 状态一致。
-        Ok(stored)
+        // 返回读取口径的结果（库引用回填凭据与容量），与 get_settings_v2 对称：
+        // 前端保存成功后直接以返回值回写本地状态，若返回落库剥离形态（引用
+        // 槽位凭据为空），用途页会把生效绑定误判为「条目已停用或不在模型库
+        // 中」（getPurposeBinding 要求 url 非空）。
+        let mut resolved = stored;
+        resolved.resolve_library_references();
+        Ok(resolved)
     }
 }
 
@@ -525,13 +570,12 @@ impl DispatcherDb {
 mod tests {
     use super::*;
 
-    fn test_db() -> DispatcherDb {
-        let path = std::env::temp_dir().join(format!(
-            "aha-settings-{}-{}.sqlite3",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        DispatcherDb::new(path).unwrap()
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-settings");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).unwrap(),
+            dir,
+        )
     }
 
     /// 落库形态（stored-form JSON）：断言「库引用槽位剥离凭据」等落库约定
@@ -578,8 +622,38 @@ mod tests {
     }
 
     #[test]
+    fn save_returns_resolved_form_for_library_references() {
+        // 前端 saveNow 成功后直接以保存返回值回写本地状态，返回值必须是
+        // 读取口径（库引用回填凭据）：返回落库剥离形态会让用途页把生效绑定
+        // 误判为「条目已停用或不在模型库中」（getPurposeBinding 要求 url 非空）。
+        let (db, _dir) = test_db();
+        let mut settings = AhaSettingsV2 {
+            model_library: vec![library_entry("e1", true)],
+            ..Default::default()
+        };
+        settings.shared.image_model_configs = vec![DispatcherModelConfig {
+            library_id: "e1".to_string(),
+            active: true,
+            ..Default::default()
+        }];
+        let saved = db.save_settings_v2(&settings).unwrap();
+        let slot = &saved.shared.image_model_configs[0];
+        assert_eq!(slot.library_id, "e1");
+        assert_eq!(slot.url, "https://api.example.com/v1");
+        assert_eq!(slot.api_key, "sk-lib");
+        assert_eq!(slot.model, "lib-model");
+
+        // 返回口径与读取口径逐字段一致（写后读回不漂移）。
+        let loaded = db.get_settings_v2().unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved).unwrap(),
+            serde_json::to_value(&loaded).unwrap()
+        );
+    }
+
+    #[test]
     fn reference_entries_strip_credentials_on_store_and_resolve_on_load() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let mut settings = AhaSettingsV2 {
             model_library: vec![library_entry("e1", true)],
             ..Default::default()
@@ -617,7 +691,7 @@ mod tests {
 
     #[test]
     fn reference_to_disabled_entry_resolves_empty() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let mut settings = AhaSettingsV2 {
             model_library: vec![library_entry("e1", false)],
             ..Default::default()
@@ -641,7 +715,7 @@ mod tests {
 
     #[test]
     fn capacity_fields_strip_on_store_and_backfill_on_load() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let mut entry = library_entry("e1", true);
         entry.max_tokens = Some(65_536);
         entry.context_window = Some(1_000_000);
@@ -675,7 +749,7 @@ mod tests {
 
     #[test]
     fn out_of_range_entry_capacity_is_normalized_to_unset() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let mut entry = library_entry("e1", true);
         entry.max_tokens = Some(10); // 低于下限 1024
         entry.context_window = Some(200_000_000); // 高于上限 100M
@@ -690,9 +764,31 @@ mod tests {
         assert_eq!(loaded.model_library[0].context_window, None);
     }
 
+    /// 工具超时默认的越界键在保存/读取两侧都被剥离（视同未配置，回退
+    /// 策略表默认），合法键原样保留；写后读回不漂移。
+    #[test]
+    fn tool_timeouts_out_of_range_keys_are_stripped_on_roundtrip() {
+        let (db, _dir) = test_db();
+        let settings = AhaSettingsV2 {
+            tool_timeouts: ToolTimeoutSettings {
+                generate_image_secs: Some(5), // 低于下限 30
+                edit_image_secs: Some(180),   // 合法
+                fetch_image_secs: Some(999),  // 高于上限 300
+            },
+            ..Default::default()
+        };
+        let saved = db.save_settings_v2(&settings).unwrap();
+        assert_eq!(saved.tool_timeouts.generate_image_secs, None);
+        assert_eq!(saved.tool_timeouts.edit_image_secs, Some(180));
+        assert_eq!(saved.tool_timeouts.fetch_image_secs, None);
+
+        let loaded = db.get_settings_v2().unwrap();
+        assert_eq!(loaded.tool_timeouts, saved.tool_timeouts);
+    }
+
     #[test]
     fn verifier_slot_strips_on_store_and_resolves_on_load() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let mut settings = AhaSettingsV2 {
             model_library: vec![library_entry("e1", true)],
             ..Default::default()
@@ -718,7 +814,7 @@ mod tests {
     #[test]
     fn chat_context_verifier_slot_stays_empty_after_roundtrip() {
         // chat 上下文无验收槽位存列：保存时显式清空，防止写后读回漂移。
-        let db = test_db();
+        let (db, _dir) = test_db();
         let mut settings = AhaSettingsV2::default();
         settings.chat.verifier_model_configs = vec![DispatcherModelConfig {
             url: "http://u".into(),

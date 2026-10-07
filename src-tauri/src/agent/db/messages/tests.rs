@@ -2,12 +2,12 @@ use rusqlite::params;
 
 use super::DispatcherDb;
 
-fn test_db() -> DispatcherDb {
-    let path = std::env::temp_dir().join(format!(
-        "jkcodingagent-messages-{}.sqlite3",
-        uuid::Uuid::new_v4()
-    ));
-    DispatcherDb::new(path).expect("create test dispatcher db")
+fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+    let dir = crate::test_util::TempDirGuard::new("aha-messages");
+    (
+        DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db"),
+        dir,
+    )
 }
 
 fn add_text_message(db: &DispatcherDb, session_id: &str, role: &str, text: &str) {
@@ -18,7 +18,7 @@ fn add_text_message(db: &DispatcherDb, session_id: &str, role: &str, text: &str)
 
 #[test]
 fn count_visible_messages_is_session_scoped() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let session = db
         .create_chat_session("messages", Some("tech"))
         .expect("create chat session");
@@ -39,7 +39,7 @@ fn count_visible_messages_is_session_scoped() {
 
 #[test]
 fn chat_image_registration_is_session_scoped_and_rebindable() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let first = db
         .create_chat_session("first", Some("tech"))
         .expect("create first session");
@@ -95,7 +95,7 @@ fn chat_image_registration_is_session_scoped_and_rebindable() {
 
 #[test]
 fn chat_image_rows_cascade_with_message_deletion() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let session = db
         .create_chat_session("session", Some("tech"))
         .expect("create session");
@@ -195,7 +195,7 @@ fn image_reference_note_is_only_added_for_user_role() {
 
 #[test]
 fn truncate_messages_from_cleans_traces_and_workflow_plans() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let session = db
         .create_chat_session("truncate", Some("tech"))
         .expect("create session");
@@ -430,7 +430,7 @@ async fn load_llm_history_repairs_unanswered_tool_calls() {
         }
     }
 
-    let db = test_db();
+    let (db, _dir) = test_db();
     let session = db
         .create_chat_session("配对修复", None)
         .expect("create session");

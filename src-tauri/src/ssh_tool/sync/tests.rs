@@ -73,23 +73,18 @@ mod unix {
         }))
         .unwrap()
     }
-    struct Temp(PathBuf);
+    /// (路径, 守卫)：`.0` 保持路径语义，`.1` Drop 时整目录回收。
+    struct Temp(PathBuf, #[allow(dead_code)] crate::test_util::TempDirGuard);
     impl Temp {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("sync-test-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
+            let guard = crate::test_util::TempDirGuard::new("sync-test");
+            Self(guard.path().to_path_buf(), guard)
         }
         fn script(&self, text: &str) -> PathBuf {
             let path = self.0.join("fake-rsync");
             std::fs::write(&path, format!("#!/bin/sh\n{text}")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
             path
-        }
-    }
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
     fn transport(server: &SshServerConfig, executable: PathBuf) -> Transport {

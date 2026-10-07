@@ -299,11 +299,9 @@ mod tests {
 
     #[test]
     fn upsert_recomputes_total_from_prompt_and_completion() {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-token-usage-{}.sqlite3",
-            uuid::Uuid::new_v4()
-        ));
-        let db = DispatcherDb::new(path).expect("create test dispatcher db");
+        let dir = crate::test_util::TempDirGuard::new("aha-token-usage");
+        let db =
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db");
         let usage = LlmUsage {
             prompt_tokens: 100,
             completion_tokens: 40,

@@ -24,6 +24,7 @@ fn test_deps(temp_dir: &std::path::Path) -> RigToolDeps {
             model: String::new(),
             edit_model: String::new(),
         },
+        tool_timeouts: Default::default(),
         review: crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
     };
     deps.review.executor_task = None;
@@ -51,9 +52,8 @@ fn config(allowed_tools: Vec<&str>) -> crate::agent::sub_agent::config::SubAgent
 
 #[test]
 fn surface_offers_progress_tool_and_rejects_nested_sub_agents() {
-    let temp_dir = std::env::temp_dir().join(format!("rig-sub-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
-    let deps = test_deps(&temp_dir);
+    let temp_dir = crate::test_util::TempDirGuard::new("rig-sub");
+    let deps = test_deps(temp_dir.path());
     let parent_spec = PurposeModelSpec {
         api_key: "test".to_string(),
         api_base: "http://127.0.0.1:1/v1".to_string(),
@@ -115,8 +115,6 @@ fn surface_offers_progress_tool_and_rejects_nested_sub_agents() {
     .err()
     .expect("编排器工具对子智能体不可用");
     assert!(error.contains("不可用的工具"), "{error}");
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -152,9 +150,8 @@ async fn child_tools_cross_decision_rounds_without_writing_parent_messages() {
         test_utils::{MockCompletionModel, MockStreamEvent},
         tool::ToolOutput,
     };
-    let temp = std::env::temp_dir().join(format!("child-async-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&temp).unwrap();
-    let mut deps = test_deps(&temp);
+    let temp = crate::test_util::TempDirGuard::new("rig-child-async");
+    let mut deps = test_deps(temp.path());
     let session = deps.db.create_chat_session("child async", None).unwrap();
     deps.workspace_id = session.id.clone();
     let parent = deps

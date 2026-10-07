@@ -187,7 +187,6 @@ mod tests {
     use parking_lot::Mutex as ParkingMutex;
     use serde_json::{json, Value};
     use std::sync::Arc;
-    use uuid::Uuid;
 
     /// 夹具：临时目录 + 真实库 + 只构造不执行的最小工具依赖。
     fn test_deps(dir: &std::path::Path) -> RigToolDeps {
@@ -213,6 +212,7 @@ mod tests {
                 model: String::new(),
                 edit_model: String::new(),
             },
+            tool_timeouts: Default::default(),
             review: RigReviewContext::unconfigured(),
         }
     }
@@ -305,9 +305,8 @@ mod tests {
     /// 相同（scope id 是调度器级的），且各自登记成功、结算成功。
     #[tokio::test]
     async fn leaves_through_one_host_share_the_scheduler_scope() {
-        let dir = std::env::temp_dir().join(format!("rig-leaf-host-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let deps = test_deps(&dir);
+        let dir = crate::test_util::TempDirGuard::new("rig-leaf-host");
+        let deps = test_deps(dir.path());
         let parent = parent_run(&deps);
         let plane = DataPlane::new(vec![read_file_tool()]).with_runtime(deps.clone());
         let tool = plane.get("read_file").expect("tool registered").clone();
@@ -376,9 +375,8 @@ mod tests {
     /// `run_tool_program` 卡片的 `toolRuns`（不生成顶层卡片）。
     #[tokio::test]
     async fn program_leaves_publish_tool_run_updates_on_the_real_channel() {
-        let dir = std::env::temp_dir().join(format!("rig-leaf-events-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let deps = test_deps(&dir);
+        let dir = crate::test_util::TempDirGuard::new("rig-leaf-events");
+        let deps = test_deps(dir.path());
         let parent = parent_run(&deps);
         let (events, captured) = capture_runs();
         let plane = DataPlane::new(vec![read_file_tool()])

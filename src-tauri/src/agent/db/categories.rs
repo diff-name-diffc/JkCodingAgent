@@ -473,17 +473,17 @@ fn map_chat_category_agent_config(
 mod tests {
     use super::*;
 
-    fn test_db() -> DispatcherDb {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-category-config-{}.sqlite3",
-            Uuid::new_v4()
-        ));
-        DispatcherDb::new(path).expect("create test dispatcher db")
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-category-config");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db"),
+            dir,
+        )
     }
 
     #[test]
     fn init_backfills_default_category_configs() {
-        let db = test_db();
+        let (db, _dir) = test_db();
 
         let categories = db.list_chat_categories().expect("list categories");
         let configs = db
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn listing_configs_repairs_missing_rows() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         db.conn()
             .expect("db conn")
             .execute(
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn corrupt_config_json_degrades_on_read_and_self_heals_on_save() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         db.conn()
             .expect("db conn")
             .execute(
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn deleting_missing_category_reports_error() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let error = db
             .delete_chat_category("no-such-category")
             .expect_err("deleting a missing category must fail");
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn deleting_existing_category_succeeds() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let category = db
             .create_chat_category("待删除", "Folder", "#222222", None, None)
             .expect("create category");
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn creating_category_creates_agent_config() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let category = db
             .create_chat_category("测试", "Folder", "#111111", None, None)
             .expect("create category");
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn creating_category_can_override_agent_config() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let category = db
             .create_chat_category(
                 "自定义",
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn session_resolves_its_category_agent_config() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let configs = db
             .save_chat_category_agent_configs(&[ChatCategoryAgentConfig {
                 category_id: "tech".to_string(),

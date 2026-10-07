@@ -79,13 +79,15 @@ struct Fixture {
     db: DispatcherDb,
     workspace_id: String,
     temp_dir: std::path::PathBuf,
+    // 守卫放最后：字段按声明序 drop，db 先关闭再整目录回收。
+    _dir: crate::test_util::TempDirGuard,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let temp_dir = std::env::temp_dir().join(format!("rig-loop-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
-        let db = DispatcherDb::new(temp_dir.join("jkbot.sqlite3")).expect("open temp db");
+        let dir = crate::test_util::TempDirGuard::new("rig-loop");
+        let temp_dir = dir.path().to_path_buf();
+        let db = DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("open temp db");
         let session = db
             .create_chat_session("循环测试", None)
             .expect("create chat session");
@@ -93,6 +95,7 @@ impl Fixture {
             db,
             workspace_id: session.id,
             temp_dir,
+            _dir: dir,
         }
     }
 

@@ -205,12 +205,12 @@ mod tests {
     use crate::agent::db::NewToolRun;
     use uuid::Uuid;
 
-    fn test_db() -> DispatcherDb {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-tool-artifacts-{}.sqlite3",
-            Uuid::new_v4()
-        ));
-        DispatcherDb::new(path).expect("create test dispatcher db")
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-tool-artifacts");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db"),
+            dir,
+        )
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn artifact_round_trips_tool_run_ownership() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let run = db
             .create_tool_run(NewToolRun {
                 workspace_id: "ws".to_string(),

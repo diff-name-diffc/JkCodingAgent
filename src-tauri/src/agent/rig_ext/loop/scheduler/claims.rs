@@ -136,21 +136,26 @@ mod tests {
     use rig::tool::ToolOutput;
 
     /// 临时工作区：`root` 为工作区，`base` 为其父目录（越界路径的落点）。
+    /// 目录生命周期由守卫统一管理（Drop 整目录回收），不再手写 Drop。
     struct Workspace {
+        _guard: crate::test_util::TempDirGuard,
         base: std::path::PathBuf,
         root: std::path::PathBuf,
     }
 
     impl Workspace {
         fn new() -> Self {
-            let base = std::env::temp_dir().join(format!("rig-claims-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&base).expect("create temp root");
-            let base = base.canonicalize().expect("canonicalize temp root");
+            let guard = crate::test_util::TempDirGuard::new("rig-claims");
+            let base = guard.path().canonicalize().expect("canonicalize temp root");
             let root = base.join("ws");
             std::fs::create_dir_all(&root).expect("create workspace");
             std::fs::write(root.join("a.txt"), "inner").expect("write inner file");
             std::fs::write(base.join("outside.txt"), "outer").expect("write outer file");
-            Self { base, root }
+            Self {
+                _guard: guard,
+                base,
+                root,
+            }
         }
 
         fn inner(&self) -> std::path::PathBuf {
@@ -159,12 +164,6 @@ mod tests {
 
         fn outside(&self) -> std::path::PathBuf {
             self.base.join("outside.txt")
-        }
-    }
-
-    impl Drop for Workspace {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.base);
         }
     }
 

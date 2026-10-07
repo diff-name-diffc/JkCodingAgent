@@ -121,6 +121,9 @@ async fn execute_managed(
                 // index 恒为 0）：这里给同一口径的值，避免两处读起来不一致。
                 sequence: sequence * 32,
             },
+            // 叶子数据面无白名单工具，但保持从 deps 继承（若未来数据面扩容，
+            // 口径自动跟随父执行环境）。
+            tool_timeouts: deps.tool_timeouts.clone(),
         },
     );
     let call = ToolCall::from_wire(
@@ -151,7 +154,6 @@ mod tests {
     use crate::agent::rig_ext::{review::RigReviewContext, tools::deps::ImageToolConfig};
     use serde_json::json;
     use tokio::sync::watch;
-    use uuid::Uuid;
 
     /// 夹具：临时目录 + 真实库 + 只构造不执行的最小工具依赖。
     fn test_deps(dir: &std::path::Path) -> RigToolDeps {
@@ -177,6 +179,7 @@ mod tests {
                 model: String::new(),
                 edit_model: String::new(),
             },
+            tool_timeouts: Default::default(),
             review: RigReviewContext::unconfigured(),
         }
     }
@@ -225,9 +228,8 @@ mod tests {
     /// `(parent_run_id, sequence)` 唯一索引，登记失败被标 fatal 中止整个程序。
     #[tokio::test]
     async fn sibling_leaves_register_distinct_sequences_and_settle() {
-        let dir = std::env::temp_dir().join(format!("rig-program-managed-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let deps = test_deps(&dir);
+        let dir = crate::test_util::TempDirGuard::new("rig-program-managed");
+        let deps = test_deps(dir.path());
         let parent = parent_run(&deps);
         let plane = DataPlane::new(vec![read_file_tool()]).with_runtime(deps.clone());
         let tool = plane.get("read_file").expect("tool registered").clone();

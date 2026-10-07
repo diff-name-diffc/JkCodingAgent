@@ -14,7 +14,9 @@ mod analyze;
 mod browser;
 mod fetch;
 mod generate;
-mod image_api;
+/// 图片生成/编辑的 DashScope 直连 HTTP 层。对 `agent::commands`（设置中心
+/// 连通性测试）开放，共用端点构建与超时，避免测试与运行时口径漂移。
+pub(crate) mod image_api;
 
 use rig::completion::{CompletionModel, Message};
 use rig::message::{AssistantContent, Image, UserContent};
@@ -22,6 +24,7 @@ use rig::tool::PortableDynamicTool;
 
 use super::super::model::{build_completion_request, completions_model, PurposeModelSpec};
 use super::RigToolDeps;
+use crate::agent::common::cancellation_requested;
 use crate::agent::rig_ext::message::{
     data_url_to_image as data_url_to_image_with_allowlist, ImageMimeAllowlist,
 };
@@ -35,12 +38,6 @@ pub(crate) fn media_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     ];
     tools.extend(browser::browser_tools(deps));
     tools
-}
-
-/// 协作式取消检查（语义同旧 `agent::common::cancellation_requested`）：
-/// 已置位，或发送端已 drop（has_changed 报错 = 通道关闭，按取消处理）。
-fn cancellation_requested(cancel_rx: &tokio::sync::watch::Receiver<bool>) -> bool {
-    *cancel_rx.borrow() || cancel_rx.has_changed().is_err()
 }
 
 /// `data:image/...;base64,...` → rig `Image`：委托 `rig_ext::message` 的唯一

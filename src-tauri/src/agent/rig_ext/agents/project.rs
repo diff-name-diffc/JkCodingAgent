@@ -36,7 +36,7 @@ use crate::agent::rig_ext::r#loop::{
 };
 use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
-use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps};
+use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolTimeoutDefaults};
 use crate::agent::rig_ext::tools::fs::fs_tools;
 use crate::agent::rig_ext::tools::program::{data_plane_sdk, program_tool};
 use crate::agent::rig_ext::tools::ORCHESTRATOR_RUNTIME_TOOL_NAMES;
@@ -62,6 +62,9 @@ pub struct RigOrchestratorAgent {
     context_debug: bool,
     review_config: Option<crate::agent::db::settings::SshReviewConfig>,
     image_credentials: crate::agent::db::settings::ImageModelCredentials,
+    /// 用户配置的工具超时默认（AhaSettingsV2.toolTimeouts 解析产物）：
+    /// run 期注入执行策略 deadline 与工具 HTTP 预算（同一解析，防口径漂移）。
+    tool_timeouts: ToolTimeoutDefaults,
 }
 
 impl RigOrchestratorAgent {
@@ -79,6 +82,7 @@ impl RigOrchestratorAgent {
             context_debug,
             review_config: None,
             image_credentials: Default::default(),
+            tool_timeouts: Default::default(),
         }
     }
 
@@ -99,6 +103,7 @@ impl RigOrchestratorAgent {
             .is_configured()
             .then(|| settings.review.clone());
         self.image_credentials = settings.shared.image_model_credentials();
+        self.tool_timeouts = ToolTimeoutDefaults::from(&settings.tool_timeouts);
     }
 
     pub fn set_context_debug(&mut self, value: bool) {
@@ -269,6 +274,7 @@ impl RigOrchestratorAgent {
                 review: self.review_context(db, workspace_id).await,
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
+                tool_timeouts: self.tool_timeouts.clone(),
             },
         );
 
@@ -365,6 +371,8 @@ impl RigOrchestratorAgent {
                 model: self.image_credentials.model.clone(),
                 edit_model: self.image_credentials.edit_model.clone(),
             },
+            // 与 plain_chat 的 catalog_deps 同理：清单面与执行面同源。
+            tool_timeouts: self.tool_timeouts.clone(),
             review: RigReviewContext::unconfigured(),
         }
     }
@@ -397,6 +405,7 @@ impl RigOrchestratorAgent {
                 model: self.image_credentials.model.clone(),
                 edit_model: self.image_credentials.edit_model.clone(),
             },
+            tool_timeouts: self.tool_timeouts.clone(),
             review: RigReviewContext {
                 config: self.review_config.clone(),
                 session_title: String::new(),
@@ -755,9 +764,9 @@ mod tests {
 
     #[test]
     fn unregistered_or_relative_project_paths_are_rejected() {
-        let dir = std::env::temp_dir().join(format!("rig-orch-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let db = crate::agent::db::DispatcherDb::new(dir.join("jkbot.sqlite3")).expect("temp db");
+        let dir = crate::test_util::TempDirGuard::new("rig-orch");
+        let db =
+            crate::agent::db::DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("temp db");
 
         // 相对路径：直接拒绝（不查库）。
         let relative = validate_project_workspace_sync(&db, "relative/project");
@@ -771,7 +780,5 @@ mod tests {
             .expect_err("空项目列表必须拒绝")
             .to_string()
             .contains("受管项目列表为空"));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

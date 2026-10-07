@@ -148,7 +148,7 @@ export function PromptInput({
                 key={image.id}
                 className="group relative h-16 w-16 overflow-hidden rounded-md border border-border"
               >
-                <div className="h-full w-full [&_.markdown-image-thumbnail]:h-16 [&_.markdown-image-thumbnail]:w-16 [&_.markdown-image-thumbnail]:object-cover">
+                <div className="chat-attachment-preview h-full w-full">
                   <MarkdownImage
                     src={`chat-image://${image.imageId}`}
                     alt={image.alt || "附件图片"}

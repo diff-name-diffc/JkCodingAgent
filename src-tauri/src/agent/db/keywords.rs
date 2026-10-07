@@ -326,14 +326,13 @@ fn escape_like(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
-    fn test_db() -> DispatcherDb {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-session-keywords-{}.sqlite3",
-            Uuid::new_v4()
-        ));
-        DispatcherDb::new(path).expect("create test dispatcher db")
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-session-keywords");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db"),
+            dir,
+        )
     }
 
     fn add_keyword(db: &DispatcherDb, session_id: &str, keyword: &str, weight: f64) {
@@ -352,7 +351,7 @@ mod tests {
 
     #[test]
     fn project_search_matches_titles_and_keywords_without_crossing_projects() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let rust_session = db
             .create_project_session("project-a", "实现桌面应用")
             .expect("create rust session");
@@ -394,7 +393,7 @@ mod tests {
 
     #[test]
     fn session_pages_include_weight_sorted_keywords_and_search_escapes_wildcards() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let tagged_session = db
             .create_chat_session("100% coverage", Some("tech"))
             .expect("create tagged chat session");
@@ -422,7 +421,7 @@ mod tests {
 
     #[test]
     fn project_search_requires_project_scope() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let error = db
             .search_sessions("rust", DispatcherSessionKind::Project, None, 20)
             .expect_err("missing project scope must fail");
@@ -433,7 +432,7 @@ mod tests {
 
     #[test]
     fn adding_existing_keyword_aggregates_weight_and_keeps_created_at() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let session = db
             .create_chat_session("权重聚合", Some("tech"))
             .expect("create chat session");
@@ -458,7 +457,7 @@ mod tests {
 
     #[test]
     fn keyword_actions_skip_missing_session_without_writing() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let applied = db
             .apply_keyword_actions(
                 "no-such-session",
@@ -482,7 +481,7 @@ mod tests {
 
     #[test]
     fn merge_into_existing_keyword_aggregates_weight_and_keeps_created_at() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let session = db
             .create_chat_session("合并聚合", Some("tech"))
             .expect("create chat session");

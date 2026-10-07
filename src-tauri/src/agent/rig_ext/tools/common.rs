@@ -79,12 +79,25 @@ pub(crate) fn string_list_arg(
     }
 }
 
+/// 整数值提取：兼容整值浮点。JSON Schema 2020-12 把零小数浮点（`40.0`）
+/// 视为合法 integer，schema 校验放行后 `serde_json` 的 `as_u64` 却返回
+/// None——模型输出浮点形态时参数会被静默丢弃（回退默认值且无诊断）。
+/// 非整值（`40.5`）/ 负数 / 字符串仍为 None，交由调用方按「未提供」或
+/// 校验错误处理。
+pub(crate) fn integer_u64(value: &Value) -> Option<u64> {
+    if let Some(int) = value.as_u64() {
+        return Some(int);
+    }
+    let float = value.as_f64()?;
+    (float.fract() == 0.0 && float >= 0.0 && float <= u64::MAX as f64).then_some(float as u64)
+}
+
 pub(crate) fn usize_arg(args: &Value, key: &str) -> Option<usize> {
-    args.get(key)?.as_u64().map(|value| value as usize)
+    integer_u64(args.get(key)?).map(|value| value as usize)
 }
 
 pub(crate) fn u64_arg(args: &Value, key: &str) -> Option<u64> {
-    args.get(key)?.as_u64()
+    integer_u64(args.get(key)?)
 }
 
 pub(crate) fn boolish_arg(args: &Value, key: &str) -> Option<bool> {
@@ -125,6 +138,42 @@ pub(crate) fn with_compression_parameters(
         json!({
             "type": "string",
             "description": "当 compress=true 时，用一句话具体描述要从结果中确认什么；摘要只返回与该意图直接相关的重点，不会复述全文。意图越具体，摘要越精准。例如：'确认部署是否成功及失败时的报错行'。"
+        }),
+    );
+    schema
+}
+
+/// 为工具 schema 注入 `timeout_secs` 参数（调用可声明超时的白名单工具用）。
+///
+/// 与 `with_compression_parameters` 同一模式：**刻意不写 `default` 键**——
+/// 「未声明」必须与「声明了默认值」可区分，否则 apply_schema_defaults 会把
+/// 默认值注入参数，用户在设置中心配置的默认超时就永远没有生效机会。
+/// `range`（minimum/maximum）与策略层夹紧（spec.rs 的 `effective_timeout_secs`）
+/// 共用同一常量，两处不允许各写字面量。`default_secs` 仅用于描述文案，
+/// 调用方应传**生效默认**（用户配置 ?? 表默认，即 `deps.tool_timeouts`
+/// 回填后的值），让模型看到的预算与实际 deadline 一致。
+pub(crate) fn with_call_timeout_parameters(
+    mut schema: Value,
+    range: (u64, u64),
+    default_secs: u64,
+    guidance: &str,
+) -> Value {
+    // schema 均为调用点就地构造的带 properties 字面量：缺失属装配错误，
+    // 直接 panic 暴露（静默返回会让工具无声失去超时声明能力）。
+    let properties = schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("with_call_timeout_parameters：schema 缺少 properties 对象");
+    let (min, max) = range;
+    properties.insert(
+        "timeout_secs".to_string(),
+        json!({
+            "type": "integer",
+            "description": format!(
+                "本次调用允许的总时长（秒），默认 {default_secs}，可声明范围 {min}–{max}。{guidance}"
+            ),
+            "minimum": min,
+            "maximum": max
         }),
     );
     schema
@@ -335,7 +384,9 @@ pub(crate) fn rel(path: &Path, root: &Path) -> String {
 /// 整数尺寸参数校验：未提供返回 None；提供但超出 256..=4096 返回「错误：」报错，
 /// 避免 u64→u32 静默截断或把超大尺寸原样传给外部模型。
 pub(crate) fn bounded_dimension_arg(args: &Value, key: &str) -> Result<Option<u32>, String> {
-    let Some(value) = args.get(key).and_then(Value::as_u64) else {
+    // 整值浮点（1024.0）与整数同权（见 integer_u64）；越界值显式报错而非
+    // 静默截断。
+    let Some(value) = args.get(key).and_then(integer_u64) else {
         return Ok(None);
     };
     if !(256..=4096).contains(&value) {
@@ -346,7 +397,10 @@ pub(crate) fn bounded_dimension_arg(args: &Value, key: &str) -> Result<Option<u3
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_dimension_arg, is_protected_agent_path, lexical_normalize};
+    use super::{
+        bounded_dimension_arg, integer_u64, is_protected_agent_path, lexical_normalize, u64_arg,
+        usize_arg,
+    };
     use serde_json::json;
     use std::path::Path;
 
@@ -418,5 +472,52 @@ mod tests {
         assert!(bounded_dimension_arg(&json!({"width": 1u64 << 40}), "width").is_err());
         assert!(bounded_dimension_arg(&json!({"width": 256}), "width").is_ok());
         assert!(bounded_dimension_arg(&json!({"width": 4096}), "width").is_ok());
+    }
+
+    /// timeout_secs 注入必须带 minimum/maximum（prepare_arguments 的 schema
+    /// 校验据此拒绝越界声明），且**不得带 default 键**——默认值注入会抹掉
+    /// 「未声明」语义，让用户配置的默认超时永远无法生效。
+    #[test]
+    fn with_call_timeout_parameters_declares_range_without_default() {
+        let schema = super::with_call_timeout_parameters(
+            json!({ "type": "object", "properties": { "prompt": { "type": "string" } } }),
+            (30, 300),
+            120,
+            "复杂生成可声明更长。",
+        );
+        let param = &schema["properties"]["timeout_secs"];
+        assert_eq!(param["type"], "integer");
+        assert_eq!(param["minimum"], 30);
+        assert_eq!(param["maximum"], 300);
+        assert!(
+            param.get("default").is_none(),
+            "timeout_secs 不得携带 default 键：{param}"
+        );
+        assert!(param["description"].as_str().unwrap().contains("120"));
+        // 原有参数不受影响。
+        assert_eq!(schema["properties"]["prompt"]["type"], "string");
+    }
+
+    /// 整值浮点与整数同权：JSON Schema 2020-12 允许 `40.0` 通过 integer
+    /// 校验，提取层必须同样接受，否则模型声明被静默丢弃（如 timeout_secs
+    /// 声明 40.0 实际按默认 120 执行）。非整值/负数/字符串仍为 None。
+    #[test]
+    fn integer_extraction_accepts_zero_fraction_floats() {
+        assert_eq!(integer_u64(&json!(40)), Some(40));
+        assert_eq!(integer_u64(&json!(40.0)), Some(40));
+        assert_eq!(integer_u64(&json!(0.0)), Some(0));
+        assert_eq!(integer_u64(&json!(40.5)), None);
+        assert_eq!(integer_u64(&json!(-1.0)), None);
+        assert_eq!(integer_u64(&json!("40")), None);
+        assert_eq!(integer_u64(&json!(null)), None);
+        // 参数提取器逐一同权。
+        assert_eq!(
+            u64_arg(&json!({ "timeout_secs": 40.0 }), "timeout_secs"),
+            Some(40)
+        );
+        assert_eq!(usize_arg(&json!({ "limit": 7.0 }), "limit"), Some(7));
+        // 尺寸参数：整值浮点接受，越界仍显式报错。
+        assert!(bounded_dimension_arg(&json!({ "width": 1024.0 }), "width").is_ok());
+        assert!(bounded_dimension_arg(&json!({ "width": 100.0 }), "width").is_err());
     }
 }

@@ -450,23 +450,14 @@ mod tests {
 
     use std::path::PathBuf;
 
-    fn unique_temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jk-prompt-test-{tag}-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn cleanup(dir: &PathBuf) {
-        let _ = std::fs::remove_dir_all(dir);
+    fn unique_temp_dir(tag: &str) -> (PathBuf, crate::test_util::TempDirGuard) {
+        let guard = crate::test_util::TempDirGuard::new(&format!("jk-prompt-{tag}"));
+        (guard.path().to_path_buf(), guard)
     }
 
     #[test]
     fn loads_user_skills_memory_sections() {
-        let root = unique_temp_dir("basic");
+        let (root, _guard_root) = unique_temp_dir("basic");
         std::fs::write(root.join("USER.md"), "用户偏好内容").unwrap();
         std::fs::create_dir_all(root.join("skills").join("alpha")).unwrap();
         std::fs::write(
@@ -484,23 +475,21 @@ mod tests {
         assert!(prompt.contains("技能内容"));
         assert!(prompt.contains("# 记忆"));
         assert!(prompt.contains("记忆内容"));
-        cleanup(&root);
     }
 
     #[test]
     fn skips_oversized_file_with_warning() {
-        let root = unique_temp_dir("oversized");
+        let (root, _guard_root) = unique_temp_dir("oversized");
         let big = "x".repeat((MAX_PROMPT_FILE_BYTES + 1) as usize);
         std::fs::write(root.join("USER.md"), big).unwrap();
 
         let prompt = load_prompt_files(&root);
         assert!(prompt.is_empty(), "超大 USER.md 应被跳过");
-        cleanup(&root);
     }
 
     #[test]
     fn skips_invalid_utf8_file_without_failing() {
-        let root = unique_temp_dir("bad-utf8");
+        let (root, _guard_root) = unique_temp_dir("bad-utf8");
         std::fs::write(root.join("USER.md"), [0xffu8, 0xfe, 0x00, 0x80]).unwrap();
         std::fs::create_dir_all(root.join("memory")).unwrap();
         std::fs::write(root.join("memory").join("MEMORY.md"), "记忆内容").unwrap();
@@ -508,14 +497,13 @@ mod tests {
         let prompt = load_prompt_files(&root);
         assert!(prompt.contains("# 记忆"), "单文件损坏不应阻断其余提示词");
         assert!(prompt.contains("记忆内容"));
-        cleanup(&root);
     }
 
     #[cfg(unix)]
     #[test]
     fn skips_symlink_escaping_root() {
-        let root = unique_temp_dir("symlink-root");
-        let outside = unique_temp_dir("symlink-outside");
+        let (root, _guard_root) = unique_temp_dir("symlink-root");
+        let (outside, _guard_outside) = unique_temp_dir("symlink-outside");
         let secret = outside.join("SECRET.md");
         std::fs::write(&secret, "工作区外的敏感内容").unwrap();
 
@@ -529,23 +517,19 @@ mod tests {
             !prompt.contains("工作区外的敏感内容"),
             "符号链接越界文件不得进入提示词"
         );
-        cleanup(&root);
-        cleanup(&outside);
     }
 
     #[cfg(unix)]
     #[test]
     fn skips_user_md_symlink_escaping_root() {
-        let root = unique_temp_dir("symlink-user-root");
-        let outside = unique_temp_dir("symlink-user-outside");
+        let (root, _guard_root) = unique_temp_dir("symlink-user-root");
+        let (outside, _guard_outside) = unique_temp_dir("symlink-user-outside");
         let secret = outside.join("SECRET.md");
         std::fs::write(&secret, "外部用户档案").unwrap();
         std::os::unix::fs::symlink(&secret, root.join("USER.md")).unwrap();
 
         let prompt = load_prompt_files(&root);
         assert!(!prompt.contains("外部用户档案"));
-        cleanup(&root);
-        cleanup(&outside);
     }
 
     #[test]

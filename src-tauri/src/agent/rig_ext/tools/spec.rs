@@ -246,7 +246,10 @@ impl ToolSpec {
             // MCP 桥接层（tools/mcp.rs）在执行前带工具名与完整参数做
             // fail-closed 审查，broker 不再重复做通用 JSON 审查。
             review_self_managed: true,
-            execution: ToolExecutionPolicy::sequential(60),
+            // 策略层 deadline 经 effective_timeout_secs 重推导（MCP 工具不在
+            // 策略表内 → 兜底 DEFAULT_UNKNOWN_TIMEOUT_SECS）：此处必须引用
+            // 同一常量，两处字面量各自维护会无声漂移。
+            execution: ToolExecutionPolicy::sequential(DEFAULT_UNKNOWN_TIMEOUT_SECS),
             result_policy: ToolResultPolicy::new(true),
         }
     }
@@ -269,6 +272,22 @@ const SELF_REVIEWED_TOOLS: &[&str] = &["local_zsh", "ssh_exec", "sync_directory"
 
 /// 未注册/未知工具名的兜底统一超时（秒）。
 const DEFAULT_UNKNOWN_TIMEOUT_SECS: u64 = 60;
+
+// ── 调用可声明超时的白名单工具（generate_image / edit_image / fetch_image）──
+// 默认值与声明区间的单一出处：策略表行、schema 装饰器（common.rs 的
+// with_call_timeout_parameters）、设置中心默认值（db/settings.rs 的
+// ToolTimeoutSettings 归一化）与 effective_timeout_secs 全部引用本组常量，
+// 四处不允许出现字面量副本。
+
+/// 图片生成/编辑的默认统一超时（秒）。与 DashScope 多模态生成的真实耗时
+/// 对齐（复杂提示词 + prompt_extend 扩写常超 60s，旧值 60 会误杀合法请求）。
+pub(crate) const IMAGE_TOOL_TIMEOUT_SECS: u64 = 120;
+/// 图片生成/编辑每次调用可声明的超时区间（秒）。
+pub(crate) const IMAGE_TOOL_CALL_TIMEOUT_RANGE: (u64, u64) = (30, 300);
+/// 图片下载（fetch_image）的默认统一超时（秒）。
+pub(crate) const FETCH_IMAGE_TIMEOUT_SECS: u64 = 60;
+/// 图片下载每次调用可声明的超时区间（秒）。
+pub(crate) const FETCH_IMAGE_CALL_TIMEOUT_RANGE: (u64, u64) = (10, 300);
 
 /// 调度器资源声明类型（`TOOL_POLICY_TABLE` 每行一列）：声明工具在并行调度下
 /// 占用的宿主资源域。调度器的 claims 层据此构造 `Claim`，不再按工具名前缀
@@ -534,12 +553,15 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ClaimResource::Session,
     ),
     // ── 图像生成 ──
+    // 默认超时与调用可声明区间见 spec 顶部常量组（IMAGE_TOOL_*）：统一超时
+    // 工具，Agent 可在调用参数中声明 timeout_secs 延长预算（见
+    // call_timeout_range / effective_timeout_secs）。
     policy_row(
         "generate_image",
         ToolCategory::Image,
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
-        60,
+        IMAGE_TOOL_TIMEOUT_SECS,
         ToolPolicyOptions::SERIAL,
         ClaimResource::External,
     ),
@@ -548,7 +570,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolCategory::Image,
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
-        60,
+        IMAGE_TOOL_TIMEOUT_SECS,
         ToolPolicyOptions::SERIAL,
         ClaimResource::External,
     ),
@@ -575,7 +597,8 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
     // ── 图片下载 ──
     // fetch_image 按给定 URL 下载图片入库：网络侧只读，落盘走应用自管的
     // 聊天图片库；下载内容在工具内做魔数校验（仅 png/jpg/webp/gif 二进制，
-    // HTML/SVG/文本等非图片响应直接拒绝），无需 AI 审查。
+    // HTML/SVG/文本等非图片响应直接拒绝），无需 AI 审查。慢速图源可经调用
+    // 参数声明更长预算（FETCH_IMAGE_* 常量组）。
     policy_row(
         "fetch_image",
         ToolCategory::Image,
@@ -587,7 +610,7 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
             mutates_external_state: false,
         },
         ToolSafety::Safe,
-        60,
+        FETCH_IMAGE_TIMEOUT_SECS,
         ToolPolicyOptions::SERIAL,
         ClaimResource::External,
     ),
@@ -859,13 +882,57 @@ impl ToolProfile {
     }
 }
 
+/// 调用可声明超时的工具白名单：返回 (最小, 最大) 秒。仅**统一超时**工具可
+/// 登记（自管工具的预算在工具内部自管，策略层不夹紧单次值）；schema 侧的
+/// minimum/maximum（common.rs 的 `with_call_timeout_parameters`）与策略层
+/// 夹紧共用本区间，两处不允许各自写字面量。
+///
+/// 集中一处而非写进主策略表，模式同 `self_managed_settle_ceiling_secs`
+///（把少数工具的特例放在一起横向比较，不给主表加列）。
+/// 新增白名单工具须同步五处：本 match、`effective_timeout_secs` 的语义依赖、
+/// 工具 schema 注入、设置中心默认值（db/settings.rs 的 ToolTimeoutSettings）、
+/// 用户默认下传路由（tools/deps.rs 的 ToolTimeoutDefaults/for_tool——漏改
+/// 该处用户配置默认会静默失效，`deps` 模块测试守护路由完整性）与
+/// `call_timeout_tools_are_unified_and_defaulted` 守护测试。
+fn call_timeout_range(name: &str) -> Option<(u64, u64)> {
+    match name {
+        "generate_image" | "edit_image" => Some(IMAGE_TOOL_CALL_TIMEOUT_RANGE),
+        "fetch_image" => Some(FETCH_IMAGE_CALL_TIMEOUT_RANGE),
+        _ => None,
+    }
+}
+
+/// 白名单工具的有效超时（秒）：调用声明 > 用户配置默认 > 策略表默认，
+/// 结果夹紧到声明区间；白名单外/未登记工具恒为表值（含 0 = 不设统一超时
+/// 的语义保持不变）。
+///
+/// 策略层 deadline（`loop/app_policy.rs`）与工具内部 HTTP/下载预算**必须共用
+/// 本函数**：两处各自计算会出现「用户配了 300 却在 120 被 HTTP 层掐死」的
+/// 口径漂移。`declared` 来自经 schema 校验的调用参数（未声明为 None——
+/// schema 不设 default 键正是为了让用户配置默认有机会生效）。
+pub(crate) fn effective_timeout_secs(
+    name: &str,
+    declared: Option<u64>,
+    user_default: Option<u64>,
+) -> u64 {
+    let table_secs =
+        lookup_policy(name).map_or(DEFAULT_UNKNOWN_TIMEOUT_SECS, |row| row.timeout_secs);
+    match call_timeout_range(name) {
+        Some((min, max)) => declared
+            .or(user_default)
+            .unwrap_or(table_secs)
+            .clamp(min, max),
+        None => table_secs,
+    }
+}
+
 /// 自管超时工具的兜底上限（秒）：工具自身预算之外，策略层等待结算的最后防线。
 ///
 /// 集中一处而非写进主策略表，是为了把自管工具的「最坏合法预算」放在一起横向比较，
 /// 也避免给主表 50 余行都加参数。取值原则：**不得小于该工具的最坏合法预算**（宁可宽），
 /// 只在工具终止路径卡死时才会触发（到点行为见 `loop/app_policy.rs` 的 ceiling 分支）。
 ///
-/// 返回 0 表示未登记：新增自管工具若忘了在这里登记，`self_managed_tools_declare_ceiling`
+/// 返回 0 表示未登记：新增自管工具若忘了在这里登记，`self_managed_tools_declare_settle_ceiling`
 /// 测试会失败。
 fn self_managed_settle_ceiling_secs(name: &str) -> u64 {
     match name {
@@ -1224,5 +1291,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 调用可声明超时的白名单工具必须：在策略表内、走统一超时（自管工具
+    /// 不参与）、表默认落在声明区间内（否则 effective_timeout_secs 的夹紧
+    /// 会把表默认悄悄改掉，白名单形同虚设）。
+    #[test]
+    fn call_timeout_tools_are_unified_and_defaulted() {
+        for (name, (min, max)) in [
+            ("generate_image", super::IMAGE_TOOL_CALL_TIMEOUT_RANGE),
+            ("edit_image", super::IMAGE_TOOL_CALL_TIMEOUT_RANGE),
+            ("fetch_image", super::FETCH_IMAGE_CALL_TIMEOUT_RANGE),
+        ] {
+            let row = TOOL_POLICY_TABLE
+                .iter()
+                .find(|row| row.name == name)
+                .unwrap_or_else(|| panic!("{name}：白名单工具必须在策略表登记"));
+            assert!(
+                !row.self_managed_timeout,
+                "{name}：白名单仅限统一超时工具（自管工具预算在工具内自管）"
+            );
+            assert!(
+                row.timeout_secs >= min && row.timeout_secs <= max,
+                "{name}：表默认 {} 必须落在声明区间 [{min}, {max}] 内",
+                row.timeout_secs
+            );
+        }
+    }
+
+    /// 有效超时解析：声明优先于用户默认、用户默认优先于表默认、区间双向
+    /// 夹紧、白名单外工具恒为表值（声明/用户默认均被忽略）。
+    #[test]
+    fn effective_timeout_secs_resolution_order_and_clamping() {
+        use super::effective_timeout_secs;
+        // 声明 > 用户默认 > 表默认。
+        assert_eq!(
+            effective_timeout_secs("generate_image", Some(90), Some(200)),
+            90
+        );
+        assert_eq!(
+            effective_timeout_secs("generate_image", None, Some(200)),
+            200
+        );
+        assert_eq!(
+            effective_timeout_secs("generate_image", None, None),
+            super::IMAGE_TOOL_TIMEOUT_SECS
+        );
+        // 区间夹紧（声明与用户默认同样受限）。
+        assert_eq!(effective_timeout_secs("generate_image", Some(5), None), 30);
+        assert_eq!(
+            effective_timeout_secs("generate_image", Some(999), None),
+            300
+        );
+        assert_eq!(effective_timeout_secs("fetch_image", None, Some(1)), 10);
+        // 白名单外：恒为表值，声明/用户默认不生效。
+        assert_eq!(
+            effective_timeout_secs("read_file", Some(300), Some(300)),
+            30
+        );
+        assert_eq!(
+            effective_timeout_secs("ssh_exec", Some(300), Some(300)),
+            300
+        );
+        // 未登记名走 fail-closed 兜底值。
+        assert_eq!(effective_timeout_secs("no_such_tool", None, None), 60);
     }
 }

@@ -31,6 +31,17 @@ pub async fn wait_for_cancellation(cancel_rx: &mut watch::Receiver<bool>) {
     }
 }
 
+/// `wait_for_cancellation` 的可选形：`None`（无取消源）时永不完成。
+/// 策略层统一超时（loop/app_policy）与工具 HTTP 边界的 `select!` 分支
+/// （media/image_api、media/fetch）共用本实现——取消等待语义单一出处，
+/// 防「sender drop 处理」「置位检查」单侧漂移。
+pub async fn wait_for_optional_cancellation(cancel_rx: Option<watch::Receiver<bool>>) {
+    match cancel_rx {
+        Some(mut rx) => wait_for_cancellation(&mut rx).await,
+        None => std::future::pending().await,
+    }
+}
+
 // ─── Utility ─────────────────────────────────────────────────────────────────────
 
 pub fn emit(on_event: &Channel<AgentEvent>, event: AgentEvent) {

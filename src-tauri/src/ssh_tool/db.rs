@@ -245,14 +245,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn temp_root() -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "aha-ssh-db-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
+    fn temp_root() -> (PathBuf, crate::test_util::TempDirGuard) {
+        let guard = crate::test_util::TempDirGuard::new("aha-ssh-db");
+        (guard.path().to_path_buf(), guard)
     }
 
     fn server(id: &str, host: &str, username: &str) -> SshServerConfig {
@@ -297,7 +292,7 @@ mod tests {
 
     #[test]
     fn db_roundtrip_servers_host_keys_and_audit() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let db = crate::agent::db::DispatcherDb::new(root.join("jkbot.sqlite3")).unwrap();
         let ssh_db = SshDb::new(db.pool());
 
@@ -335,7 +330,7 @@ mod tests {
 
     #[test]
     fn save_servers_reports_removed_ids_and_cascades_attached_rows() {
-        let root = temp_root();
+        let (root, _guard) = temp_root();
         let db = crate::agent::db::DispatcherDb::new(root.join("jkbot.sqlite3")).unwrap();
         let ssh_db = SshDb::new(db.pool());
 

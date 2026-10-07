@@ -2,10 +2,14 @@ use super::*;
 
 const BOUNDED_TEST_STDOUT_BYTES: usize = 64 * 1024;
 
-/// 在临时目录中创建相对路径文件，返回目录（测试结束由调用方清理）。
-fn make_workspace(name: &str, files: &[&str]) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("jk-search-test-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
+/// 在守卫临时目录中创建相对路径文件，返回 (目录, 守卫)——用例结束 Drop
+/// 整目录回收，不再依赖调用方手工清理。
+fn make_workspace(
+    name: &str,
+    files: &[&str],
+) -> (std::path::PathBuf, crate::test_util::TempDirGuard) {
+    let guard = crate::test_util::TempDirGuard::new(&format!("aha-search-{name}"));
+    let dir = guard.path().to_path_buf();
     for file in files {
         let path = dir.join(file);
         if let Some(parent) = path.parent() {
@@ -13,12 +17,12 @@ fn make_workspace(name: &str, files: &[&str]) -> std::path::PathBuf {
         }
         fs::write(path, "x").unwrap();
     }
-    dir
+    (dir, guard)
 }
 
 #[test]
 fn split_grep_line_parses_match_and_context_lines() {
-    let workspace = make_workspace("basic", &["src/a.rs"]);
+    let (workspace, _guard_workspace) = make_workspace("basic", &["src/a.rs"]);
     let mut cache = HashMap::new();
 
     let parsed = split_grep_line("src/a.rs:12:命中内容", &workspace, &mut cache).unwrap();
@@ -29,15 +33,13 @@ fn split_grep_line_parses_match_and_context_lines() {
 
     // 路径不可证实的行返回 None。
     assert!(split_grep_line("ghost.rs:1:text", &workspace, &mut cache).is_none());
-
-    let _ = fs::remove_dir_all(&workspace);
 }
 
 #[test]
 fn split_grep_line_prefers_longest_path_when_prefix_is_also_a_file() {
     // 文件名自身含 `:数字:`，且短前缀 `a` 恰好也是文件：
     // 旧实现按首个可证实候选切分会误判为 `a:12`，正文错位成 `b.rs:5:foo`。
-    let workspace = make_workspace("colon-path", &["a", "a:12:b.rs"]);
+    let (workspace, _guard_workspace) = make_workspace("colon-path", &["a", "a:12:b.rs"]);
     let mut cache = HashMap::new();
 
     let parsed = split_grep_line("a:12:b.rs:5:foo", &workspace, &mut cache).unwrap();
@@ -46,14 +48,12 @@ fn split_grep_line_prefers_longest_path_when_prefix_is_also_a_file() {
     // 缓存不得固化错误候选：同一行的解析结果保持一致。
     let parsed = split_grep_line("a:12:b.rs:9:bar", &workspace, &mut cache).unwrap();
     assert_eq!(parsed, ("a:12:b.rs", 9, true, "bar"));
-
-    let _ = fs::remove_dir_all(&workspace);
 }
 
 #[test]
 fn split_grep_line_handles_dashed_dir_names() {
     // 目录名含 `-数字-`：命中行的 `:行:` 候选应先于 `-行-` 候选被证实。
-    let workspace = make_workspace("dash-dir", &["logs-2024-1/app.rs"]);
+    let (workspace, _guard_workspace) = make_workspace("dash-dir", &["logs-2024-1/app.rs"]);
     let mut cache = HashMap::new();
 
     let parsed = split_grep_line("logs-2024-1/app.rs:7:hit", &workspace, &mut cache).unwrap();
@@ -61,8 +61,6 @@ fn split_grep_line_handles_dashed_dir_names() {
 
     let parsed = split_grep_line("logs-2024-1/app.rs-6-ctx", &workspace, &mut cache).unwrap();
     assert_eq!(parsed, ("logs-2024-1/app.rs", 6, false, "ctx"));
-
-    let _ = fs::remove_dir_all(&workspace);
 }
 
 #[test]
@@ -113,7 +111,7 @@ fn grep_fallback_exclude_path_patterns_are_relaxed_not_silent() {
 
 #[test]
 fn path_within_allowed_roots_accepts_inside_and_rejects_escape() {
-    let workspace_raw = make_workspace("glob-contain", &["src/a.rs"]);
+    let (workspace_raw, _guard_raw) = make_workspace("glob-contain", &["src/a.rs"]);
     // canonicalize：macOS 临时目录 /var/... 是 /private/var/... 的符号链接，
     // 与生产路径一致（restrict 开启时 resolve_path 返回 canonical 目录）。
     let workspace = workspace_raw.canonicalize().unwrap();
@@ -135,8 +133,6 @@ fn path_within_allowed_roots_accepts_inside_and_rejects_escape() {
         Path::new("/etc/*"),
         std::slice::from_ref(&workspace)
     ));
-
-    let _ = fs::remove_dir_all(&workspace_raw);
 }
 
 #[cfg(unix)]
@@ -144,8 +140,8 @@ fn path_within_allowed_roots_accepts_inside_and_rejects_escape() {
 fn safe_glob_entries_never_follows_or_returns_symlinks() {
     use std::os::unix::fs::symlink;
 
-    let workspace = make_workspace("glob-symlink", &["local.rs"]);
-    let outside = make_workspace("glob-outside", &["secret.rs"]);
+    let (workspace, _guard_workspace) = make_workspace("glob-symlink", &["local.rs"]);
+    let (outside, _guard_outside) = make_workspace("glob-outside", &["secret.rs"]);
     symlink(&outside, workspace.join("outside-link")).unwrap();
 
     let entries = safe_glob_entries(&workspace, None)
@@ -159,14 +155,11 @@ fn safe_glob_entries_never_follows_or_returns_symlinks() {
         })
         .collect::<Vec<_>>();
     assert_eq!(entries, [std::path::PathBuf::from("local.rs")]);
-
-    let _ = fs::remove_dir_all(&workspace);
-    let _ = fs::remove_dir_all(&outside);
 }
 
 #[test]
 fn render_grep_fallback_output_marks_file_limit_truncation() {
-    let workspace = make_workspace("fallback-trunc", &["a.rs", "b.rs", "c.rs"]);
+    let (workspace, _guard_workspace) = make_workspace("fallback-trunc", &["a.rs", "b.rs", "c.rs"]);
     let stdout = "a.rs:1:match\nb.rs:1:match\nc.rs:1:match\n";
 
     let rendered = render_grep_fallback_output(stdout, &workspace, 1, false);
@@ -191,8 +184,6 @@ fn render_grep_fallback_output_marks_file_limit_truncation() {
         !rendered.display.contains("b.rs:1"),
         "超限文件的匹配行应被丢弃"
     );
-
-    let _ = fs::remove_dir_all(&workspace);
 }
 
 #[test]

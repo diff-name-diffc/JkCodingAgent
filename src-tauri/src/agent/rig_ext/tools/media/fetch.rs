@@ -8,19 +8,22 @@ use std::io::Write;
 
 use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use serde_json::{json, Value};
+use tokio::sync::watch;
 
-use super::super::common::string_arg;
+use super::super::common::{string_arg, u64_arg, with_call_timeout_parameters};
 use super::super::deps::RigToolDeps;
+use crate::agent::common::wait_for_optional_cancellation as cancellation;
+use crate::agent::rig_ext::tools::spec::{
+    effective_timeout_secs, FETCH_IMAGE_CALL_TIMEOUT_RANGE, FETCH_IMAGE_TIMEOUT_SECS,
+};
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-const DOWNLOAD_TIMEOUT_SECS: u64 = 60;
 
 pub(super) fn fetch_image_tool(deps: &RigToolDeps) -> PortableDynamicTool {
     let db = deps.db.clone();
     let workspace_id = deps.workspace_id.clone();
-    PortableDynamicTool::new(
-        "fetch_image",
-        "下载图片 URL（含局域网/内网地址）到会话图片库，返回 chat-image:// 引用。当工具结果（如 MCP 工具）中出现图片链接时调用本工具入库；入库图片会自动作为视觉输入附加到当前轮次，也可以在回答中用 ![描述](chat-image://...) 展示给用户。",
+    let tool_timeouts = deps.tool_timeouts.clone();
+    let parameters = with_call_timeout_parameters(
         json!({
             "type": "object",
             "properties": {
@@ -28,6 +31,17 @@ pub(super) fn fetch_image_tool(deps: &RigToolDeps) -> PortableDynamicTool {
             },
             "required": ["url"]
         }),
+        FETCH_IMAGE_CALL_TIMEOUT_RANGE,
+        // 描述文案里的「默认」须与生效默认一致（用户配置 ?? 表默认）。
+        deps.tool_timeouts
+            .fetch_image
+            .unwrap_or(FETCH_IMAGE_TIMEOUT_SECS),
+        "慢速图源或大图下载明显偏慢时可声明更长；常规下载无需填写。",
+    );
+    PortableDynamicTool::new(
+        "fetch_image",
+        "下载图片 URL（含局域网/内网地址）到会话图片库，返回 chat-image:// 引用。当工具结果（如 MCP 工具）中出现图片链接时调用本工具入库；入库图片会自动作为视觉输入附加到当前轮次，也可以在回答中用 ![描述](chat-image://...) 展示给用户。",
+        parameters,
         move |args: Value| {
             let db = db.clone();
             let workspace_id = workspace_id.clone();
@@ -41,7 +55,18 @@ pub(super) fn fetch_image_tool(deps: &RigToolDeps) -> PortableDynamicTool {
                     ));
                 }
 
-                match fetch_and_save(&db, workspace_id, url).await {
+                // 取消信号与超时预算与 generate_image 同构：预算经
+                // spec::effective_timeout_secs 解析，与策略层 deadline 同源。
+                let cancel_rx =
+                    crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+                        .map(|context| context.cancel_rx);
+                let timeout_secs = effective_timeout_secs(
+                    "fetch_image",
+                    u64_arg(&args, "timeout_secs"),
+                    tool_timeouts.fetch_image,
+                );
+
+                match fetch_and_save(&db, workspace_id, url, timeout_secs, cancel_rx).await {
                     Ok(fetched) => {
                         let reference = format!("chat-image://{}", fetched.image_id);
                         Ok(ToolOutput::text(format!(
@@ -62,31 +87,46 @@ struct FetchedImage {
     byte_len: u64,
 }
 
-/// 流式下载（按原始字节数硬上限，超限即中止）→ 内容魔数校验 → 统一入口
-/// `chat_images::save_image` 落盘登记。下载发生在本机，因此局域网地址可达。
+/// 流式下载（按原始字节数硬上限，超限即中止；逐 chunk 检查取消信号）→
+/// 内容魔数校验 → 统一入口 `chat_images::save_image` 落盘登记。下载发生在
+/// 本机，因此局域网地址可达。`timeout_secs` 为单请求 HTTP 超时（与策略层
+/// deadline 同源）；`cancel_rx` 覆盖首请求与流式全程。
 async fn fetch_and_save(
     db: &crate::agent::db::DispatcherDb,
     workspace_id: String,
     url: String,
+    timeout_secs: u64,
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<FetchedImage, String> {
     use futures::StreamExt;
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| format!("错误：构建 HTTP 客户端失败：{e}"))?;
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("错误：下载图片失败：{e}"))?
-        .error_for_status()
-        .map_err(|e| format!("错误：下载图片失败：{e}"))?;
+    let response = tokio::select! {
+        biased;
+        _ = cancellation(cancel_rx.clone()) => return Err("错误：下载图片已取消".to_string()),
+        result = client.get(&url).send() => result
+            .map_err(|e| format!("错误：下载图片失败：{e}"))?,
+    }
+    .error_for_status()
+    .map_err(|e| format!("错误：下载图片失败：{e}"))?;
 
     let mut bytes: Vec<u8> = Vec::new();
     let mut received: u64 = 0;
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // 逐 chunk 与取消信号竞速：图源停滞不发数据时，用户停止/策略层
+        // deadline 也能立即生效，而非等满客户端超时（最长 timeout_secs 秒）。
+        let next = tokio::select! {
+            biased;
+            _ = cancellation(cancel_rx.clone()) => {
+                return Err("错误：下载图片已取消".to_string());
+            }
+            next = stream.next() => next,
+        };
+        let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| format!("错误：下载图片失败：{e}"))?;
         received = received.saturating_add(chunk.len() as u64);
         if received > MAX_IMAGE_BYTES {
@@ -112,10 +152,6 @@ async fn fetch_and_save(
         )
     })?;
 
-    // 取消信号在本层（处于 agent 循环 task-local 作用域的工具边界）读取后
-    // 显式传入 save_image；无 task-local 时为 None，按无取消源处理。
-    let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
-        .map(|context| context.cancel_rx);
     let saved = crate::chat_images::save_image(
         db,
         crate::chat_images::SaveChatImageParams {

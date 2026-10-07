@@ -160,12 +160,12 @@ impl DispatcherDb {
 mod tests {
     use super::*;
 
-    fn test_db() -> DispatcherDb {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-python-runs-{}.sqlite3",
-            uuid::Uuid::new_v4()
-        ));
-        DispatcherDb::new(path).expect("create test dispatcher db")
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-python-runs");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db"),
+            dir,
+        )
     }
 
     /// 建一个会话和 n 条消息，返回 (session_id, message_ids)，
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn listing_orders_by_updated_at_desc_numerically() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let (session_id, message_ids) = setup_session_with_messages(&db, 3);
         // 混合小数精度的 RFC3339 时间戳：按数值解释排序，最新在前。
         let base = "2026-08-11T10:00:00";
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn listing_scoped_by_message_orders_by_block_index() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let (session_id, message_ids) = setup_session_with_messages(&db, 1);
         let message_id = &message_ids[0];
         let ts = "2026-08-11T10:00:00+00:00";

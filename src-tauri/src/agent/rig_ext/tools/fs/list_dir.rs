@@ -316,30 +316,20 @@ fn count_reader_lines(mut reader: impl Read) -> io::Result<usize> {
 mod tests {
     use std::fs;
     use std::io::Cursor;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use super::{collect_dir_entries, count_reader_lines, DirectoryListing};
 
-    struct TestDirectory(PathBuf);
+    /// 测试目录夹具：目录生命周期由守卫统一管理（Drop 整目录回收）。
+    struct TestDirectory(crate::test_util::TempDirGuard);
 
     impl TestDirectory {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "jkcodingagent-list-dir-test-{}",
-                uuid::Uuid::new_v4()
-            ));
-            fs::create_dir_all(&path).expect("create test directory");
-            Self(path)
+            Self(crate::test_util::TempDirGuard::new("aha-list-dir"))
         }
 
         fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            self.0.path()
         }
     }
 

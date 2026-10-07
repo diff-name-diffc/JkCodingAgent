@@ -69,6 +69,12 @@ export function SshServersPage() {
   // 每台服务器默认折叠，仅在用户展开或新增时展开其详细配置。
   const [expandedServers, setExpandedServers] = useState<Set<number>>(new Set());
 
+  // 页面随导航条件挂载，初始 servers 为空：不先拉取既无法展示已存列表，
+  // 任何一次自动保存还会把空列表整批覆盖已存服务器（与 MCP 页同一约定）。
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
   function updateServer(
     index: number,
     updater: (server: SshServerConfig) => SshServerConfig,

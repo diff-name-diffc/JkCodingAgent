@@ -37,12 +37,12 @@ fn draft(id: &str, status: &str) -> CompletionDraft {
     }
 }
 
-fn test_db() -> DispatcherDb {
-    let path = std::env::temp_dir().join(format!(
-        "jkcodingagent-tool-runs-{}.sqlite3",
-        Uuid::new_v4()
-    ));
-    DispatcherDb::new(path).expect("create test dispatcher db")
+fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+    let dir = crate::test_util::TempDirGuard::new("aha-tool-runs");
+    (
+        DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db"),
+        dir,
+    )
 }
 
 fn new_run(workspace_id: &str) -> NewToolRun {
@@ -60,7 +60,7 @@ fn new_run(workspace_id: &str) -> NewToolRun {
 
 #[test]
 fn batch_registration_rolls_back_all_rows_if_a_later_parent_is_invalid() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let first = new_run("ws");
     let call = first.tool_call_id.clone();
     let invalid = ToolRunTraceContext {
@@ -84,7 +84,7 @@ fn batch_registration_rolls_back_all_rows_if_a_later_parent_is_invalid() {
 
 #[test]
 fn batch_registration_commits_all_runtime_identity_fields() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let rows = db
         .register_tool_task_batch(
             vec![
@@ -109,7 +109,7 @@ fn batch_registration_commits_all_runtime_identity_fields() {
 
 #[test]
 fn settlement_advances_lifecycle_and_records_duration() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let run = seed_registered_run(&db, "ws");
     assert_eq!(run.status, "planned");
     assert_eq!(run.phase.as_deref(), Some("queued"));
@@ -128,7 +128,7 @@ fn settlement_advances_lifecycle_and_records_duration() {
 
 #[test]
 fn started_does_not_regress_terminal_state() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let run = seed_registered_run(&db, "ws");
     db.mark_tool_run_started(&run.id).expect("start run");
     db.settle_tool_completion(draft(&run.id, "succeeded"))
@@ -141,7 +141,7 @@ fn started_does_not_regress_terminal_state() {
 #[test]
 fn duration_is_nonnegative_even_with_missing_started_at() {
     // 直接结算一个 planned（未 started）的 run，时长应容错为 0 而非 NULL。
-    let db = test_db();
+    let (db, _dir) = test_db();
     let run = seed_registered_run(&db, "ws");
     db.settle_tool_completion(draft(&run.id, "cancelled"))
         .expect("settle planned run");
@@ -152,7 +152,7 @@ fn duration_is_nonnegative_even_with_missing_started_at() {
 
 #[test]
 fn traced_runs_round_trip_and_tree_is_depth_first() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let root = db.create_tool_run(new_run("ws")).expect("create root");
     assert_eq!(root.parent_run_id, None);
     assert_eq!(root.origin, TOOL_RUN_ORIGIN_MODEL);
@@ -214,7 +214,7 @@ fn traced_runs_round_trip_and_tree_is_depth_first() {
 
 #[test]
 fn tree_for_call_selects_only_the_requested_root() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let mut first_run = new_run("ws");
     first_run.tool_call_id = "shared-call".to_string();
     let first = db.create_tool_run(first_run).expect("create first root");
@@ -254,7 +254,7 @@ fn tree_for_call_selects_only_the_requested_root() {
 
 #[test]
 fn traced_run_rejects_cross_workspace_parent_and_duplicate_sequence() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     let root = db.create_tool_run(new_run("ws-a")).expect("create root");
 
     let cross_workspace = db
@@ -286,7 +286,7 @@ fn traced_run_rejects_cross_workspace_parent_and_duplicate_sequence() {
 
 #[test]
 fn failed_and_internal_error_are_terminal() {
-    let db = test_db();
+    let (db, _dir) = test_db();
     for status in ["failed", "internal_error"] {
         let run = seed_registered_run(&db, "ws");
         db.mark_tool_run_started(&run.id).expect("start run");

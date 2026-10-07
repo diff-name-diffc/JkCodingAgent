@@ -1,12 +1,9 @@
 use super::*;
 use crate::agent::db::NewToolRun;
 
-fn fixture() -> (DispatcherDb, String) {
-    let db = DispatcherDb::new(std::env::temp_dir().join(format!(
-        "completion-outbox-{}.sqlite3",
-        uuid::Uuid::new_v4()
-    )))
-    .unwrap();
+fn fixture() -> (DispatcherDb, String, crate::test_util::TempDirGuard) {
+    let dir = crate::test_util::TempDirGuard::new("aha-completion-outbox");
+    let db = DispatcherDb::new(dir.path().join("jkbot.sqlite3")).unwrap();
     let run = db
         .create_tool_run(NewToolRun {
             workspace_id: "workspace".into(),
@@ -23,7 +20,7 @@ fn fixture() -> (DispatcherDb, String) {
         "UPDATE dispatcher_tool_runs SET agent_run_id = 'root', scope_id = 'child' WHERE id = ?1",
         [&run.id],
     ).unwrap();
-    (db, run.id)
+    (db, run.id, dir)
 }
 
 fn draft(id: &str) -> CompletionDraft {
@@ -43,7 +40,7 @@ fn draft(id: &str) -> CompletionDraft {
 
 #[test]
 fn settlement_is_idempotent_and_scope_isolated() {
-    let (db, id) = fixture();
+    let (db, id, _dir) = fixture();
     let event = db.settle_tool_completion(draft(&id)).unwrap();
     assert_eq!(db.settle_tool_completion(draft(&id)).unwrap(), event);
     assert_eq!(db.load_tool_run(&id).unwrap().status, "succeeded");
@@ -72,7 +69,7 @@ fn settlement_is_idempotent_and_scope_isolated() {
 
 #[test]
 fn failed_completion_insert_rolls_back_terminal_and_artifact() {
-    let (db, id) = fixture();
+    let (db, id, _dir) = fixture();
     db.conn()
         .unwrap()
         .execute_batch(
@@ -100,7 +97,7 @@ fn failed_completion_insert_rolls_back_terminal_and_artifact() {
 
 #[test]
 fn truncating_only_notification_preserves_fact_and_redelivers_without_execution() {
-    let (db, task) = fixture();
+    let (db, task, _dir) = fixture();
     let request = db
         .add_visible_message_from_segments(
             "workspace",
@@ -154,7 +151,7 @@ fn truncating_only_notification_preserves_fact_and_redelivers_without_execution(
 
 #[test]
 fn restart_records_interruption_without_replaying_and_preserves_committed_completion() {
-    let (db, queued) = fixture();
+    let (db, queued, _dir) = fixture();
     db.bind_tool_task(&queued, "root", "child", 1, "anchor")
         .unwrap();
     let running = db

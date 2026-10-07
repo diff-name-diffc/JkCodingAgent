@@ -17,6 +17,8 @@ struct Fixture {
     ssh_db: SshDb,
     workspace_id: String,
     db: DispatcherDb,
+    /// 目录守卫放最后：字段按声明序 drop，db 先关闭再整目录回收。
+    _guard: crate::test_util::TempDirGuard,
 }
 
 /// 审查上下文：配置存在但测试服务器显式关闭「执行前审查」
@@ -34,8 +36,8 @@ fn review_context_with_config() -> crate::agent::rig_ext::review::RigReviewConte
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("sync-tool-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root).unwrap();
+        let guard = crate::test_util::TempDirGuard::new("sync-tool-test");
+        let root = guard.path().to_path_buf();
         let pool = Arc::new(
             r2d2::Pool::builder()
                 .max_size(1)
@@ -64,6 +66,7 @@ impl Fixture {
             ssh_db,
             workspace_id: uuid::Uuid::new_v4().to_string(),
             db,
+            _guard: guard,
         }
     }
 
@@ -85,12 +88,6 @@ impl Fixture {
         json!({
             "ssh_profile":"customer-beijing-01", "source":self.root, "destination":"/opt/releases/v1"
         })
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

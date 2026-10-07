@@ -441,9 +441,8 @@ mod tests {
     fn stream_local_image_round_trips_bytes_to_base64() {
         use base64::Engine;
 
-        let dir = std::env::temp_dir().join("analyze_image_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("roundtrip.png");
+        let dir = crate::test_util::TempDirGuard::new("aha-analyze-roundtrip");
+        let path = dir.path().join("roundtrip.png");
         let bytes: Vec<u8> = (0..255u8).cycle().take(10_000).collect();
         std::fs::write(&path, &bytes).unwrap();
 
@@ -454,25 +453,20 @@ mod tests {
             .decode(&encoded)
             .unwrap();
         assert_eq!(decoded, bytes);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn stream_local_image_rejects_unsupported_extension_and_dirs() {
-        let dir = std::env::temp_dir().join("analyze_image_test_reject");
-        std::fs::create_dir_all(&dir).unwrap();
-        let svg = dir.join("bad.svg");
+        let dir = crate::test_util::TempDirGuard::new("aha-analyze-reject");
+        let svg = dir.path().join("bad.svg");
         std::fs::write(&svg, b"<svg/>").unwrap();
 
         assert!(stream_local_image_to_base64(&svg)
             .unwrap_err()
             .contains("不支持的图片格式"));
         // 目录不是文件
-        assert!(stream_local_image_to_base64(&dir)
+        assert!(stream_local_image_to_base64(dir.path())
             .unwrap_err()
             .contains("不是文件"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

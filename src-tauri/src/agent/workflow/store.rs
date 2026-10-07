@@ -834,11 +834,15 @@ mod tests {
     use crate::agent::workflow::types::{
         BaseToolGroup, WorkflowInherits, WorkflowNode, RESULT_KIND_NONE, RESULT_KIND_REVIEW,
     };
-    fn test_db() -> crate::agent::db::DispatcherDb {
-        crate::agent::db::DispatcherDb::new(
-            std::env::temp_dir().join(format!("aha-workflow-v3-{}.sqlite3", uuid::Uuid::new_v4())),
+    fn test_db() -> (
+        crate::agent::db::DispatcherDb,
+        crate::test_util::TempDirGuard,
+    ) {
+        let dir = crate::test_util::TempDirGuard::new("aha-workflow-v3");
+        (
+            crate::agent::db::DispatcherDb::new(dir.path().join("jkbot.sqlite3")).unwrap(),
+            dir,
         )
-        .unwrap()
     }
     fn node(id: &str) -> WorkflowNode {
         WorkflowNode {
@@ -873,7 +877,7 @@ mod tests {
     }
     #[test]
     fn preserves_run_attempts() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let a = store.create_run(&plan.id).unwrap();
@@ -888,7 +892,7 @@ mod tests {
     /// 行（未收尾的 run：刚创建 / 取消中断）result 读取为 None。
     #[test]
     fn run_result_roundtrip_and_legacy_none() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let run = store.create_run(&plan.id).unwrap();
@@ -944,7 +948,7 @@ mod tests {
     /// 「执行完成、无结果」；列表轻量摘要原样带出该值。
     #[test]
     fn run_result_none_kind_roundtrip() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let run = store.create_run(&plan.id).unwrap();
@@ -974,7 +978,7 @@ mod tests {
 
     #[test]
     fn list_plan_summaries_orders_filters_and_joins_latest_run() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         // 另一会话的计划不得混入。
         create_plain_plan(&store);
@@ -1004,7 +1008,7 @@ mod tests {
 
     #[test]
     fn allocates_unique_attempts_concurrently() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let worker_count = 8;
@@ -1031,7 +1035,7 @@ mod tests {
 
     #[test]
     fn recovers_interrupted_run() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let run = store.create_run(&plan.id).unwrap();
@@ -1052,7 +1056,7 @@ mod tests {
 
     #[test]
     fn create_run_resets_state_for_plain_plan_but_keeps_inherited_state() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
 
         // 普通工作流：full run 清空 state。
@@ -1096,7 +1100,7 @@ mod tests {
 
     #[test]
     fn resume_run_copies_only_succeeded_nodes_and_keeps_state() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let base = store.create_run(&plan.id).unwrap();
@@ -1139,7 +1143,7 @@ mod tests {
 
     #[test]
     fn node_run_stats_aggregates_settled_nodes() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let run = store.create_run(&plan.id).unwrap();
@@ -1187,7 +1191,7 @@ mod tests {
 
     #[test]
     fn resume_run_rejects_source_run_from_other_plan() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan_a = create_plain_plan(&store);
         let plan_b = create_plain_plan(&store);
@@ -1200,7 +1204,7 @@ mod tests {
 
     #[test]
     fn verdict_round_trips() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let run = store.create_run(&plan.id).unwrap();
@@ -1216,7 +1220,7 @@ mod tests {
     fn save_node_run_update_keeps_rowid_order() {
         // 状态变更（重复保存同一 (run_id,node_id)）不得改变行序：
         // INSERT OR REPLACE 会重排 rowid，把更新过的节点打到行尾。
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let run = store.create_run(&plan.id).unwrap();
@@ -1245,7 +1249,7 @@ mod tests {
 
     #[test]
     fn create_run_rejects_missing_plan() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let error = store.create_run("不存在的计划").unwrap_err();
         assert!(format!("{error:#}").contains("不存在"));
@@ -1253,7 +1257,7 @@ mod tests {
 
     #[test]
     fn update_plan_definition_rejects_non_draft_plan() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         let store = WorkflowStore::new(&db);
         let plan = create_plain_plan(&store);
         let mut definition = definition();

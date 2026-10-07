@@ -116,9 +116,8 @@ async fn chat_turn_streams_answer_and_persists_messages() {
     let observation = Arc::new(parking_lot::Mutex::new(MockObservation::default()));
     let addr = spawn_mock_endpoint(Arc::clone(&observation)).await;
 
-    let temp_dir = std::env::temp_dir().join(format!("rig-chat-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
-    let db = DispatcherDb::new(temp_dir.join("jkbot.sqlite3")).expect("open temp db");
+    let dir = crate::test_util::TempDirGuard::new("rig-chat");
+    let db = DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("open temp db");
     let session = db
         .create_chat_session("端到端测试", None)
         .expect("create session");
@@ -222,8 +221,6 @@ async fn chat_turn_streams_answer_and_persists_messages() {
             .any(|row| row.model == "mock-chat" && row.prompt_tokens == 7),
         "应记录模型用量：{usage_rows:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 /// 工具清单与定义装配的纯单元校验（不依赖 HTTP）：清单含全部候选工具
@@ -231,9 +228,8 @@ async fn chat_turn_streams_answer_and_persists_messages() {
 /// 无子智能体时不出现 call_sub_agent，MCP 工具不因空名单出现。
 #[tokio::test]
 async fn static_catalog_lists_candidate_tools() {
-    let temp_dir = std::env::temp_dir().join(format!("rig-chat-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
-    let db = DispatcherDb::new(temp_dir.join("jkbot.sqlite3")).expect("open temp db");
+    let dir = crate::test_util::TempDirGuard::new("rig-chat");
+    let db = DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("open temp db");
     let config = test_config("http://127.0.0.1:1/v1".to_string());
     let mut agent = RigPlainChatAgent::new(
         config,
@@ -278,8 +274,6 @@ async fn static_catalog_lists_candidate_tools() {
         |_args| Box::pin(async { Ok(rig::tool::ToolOutput::text("ok")) }),
     );
     assert!(!tool.definition().description.is_empty());
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 // ─── 工具面与目录名的纯函数用例（自 `agents/mod.rs` 并入） ────────────────

@@ -84,14 +84,12 @@ impl DispatcherDb {
 mod tests {
     use super::*;
 
-    fn test_db() -> (DispatcherDb, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "aha-mcp-db-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        (DispatcherDb::new(root.join("jkbot.sqlite3")).unwrap(), root)
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-mcp-db");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).unwrap(),
+            dir,
+        )
     }
 
     #[test]

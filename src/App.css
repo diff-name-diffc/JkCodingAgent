@@ -958,38 +958,72 @@
 
 /* ── Markdown image thumbnails and enlarged preview ── */
 .markdown-image-thumbnail-wrap {
-  display: inline-block;
-  margin: 8px 8px 8px 0;
   cursor: pointer;
-  border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--border-medium);
+  border-radius: 12px;
+  background: var(--bg-card);
   transition:
     transform 0.2s,
     border-color 0.2s;
-  background: var(--bg-card);
-  max-width: 200px;
-  max-height: 120px;
 }
 .markdown-image-thumbnail-wrap:hover {
-  transform: scale(1.02);
   border-color: var(--accent);
 }
-.dispatcher-user-image-gallery .markdown-image-thumbnail-wrap {
-  width: 156px;
-  height: 112px;
-  max-width: 156px;
-  max-height: 112px;
-  margin: 0;
+/* 正文图片（Markdown 渲染出口）：撑满所在内容列宽，纵横比不变；
+   超高图按上限裁底（overflow hidden），点击放大查看完整图。 */
+.markdown-image-thumbnail-wrap--full {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 560px;
+  margin: 12px 0;
+}
+/* 用户消息附件等小图场景：小尺寸缩略、纵横比完整不裁剪。间距交由使用方
+   布局控制（user-message 画廊为 flex gap-2，margin 会叠加出双倍间距）。 */
+.markdown-image-thumbnail-wrap--thumb {
+  display: inline-block;
+}
+.markdown-image-thumbnail-wrap--thumb:hover {
+  transform: scale(1.02);
 }
 .markdown-image-thumbnail {
   display: block;
   width: 100%;
+  height: auto;
+}
+.markdown-image-thumbnail-wrap--thumb .markdown-image-thumbnail {
+  width: auto;
+  height: auto;
+  max-width: 240px;
+  max-height: 180px;
+}
+/* 包装壳自带边框/圆角，去掉 .markdown-surface img 叠到内层 img 的重复
+   边框与阴影（(0,2,0) 特异性压过 .markdown-surface img）。 */
+.markdown-image-thumbnail-wrap .markdown-image-thumbnail {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+/* 输入框附件预览：外层裁剪框已定尺寸（h-16 w-16 overflow-hidden rounded-md
+   border），缩略图填满并 cover 裁剪。与上方变体规则同特异性（0,2,0），
+   依赖声明顺序生效——必须保持在本文件变体规则之后。 */
+.chat-attachment-preview .markdown-image-thumbnail-wrap {
+  width: 100%;
   height: 100%;
+  max-height: none;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+.chat-attachment-preview .markdown-image-thumbnail {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
   object-fit: cover;
 }
 
-.markdown-image-loading,
 .markdown-image-error {
   display: flex;
   align-items: center;

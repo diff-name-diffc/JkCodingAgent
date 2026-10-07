@@ -65,17 +65,12 @@ pub(crate) fn validate_path_within(
 mod tests {
     use super::*;
 
-    struct Temp(PathBuf);
+    /// (路径, 守卫)：`.0` 保持路径语义，`.1` Drop 时整目录回收。
+    struct Temp(PathBuf, #[allow(dead_code)] crate::test_util::TempDirGuard);
     impl Temp {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("ws-path-test-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let guard = crate::test_util::TempDirGuard::new("ws-path-test");
+            Self(guard.path().to_path_buf(), guard)
         }
     }
 
@@ -98,12 +93,12 @@ mod tests {
             validate_path_within("a.txt", tmp.0.to_str().unwrap()),
             Err(PathValidationError::NotAbsolute)
         ));
-        let outside = std::env::temp_dir().join(format!("ws-out-{}", uuid::Uuid::new_v4()));
+        let outside_dir = crate::test_util::TempDirGuard::new("ws-out");
+        let outside = outside_dir.path().join("outside.txt");
         std::fs::write(&outside, "x").unwrap();
         assert!(matches!(
             validate_path_within(outside.to_str().unwrap(), tmp.0.to_str().unwrap()),
             Err(PathValidationError::OutsideAllowed)
         ));
-        let _ = std::fs::remove_file(outside);
     }
 }

@@ -167,6 +167,7 @@ App
 
 - 新增 Tauri 命令按领域归入对应模块，并在 `app/mod.rs` 的 `invoke_handler!` 注册。
 - 重型操作一律 `spawn_blocking`；锁作用域尽量短；用 `Emitter` 推事件而非返回大数据。
+- 测试自建临时目录/文件一律用 `test_util::TempDirGuard`（`#[cfg(test)]` 编译，Drop 整目录回收），禁止裸 `env::temp_dir().join(uuid)` + 手工清理——手工清理怕 panic、泄漏污染系统临时目录。仅把 `env::temp_dir()` 当「工作区外路径」引用（越界拒绝类用例）不创建内容的场景除外。
 
 ---
 
@@ -214,6 +215,7 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 **超时契约（`ToolExecutionPolicy`）**：
 - `unified_timeout=true`：策略层包统一超时；到点发取消 → 宽限收敛（`SETTLE_CEILING`）→ 仍不收敛则移交后台并按「结算未确认」收口（绝不 drop future）。
 - `unified_timeout=false`（自管超时，当前 6 个：`local_zsh`/`ssh_exec`/`sync_directory`/`analyze_image`/`call_sub_agent`/`run_tool_program`）：执行预算工具自管（分阶段超时、交互/静默容忍、优雅终止：杀进程树 / 关 channel / 写审计与台账）；仍以 `settle_ceiling_secs`（= 最坏合法预算，登记在 `self_managed_settle_ceiling_secs`）作最后防线，到点走统一超时同一收口。`cancellable=false` 时兜底到点不发取消、直接交接后台。新增自管工具**必须**登记 settle ceiling（`spec.rs` 的 `self_managed_tools_declare_settle_ceiling` 测试守护）。
+- **调用可声明超时白名单**（当前 3 个：`generate_image`/`edit_image`/`fetch_image`，仅限统一超时工具）：schema 经 `common.rs::with_call_timeout_parameters` 暴露 `timeout_secs` 参数（区间 = spec.rs 常量组，schema 校验 + 运行时夹紧双保险；**不设 default 键**以保留「未声明」语义）；deadline = clamp(调用声明 ?? 用户配置默认（`AhaSettingsV2.toolTimeouts`，设置中心「工具」页，越界键归一化剥离）?? 策略表默认)。单一解析出处 `spec.rs::effective_timeout_secs`——策略层 deadline 与工具内 HTTP/下载预算**必须共用**，防「配 300 却被 HTTP 120 掐死」的口径漂移；`call_timeout_tools_are_unified_and_defaulted` 测试守护白名单登记。
 
 ### 4. 工具输出压缩（可选）
 

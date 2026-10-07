@@ -41,7 +41,7 @@ pub use sessions::{
     AgentContext, ChatSessionRecord, DispatcherSessionKind, ProjectSessionRecord,
     SessionCreatedRecord, SessionPage,
 };
-pub use settings::{AhaSettingsV2, DispatcherModelConfig};
+pub use settings::{AhaSettingsV2, DispatcherModelConfig, ToolTimeoutSettings};
 pub use token_usage::{DispatcherSessionTokenUsageRecord, DispatcherSessionTokenUsageSource};
 pub use tool_runs::{DispatcherToolRunRecord, NewToolRun, ToolRunTraceContext};
 pub(crate) use util::DEFAULT_CONTEXT_WINDOW_CAPACITY_TOKENS;

@@ -663,21 +663,18 @@ fn scenario_chat_category_agent_config(
 mod tests {
     use super::super::DispatcherDb;
 
-    fn temp_db_path(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("aha-schema-{tag}-{}.sqlite3", uuid::Uuid::new_v4()))
-    }
-
-    fn cleanup_db_files(path: &std::path::Path) {
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
-        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    /// 带守卫的临时库路径：sqlite/wal/shm 都落在守卫目录内，用例结束整目录
+    /// 回收（取代旧的手工 remove_file 清理）。
+    fn temp_db(tag: &str) -> (std::path::PathBuf, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new(&format!("aha-schema-{tag}"));
+        (dir.path().join("jkbot.sqlite3"), dir)
     }
 
     /// 数据库版本高于当前基线（降级安装，或 schema 重置前的旧开发库）时
     /// 必须拒绝打开，而不是静默继续。
     #[test]
     fn newer_database_version_is_rejected() {
-        let path = temp_db_path("newer-version");
+        let (path, _dir) = temp_db("newer-version");
         {
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.pragma_update(None, "user_version", super::SCHEMA_VERSION + 1)
@@ -694,14 +691,13 @@ mod tests {
             message.contains("删除数据库文件"),
             "错误信息应引导删除数据库文件重建：{message}"
         );
-        cleanup_db_files(&path);
     }
 
     /// 迁移链清除前的旧开发库（user_version=0 但已有核心表）必须拒绝打开，
     /// 错误信息引导运行重置脚本，而不是在旧表上继续建库。
     #[test]
     fn legacy_pre_baseline_database_is_rejected() {
-        let path = temp_db_path("legacy-pre-baseline");
+        let (path, _dir) = temp_db("legacy-pre-baseline");
         {
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.execute_batch(
@@ -724,14 +720,13 @@ mod tests {
             message.contains("删除数据库文件"),
             "错误信息应引导删除数据库文件重建：{message}"
         );
-        cleanup_db_files(&path);
     }
 
     /// 全新库一次建到基线形态：版本号、内置种子（聊天分类/场景配置/浏览器
     /// 子智能体）与工具运行追踪的外键齐备。
     #[test]
     fn fresh_database_creates_baseline_and_seeds() {
-        let path = temp_db_path("fresh-baseline");
+        let (path, _dir) = temp_db("fresh-baseline");
         let db = DispatcherDb::new(path.clone()).unwrap();
         let conn = db.conn().expect("db conn");
 
@@ -811,13 +806,12 @@ mod tests {
 
         drop(conn);
         drop(db);
-        cleanup_db_files(&path);
     }
 
     /// 同版本库重复打开走 fast path：不重复建表/种子，版本号不变。
     #[test]
     fn reopen_at_current_version_keeps_state() {
-        let path = temp_db_path("reopen");
+        let (path, _dir) = temp_db("reopen");
         {
             let db = DispatcherDb::new(path.clone()).unwrap();
             drop(db);
@@ -830,14 +824,13 @@ mod tests {
         assert_eq!(categories, 5, "重复打开不得重复种子");
         drop(conn);
         drop(db);
-        cleanup_db_files(&path);
     }
 
     /// 低于基线的旧版本库（v1→v15 迁移链已清除）必须拒绝打开并引导
     /// 重置，而不是静默按新形态使用或误建；拒绝打开不得改动库内容。
     #[test]
     fn legacy_version_database_is_rejected() {
-        let path = temp_db_path("legacy-version");
+        let (path, _dir) = temp_db("legacy-version");
         {
             let conn = rusqlite::Connection::open(&path).unwrap();
             conn.execute_batch(
@@ -861,6 +854,5 @@ mod tests {
             "拒绝打开不得改动库内容"
         );
         drop(conn);
-        cleanup_db_files(&path);
     }
 }

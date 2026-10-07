@@ -563,17 +563,17 @@ mod tests {
 
     use super::*;
 
-    fn test_db() -> DispatcherDb {
-        let path = std::env::temp_dir().join(format!(
-            "jkcodingagent-session-pagination-{}.sqlite3",
-            Uuid::new_v4()
-        ));
-        DispatcherDb::new(path).expect("create test dispatcher db")
+    fn test_db() -> (DispatcherDb, crate::test_util::TempDirGuard) {
+        let dir = crate::test_util::TempDirGuard::new("aha-session-pagination");
+        (
+            DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("create test dispatcher db"),
+            dir,
+        )
     }
 
     #[test]
     fn category_cursor_does_not_skip_sessions_with_equal_timestamps() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         for index in 0..41 {
             db.create_chat_session(&format!("session-{index}"), Some("tech"))
                 .expect("create chat session");
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn internal_category_sessions_are_hidden_from_default_listing() {
-        let db = test_db();
+        let (db, _dir) = test_db();
         db.create_chat_session("visible-chat", Some("tech"))
             .expect("create normal session");
         db.create_chat_session("arch-session", Some(INTERNAL_CHAT_CATEGORY))

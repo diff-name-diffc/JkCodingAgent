@@ -45,6 +45,7 @@ export function UserMessage({ message, onEdit, className }: UserMessageProps) {
                   key={img.id}
                   src={`chat-image://${img.imageId}`}
                   alt={img.alt || "附件图片"}
+                  variant="thumb"
                 />
               ))}
             </div>

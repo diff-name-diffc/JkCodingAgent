@@ -366,6 +366,8 @@ impl RigArchitectureAgent {
                 review: RigReviewContext::unconfigured(),
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
+                // 架构画布工具面无「调用可声明超时」白名单工具，恒用表默认。
+                tool_timeouts: Default::default(),
             },
         );
 

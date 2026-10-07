@@ -29,6 +29,7 @@ pub const DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT: &str = r#"# 普通聊天
 - 当工具结果（如 MCP 工具）中出现图片 URL（含局域网地址）时，先调用 fetch_image 下载入库获得 chat-image:// 引用；入库的图片会自动作为视觉输入附加到当前轮次。需要更细致地分析图片内容时调用 analyze_image。
 - 你可以调用 generate_image 工具根据文本描述生成图片。
 - 你可以调用 edit_image 工具编辑对话中的图片或已生成的图片（image_path 参数传 chat-image:// 引用）。
+- 文生图/图片编辑中，图内出现的所有文字（标题、标签、流程节点名、注释、界面文案等）默认必须全部为简体中文：调用 generate_image / edit_image 时必须在 prompt 中写清每处文字的具体中文内容，并显式声明「图片中所有文字均使用简体中文」；仅当用户明确要求其他语言时除外。
 - 工具生成的图片以 chat-image:// 引用返回；想在回答中展示时，用 Markdown 图片语法引用该引用，如 ![图片描述](chat-image://…)。
 "#;
 
@@ -160,30 +161,26 @@ fn write_if_missing(path: PathBuf, content: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn test_path() -> PathBuf {
-        std::env::temp_dir().join(format!("aha-prompt-sync-{}.md", uuid::Uuid::new_v4()))
-    }
-
     #[test]
     fn creates_missing_prompt_and_preserves_existing_file() {
-        let missing = test_path();
+        let dir = crate::test_util::TempDirGuard::new("aha-prompt-sync");
+        let missing = dir.path().join("missing.md");
         write_if_missing(missing.clone(), DEFAULT_SOUL).unwrap();
         assert_eq!(fs::read_to_string(&missing).unwrap(), DEFAULT_SOUL);
-        fs::remove_file(missing).unwrap();
 
-        let custom = test_path();
+        let custom = dir.path().join("custom.md");
         fs::write(&custom, "# My Agent\n\ncustom\n").unwrap();
         write_if_missing(custom.clone(), DEFAULT_SOUL).unwrap();
         assert_eq!(
             fs::read_to_string(&custom).unwrap(),
             "# My Agent\n\ncustom\n"
         );
-        fs::remove_file(custom).unwrap();
     }
 
     #[test]
     fn atomic_write_creates_and_replaces_file() {
-        let path = test_path();
+        let dir = crate::test_util::TempDirGuard::new("aha-prompt-atomic");
+        let path = dir.path().join("prompt.md");
         atomic_write(&path, "v1").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "v1");
         atomic_write(&path, "v2").unwrap();
@@ -191,7 +188,6 @@ mod tests {
         // 不残留临时文件
         let tmp = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
         assert!(!tmp.exists());
-        fs::remove_file(path).unwrap();
     }
 
     #[test]

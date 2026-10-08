@@ -49,6 +49,8 @@ pub struct SshReviewServerInfo {
     pub port: u16,
     pub username: String,
     pub tags: Vec<String>,
+    /// 是否以 sudo 提权执行（提权命令需按提权后的实际效果评估）。
+    pub elevated: bool,
 }
 
 /// 待审查命令的执行目标环境（剔除密码 / 私钥 / 口令等敏感字段）。
@@ -223,9 +225,14 @@ fn build_command_user_prompt(payload: &CommandReviewPayload) -> String {
             } else {
                 server.tags.join(", ")
             };
+            let privilege = if server.elevated {
+                "是（将以 sudo 提权为 root 执行，请按提权后的实际效果评估破坏性）"
+            } else {
+                "否"
+            };
             format!(
-                "【目标环境】\n- 类型：SSH 远程服务器\n- id：{}\n- 描述：{}\n- host:port：{}:{}\n- 登录用户：{}\n- 标签：{}",
-                server.id, server.description, server.host, server.port, server.username, tags
+                "【目标环境】\n- 类型：SSH 远程服务器\n- id：{}\n- 描述：{}\n- host:port：{}:{}\n- 登录用户：{}\n- 标签：{}\n- 提权：{}",
+                server.id, server.description, server.host, server.port, server.username, tags, privilege
             )
         }
         CommandReviewTarget::LocalZsh {

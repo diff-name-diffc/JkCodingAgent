@@ -377,6 +377,76 @@ impl ArchRunRegistry {
     }
 }
 
+/// 命令审查「需用户确认」门禁的注册表：工具侧阻塞等待与前端弹窗答复之间的
+/// 一次性请求/响应桥（结构同 [`ArchRunRegistry`]，但答复是布尔放行/拒绝）。
+///
+/// 工具侧 `begin` 登记 request_id → oneshot 接收端并 emit `tool-confirm-request`；
+/// 用户在前端弹窗点「允许 / 拒绝」后经 `tool_confirm_resolve` 命令调 `resolve`
+/// 解除等待。工具侧超时/取消路径必须调 `remove` 清槽——此后迟到的 `resolve`
+/// 找不到条目返回 false，无副作用（天然幂等）。
+///
+/// 条目记录发起会话的 workspace_id：`resolve` 校验回传方与登记方属于同一会话，
+/// 错会话回传按未消费处理、槽位保留给真正的主人（同 `ArchRunRegistry` 约定）。
+pub(super) struct UserConfirmRegistry {
+    entries: Mutex<HashMap<String, UserConfirmEntry>>,
+}
+
+struct UserConfirmEntry {
+    sender: oneshot::Sender<bool>,
+    workspace_id: String,
+}
+
+impl Default for UserConfirmRegistry {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl UserConfirmRegistry {
+    /// 登记一次用户确认请求，返回 (request_id, 答复接收端)。
+    pub(super) fn begin(&self, workspace_id: &str) -> (String, oneshot::Receiver<bool>) {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        let mut entries = self.entries.lock();
+        // 兜底回收：工具 future 被整体丢弃（abort/panic）时无人调 remove，
+        // 借登记之机清掉接收端已关闭的死条目（同 ArchRunRegistry 思路）。
+        entries.retain(|_, entry| !entry.sender.is_closed());
+        entries.insert(
+            request_id.clone(),
+            UserConfirmEntry {
+                sender: tx,
+                workspace_id: workspace_id.to_string(),
+            },
+        );
+        (request_id, rx)
+    }
+
+    /// 前端回传用户裁决：取出并解除等待。条目不存在（超时已清槽/重复回传）、
+    /// workspace 不匹配或接收端已关闭（工具侧提前退出）时返回 false。
+    pub(super) fn resolve(&self, request_id: &str, workspace_id: &str, approved: bool) -> bool {
+        // 校验与取出在锁作用域内完成，send 留到锁外——oneshot::send 虽为
+        // 非阻塞实现，持锁期间调用外部类型仍违背「持锁禁止 I/O/阻塞」约定。
+        let entry = {
+            let mut entries = self.entries.lock();
+            let matches_scope = entries
+                .get(request_id)
+                .is_some_and(|entry| entry.workspace_id == workspace_id);
+            if !matches_scope {
+                return false;
+            }
+            entries.remove(request_id)
+        };
+        entry.is_some_and(|entry| entry.sender.send(approved).is_ok())
+    }
+
+    /// 工具侧超时/取消路径的显式清槽，防止条目泄漏。
+    pub(super) fn remove(&self, request_id: &str) {
+        self.entries.lock().remove(request_id);
+    }
+}
+
 #[cfg(test)]
 #[path = "run_tests.rs"]
 mod tests;

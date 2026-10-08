@@ -275,6 +275,7 @@ impl RigOrchestratorAgent {
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
                 tool_timeouts: self.tool_timeouts.clone(),
+                app_handle: self.app_handle.clone(),
             },
         );
 

@@ -220,6 +220,7 @@ impl SshSessionManager {
         timeout_secs: Option<u64>,
         cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
         review: Option<SshAuditReview>,
+        elevate: bool,
     ) -> Result<SshExecResult, CommandFailure> {
         let mut result = self
             .execute_command(
@@ -229,6 +230,7 @@ impl SshSessionManager {
                 stdin,
                 timeout_secs,
                 cancel_rx,
+                elevate,
             )
             .await;
         let audit_record = SshAuditRecord::from_execution(
@@ -287,6 +289,7 @@ impl SshSessionManager {
                 duration_ms: None,
                 truncated: false,
                 interactive_blocked: false,
+                elevated: false,
                 error: None,
                 review: Some(review),
             };
@@ -305,6 +308,7 @@ impl SshSessionManager {
         stdin: Option<String>,
         timeout_secs: Option<u64>,
         cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+        elevate: bool,
     ) -> Result<SshExecResult, CommandFailure> {
         let ssh_db = self.db.clone();
         let lookup_id = server_id.clone();
@@ -325,6 +329,11 @@ impl SshSessionManager {
                 )));
             }
         }
+        // 提权：复用服务器配置的登录密码作 sudo 口令。sudo 认证口令与 SSH
+        // 登录口令在多数机器上是同一份（sudo 默认校验调用者口令），故不新增
+        // 独立凭据字段。口令只在传输层的 channel stdin 内出现，绝不出现在
+        // 命令串 / 审查载荷 / 审计正文中。
+        let elevation = elevate.then(|| server.password.clone());
 
         let key = SshSessionKey {
             server_id: server.id.clone(),
@@ -346,6 +355,7 @@ impl SshSessionManager {
             max_output_bytes,
             started,
             cancel_rx.clone(),
+            elevation.as_deref(),
         )
         .await
         {
@@ -367,6 +377,7 @@ impl SshSessionManager {
                     max_output_bytes,
                     started,
                     cancel_rx,
+                    elevation.as_deref(),
                 )
                 .await
             }

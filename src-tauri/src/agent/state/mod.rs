@@ -18,7 +18,7 @@ mod run;
 use generation::GenerationGate;
 pub(crate) use generation::GenerationGuard;
 pub(crate) use run::ActiveRunHandle;
-use run::{ActiveRunStore, ArchRunRegistry, WorkflowRunRegistry};
+use run::{ActiveRunStore, ArchRunRegistry, UserConfirmRegistry, WorkflowRunRegistry};
 
 pub(crate) use run::WorkflowRunHandle;
 
@@ -41,6 +41,7 @@ pub struct DispatcherState {
     active_runs: ActiveRunStore,
     workflow_runs: WorkflowRunRegistry,
     arch_runs: ArchRunRegistry,
+    user_confirms: UserConfirmRegistry,
     title_generations: GenerationGate,
     keywords_generations: GenerationGate,
 }
@@ -105,6 +106,7 @@ impl DispatcherState {
             active_runs: ActiveRunStore::default(),
             workflow_runs: WorkflowRunRegistry::default(),
             arch_runs: ArchRunRegistry::default(),
+            user_confirms: UserConfirmRegistry::default(),
             title_generations: GenerationGate::default(),
             keywords_generations: GenerationGate::default(),
         })
@@ -492,6 +494,34 @@ impl DispatcherState {
     /// architecture_run 工具超时/取消路径的显式清槽。
     pub(crate) fn remove_arch_run(&self, run_id: &str) {
         self.arch_runs.remove(run_id)
+    }
+
+    /// 登记一次「命令审查需用户确认」请求，返回 (request_id, 答复接收端)。
+    /// 由命令类工具在审查不通过、需人工放行时调用；前端弹窗裁决后经
+    /// `tool_confirm_resolve` 命令调 `resolve_user_confirm` 解除等待。
+    /// workspace_id 用于回传侧的域校验（错会话回传按未消费处理）。
+    pub(crate) fn begin_user_confirm(
+        &self,
+        workspace_id: &str,
+    ) -> (String, tokio::sync::oneshot::Receiver<bool>) {
+        self.user_confirms.begin(workspace_id)
+    }
+
+    /// 前端回传用户裁决（true=允许执行 / false=拒绝）。条目不存在（超时清槽/
+    /// 重复回传）、workspace 不匹配或接收端已关闭时返回 false，调用方无需处理。
+    pub(crate) fn resolve_user_confirm(
+        &self,
+        request_id: &str,
+        workspace_id: &str,
+        approved: bool,
+    ) -> bool {
+        self.user_confirms
+            .resolve(request_id, workspace_id, approved)
+    }
+
+    /// 命令类工具超时/取消路径的显式清槽，防止条目泄漏。
+    pub(crate) fn remove_user_confirm(&self, request_id: &str) {
+        self.user_confirms.remove(request_id)
     }
 
     /// 开始新一代标题生成，返回代际守卫（G11-13：守卫 Drop 自动结算条目）。

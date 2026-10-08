@@ -124,6 +124,7 @@ async fn execute_managed(
             // 叶子数据面无白名单工具，但保持从 deps 继承（若未来数据面扩容，
             // 口径自动跟随父执行环境）。
             tool_timeouts: deps.tool_timeouts.clone(),
+            app_handle: deps.app_handle.clone(),
         },
     );
     let call = ToolCall::from_wire(

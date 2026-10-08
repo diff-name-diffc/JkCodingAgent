@@ -18,6 +18,7 @@ async fn unified_timeout_signals_callback_and_waits_for_actual_settlement() {
             cancel_rx: None,
             trace: Default::default(),
             tool_timeouts: Default::default(),
+            app_handle: None,
         },
     );
     let (noticed, cancellation) = oneshot::channel();

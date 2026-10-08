@@ -1,4 +1,6 @@
-use super::{ActiveRunCleanup, ActiveRunStore, ArchRunRegistry, WorkflowRunRegistry};
+use super::{
+    ActiveRunCleanup, ActiveRunStore, ArchRunRegistry, UserConfirmRegistry, WorkflowRunRegistry,
+};
 use std::sync::Arc;
 
 #[test]
@@ -188,4 +190,46 @@ async fn canvas_cancel_after_claim_keeps_report_channel_until_settled() {
     assert!(!registry.cancel_unstarted(&id));
     assert!(registry.complete(&id, "workspace", "修改已提交".into()));
     assert_eq!(rx.await.unwrap(), "修改已提交");
+}
+
+#[tokio::test]
+async fn user_confirm_resolve_delivers_verdict_once() {
+    let registry = UserConfirmRegistry::default();
+    let (request_id, rx) = registry.begin("ws-1");
+    assert!(registry.resolve(&request_id, "ws-1", true));
+    assert!(rx.await.unwrap());
+    // 重复回传：条目已消费，返回 false 无副作用。
+    assert!(!registry.resolve(&request_id, "ws-1", false));
+}
+
+#[tokio::test]
+async fn user_confirm_resolve_rejects_foreign_workspace() {
+    let registry = UserConfirmRegistry::default();
+    let (request_id, rx) = registry.begin("ws-owner");
+    // 错会话回传：按未消费处理，槽位保留给真正的主人。
+    assert!(!registry.resolve(&request_id, "ws-other", true));
+    assert!(registry.resolve(&request_id, "ws-owner", false));
+    assert!(!rx.await.unwrap());
+}
+
+#[tokio::test]
+async fn user_confirm_remove_makes_late_resolve_noop() {
+    let registry = UserConfirmRegistry::default();
+    let (request_id, rx) = registry.begin("ws-1");
+    registry.remove(&request_id); // 工具侧超时/取消清槽
+    assert!(!registry.resolve(&request_id, "ws-1", true));
+    // 发送端被移除 → 接收端收到 RecvError，工具侧按拒绝处理。
+    assert!(rx.await.is_err());
+}
+
+#[tokio::test]
+async fn user_confirm_begin_reclaims_dead_entries() {
+    let registry = UserConfirmRegistry::default();
+    let (first_id, first_rx) = registry.begin("ws-1");
+    drop(first_rx); // 工具 future 被丢弃：接收端关闭，条目成为死条目
+                    // 新登记触发兜底回收；死条目不再命中，返回 false。
+    let (second_id, second_rx) = registry.begin("ws-2");
+    assert!(!registry.resolve(&first_id, "ws-1", true));
+    assert!(registry.resolve(&second_id, "ws-2", true));
+    assert!(second_rx.await.unwrap());
 }

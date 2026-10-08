@@ -48,6 +48,7 @@ pub(crate) async fn mcp_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         context: review_context,
         workspace,
         workspace_id,
+        app_handle: deps.app_handle.clone(),
     };
 
     tool_definitions_from_snapshot(Some(&snapshot))
@@ -56,12 +57,28 @@ pub(crate) async fn mcp_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         .collect()
 }
 
-/// 审查调用所需的运行上下文（工作区路径 + 会话 id + 审查输入）。
+/// 审查调用所需的运行上下文（工作区路径 + 会话 id + 审查输入 + UI 句柄）。
 #[derive(Clone)]
 struct McpReviewInputs {
     context: crate::agent::rig_ext::review::RigReviewContext,
     workspace: std::path::PathBuf,
     workspace_id: String,
+    /// 通用「需用户确认」弹窗门禁的 UI 句柄（None = 无 UI，确认一律按拒绝）。
+    app_handle: Option<tauri::AppHandle>,
+}
+
+/// MCP 审查结论：硬拒绝（未配置 / 审查异常）不可人工放行；判定不通过若是
+/// 「需用户确认」类，则可升级为通用弹窗门禁由用户裁决。
+enum McpReviewOutcome {
+    Allowed,
+    Blocked {
+        /// 面向模型的拦截消息（已含「错误：」前缀，必要时已附确认指引）。
+        message: String,
+        /// 审查给出的原始理由（弹窗展示与「需用户确认」判定用）。
+        reason: String,
+        /// 是否属于「需用户确认」类（为用户弹窗放行）。硬拒绝为 false。
+        confirmable: bool,
+    },
 }
 
 /// 单个已解析 MCP 工具 → PortableDynamicTool。description/parameters 用
@@ -144,9 +161,40 @@ async fn execute_bridged(
         )));
     }
 
-    // 安全审查门禁（fail-closed）：未配置审查 / 审查异常 / 判定不通过一律拒绝。
-    if let Some(blocked) = review_mcp_call(name, &args, review).await {
-        return Err(ToolExecutionError::refused(blocked));
+    // 安全审查门禁（fail-closed）：未配置审查 / 审查异常一律拒绝；判定不通过
+    // 若是「需用户确认」类，升级为通用弹窗门禁由用户裁决后决定执行或拒绝。
+    match review_mcp_call(name, &args, review).await {
+        McpReviewOutcome::Allowed => {}
+        McpReviewOutcome::Blocked {
+            message,
+            reason,
+            confirmable,
+        } => {
+            if confirmable
+                && matches!(
+                    crate::agent::rig_ext::review_confirm::request_confirmation(
+                        review.app_handle.as_ref(),
+                        crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current()
+                            .map(|context| context.cancel_rx),
+                        crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                            workspace_id: review.workspace_id.clone(),
+                            tool: name.to_string(),
+                            target: format!("MCP 工具 `{name}`"),
+                            command: serde_json::to_string(&args)
+                                .unwrap_or_else(|_| args.to_string()),
+                            reason,
+                            elevated: false,
+                        },
+                    )
+                    .await,
+                    crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
+                )
+            {
+                // 用户确认放行：继续执行。
+            } else {
+                return Err(ToolExecutionError::refused(message));
+            }
+        }
     }
 
     // 在 TOCTOU 复核通过的同一份快照上执行，避免刷新缓存后把同名但
@@ -203,13 +251,18 @@ fn mcp_tool_error_message(output: &str) -> String {
 }
 
 /// MCP 调用的安全审查：复用 ssh_review 链路，把工具名与完整参数 JSON 送审。
-/// 返回 `Some(拦截消息)` 表示禁止执行（含未配置审查的 fail-closed 拦截）。
+/// 未配置审查 / 审查异常属硬拒绝（fail-closed，不可人工放行）；判定不通过若
+/// 原因带「需用户确认」标记则标记为 confirmable，交由调用方走通用弹窗门禁。
 /// 移植自旧自实现 MCP 桥的 `review_mcp_call`。
-async fn review_mcp_call(name: &str, args: &Value, review: &McpReviewInputs) -> Option<String> {
+async fn review_mcp_call(name: &str, args: &Value, review: &McpReviewInputs) -> McpReviewOutcome {
     let Some(review_config) = review.context.config.as_ref() else {
-        return Some(format!(
-            "错误：未配置安全审查，已拒绝执行 MCP 工具 `{name}`。请先在应用设置中配置安全审查模型。"
-        ));
+        return McpReviewOutcome::Blocked {
+            message: format!(
+                "错误：未配置安全审查，已拒绝执行 MCP 工具 `{name}`。请先在应用设置中配置安全审查模型。"
+            ),
+            reason: "未配置安全审查".to_string(),
+            confirmable: false,
+        };
     };
     let args_json = serde_json::to_string(args).unwrap_or_else(|_| args.to_string());
     let payload = review.context.build_payload(
@@ -223,17 +276,26 @@ async fn review_mcp_call(name: &str, args: &Value, review: &McpReviewInputs) -> 
         None,
     );
     match crate::agent::ssh_review::review_shell_command(review_config, &payload).await {
-        Ok(verdict) if verdict.allowed => None,
-        Ok(verdict) => Some(crate::agent::ssh_review::with_confirm_guidance(
-            format!(
-                "错误：MCP 工具 `{name}` 调用被安全审查拦截：{}",
-                verdict.reason
+        Ok(verdict) if verdict.allowed => McpReviewOutcome::Allowed,
+        Ok(verdict) => McpReviewOutcome::Blocked {
+            message: crate::agent::ssh_review::with_confirm_guidance(
+                format!(
+                    "错误：MCP 工具 `{name}` 调用被安全审查拦截：{}",
+                    verdict.reason
+                ),
+                &verdict.reason,
             ),
-            &verdict.reason,
-        )),
-        Err(error) => Some(format!(
-            "错误：MCP 工具 `{name}` 安全审查异常，已拒绝执行：{error}"
-        )),
+            confirmable: crate::agent::rig_ext::review_confirm::needs_user_confirmation(
+                &verdict.reason,
+                false,
+            ),
+            reason: verdict.reason,
+        },
+        Err(error) => McpReviewOutcome::Blocked {
+            message: format!("错误：MCP 工具 `{name}` 安全审查异常，已拒绝执行：{error}"),
+            reason: format!("安全审查异常：{error}"),
+            confirmable: false,
+        },
     }
 }
 

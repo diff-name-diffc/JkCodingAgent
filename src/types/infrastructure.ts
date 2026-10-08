@@ -117,6 +117,8 @@ export interface SshAuditRecord {
   durationMs?: number | null;
   truncated: boolean;
   interactiveBlocked?: boolean;
+  /** 是否以 sudo 提权执行（命令审查记录）。 */
+  elevated?: boolean;
   error?: string | null;
   review?: SshAuditReview | null;
 }

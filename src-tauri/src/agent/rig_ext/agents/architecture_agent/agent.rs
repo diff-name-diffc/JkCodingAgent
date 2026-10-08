@@ -368,6 +368,7 @@ impl RigArchitectureAgent {
                 trace: Default::default(),
                 // 架构画布工具面无「调用可声明超时」白名单工具，恒用表默认。
                 tool_timeouts: Default::default(),
+                app_handle: self.app_handle.clone(),
             },
         );
 

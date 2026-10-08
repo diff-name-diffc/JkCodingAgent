@@ -54,6 +54,8 @@ pub struct AppToolPolicyConfig {
     /// 统一超时白名单工具的 deadline 经 `spec::effective_timeout_secs`
     /// 参与「调用声明 > 用户默认 > 表默认」解析；空 = 全部用表默认。
     pub tool_timeouts: ToolTimeoutDefaults,
+    /// 通用「需用户确认」弹窗门禁的 UI 句柄（None = 无 UI，确认一律按拒绝）。
+    pub app_handle: Option<tauri::AppHandle>,
 }
 
 /// 应用级执行策略：门禁输入；策略层不再持有 DB / 事件通道——台账单写路径
@@ -335,15 +337,38 @@ impl AppToolExecutionPolicy {
                 ))
             })?;
         if !verdict.allowed {
-            return Err(ToolExecutionError::refused(
-                crate::agent::ssh_review::with_confirm_guidance(
-                    format!(
-                        "错误：工具 '{}' 已被安全审查拦截：{}",
-                        spec.name, verdict.reason
+            // 需用户确认类拦截：统一走通用弹窗门禁，用户明确允许则放行；
+            // 拒绝/超时/取消按 fail-closed 走原拦截。
+            let approved_by_user = crate::agent::rig_ext::review_confirm::needs_user_confirmation(
+                &verdict.reason,
+                false,
+            ) && matches!(
+                crate::agent::rig_ext::review_confirm::request_confirmation(
+                    self.config.app_handle.as_ref(),
+                    self.config.cancel_rx.clone(),
+                    crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                        workspace_id: self.config.workspace_id.clone(),
+                        tool: spec.name.clone(),
+                        target: format!("工具 '{}'", spec.name),
+                        command: call.function.arguments.to_string(),
+                        reason: verdict.reason.clone(),
+                        elevated: false,
+                    },
+                )
+                .await,
+                crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
+            );
+            if !approved_by_user {
+                return Err(ToolExecutionError::refused(
+                    crate::agent::ssh_review::with_confirm_guidance(
+                        format!(
+                            "错误：工具 '{}' 已被安全审查拦截：{}",
+                            spec.name, verdict.reason
+                        ),
+                        &verdict.reason,
                     ),
-                    &verdict.reason,
-                ),
-            ));
+                ));
+            }
         }
         Ok(())
     }
@@ -382,6 +407,7 @@ mod tests {
                 cancel_rx: None,
                 trace: Default::default(),
                 tool_timeouts,
+                app_handle: None,
             },
         );
         (policy, dir)

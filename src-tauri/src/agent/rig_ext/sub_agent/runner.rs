@@ -170,6 +170,7 @@ impl RigSubAgentRuntime {
                 // 继承父执行环境的用户超时默认：子智能体的 media 工具与主对话
                 // 同一份配置口径。
                 tool_timeouts: deps.tool_timeouts.clone(),
+                app_handle: request.app_handle.clone(),
             },
         );
         Ok(Self {

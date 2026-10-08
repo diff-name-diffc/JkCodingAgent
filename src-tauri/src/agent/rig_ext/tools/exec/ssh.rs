@@ -21,10 +21,18 @@ pub(super) fn ssh_tools(
     workspace_id: String,
     db: DispatcherDb,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Vec<PortableDynamicTool> {
     vec![
         ssh_list_servers_tool(manager.clone()),
-        ssh_exec_tool(manager, workspace, workspace_id, db, review_context),
+        ssh_exec_tool(
+            manager,
+            workspace,
+            workspace_id,
+            db,
+            review_context,
+            app_handle,
+        ),
     ]
 }
 
@@ -72,6 +80,7 @@ fn ssh_exec_tool(
     workspace_id: String,
     db: DispatcherDb,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
+    app_handle: Option<tauri::AppHandle>,
 ) -> PortableDynamicTool {
     let parameters = with_compression_parameters(
         json!({
@@ -88,6 +97,10 @@ fn ssh_exec_tool(
                 "command": {
                     "type": "string",
                     "description": "要在远程服务器执行的非交互式 shell 命令。禁止依赖交互输入（密码提示、y/n 确认、分页器、REPL）；这类命令会被检测到并中止。"
+                },
+                "sudo": {
+                    "type": "boolean",
+                    "description": "设为 true 时以 sudo 提权执行 command（后端自动用配置的服务器登录密码应答 sudo 口令提示，无需在 command 里写 sudo，也不要提供任何密码）。仅在需要 root 权限时使用；提权命令同样要经过安全审查，且被拦截时会请用户人工确认。注意：NOPASSWD 或 root 登录场景下注入的口令可能进入被包裹命令的 stdin，若命令会读取 stdin 请谨慎。"
                 },
                 "stdin": {
                     "type": "string",
@@ -109,7 +122,8 @@ fn ssh_exec_tool(
     PortableDynamicTool::new(
         "ssh_exec",
         "在指定 SSH server 上执行单个非交互式命令，返回 stdout/stderr/退出码。复用 session_id 对应的 SSH 连接，但每次调用是一次独立命令（不保留 cd、环境变量等 shell 状态）。\n\
-重要约束：命令必须是非交互式的——不得弹出密码、y/n 确认、分页器或进入 REPL。若命令疑似在等待输入，工具会主动中止并报错：输出末尾命中密码/确认等提示符时最快 8 秒中止；完全静默的命令（如 sleep、慢查询、写文件的备份）按 timeout_secs 放宽静默容忍（最长 60 秒）。改用非交互等价形式：sudo 用免密账号或 NOPASSWD；包管理/删除加 -y/--yes；分页器设 PAGER=cat、GIT_PAGER=cat；mysql/psql 用 -e/-c；需要向命令喂内容时用 stdin 参数（here-doc），不要指望终端回应交互提示。",
+需要 root 权限时设 sudo=true：后端会用配置的服务器登录密码通过 sudo 提权执行 command，你无需（也不要）在 command 中写 sudo，更不要提供密码。提权命令与普通命令一样经过安全审查；审查不通过时会请用户人工确认后再决定是否执行。sudo 失败（密码错误、账号无免密/无权、服务器要求 tty 等）时会把远端报错原样返回给你。\n\
+重要约束：命令必须是非交互式的——不得弹出密码、y/n 确认、分页器或进入 REPL。若命令疑似在等待输入，工具会主动中止并报错：输出末尾命中密码/确认等提示符时最快 8 秒中止；完全静默的命令（如 sleep、慢查询、写文件的备份）按 timeout_secs 放宽静默容忍（最长 60 秒）。改用非交互等价形式：需提权用 sudo=true；包管理/删除加 -y/--yes；分页器设 PAGER=cat、GIT_PAGER=cat；mysql/psql 用 -e/-c；需要向命令喂内容时用 stdin 参数（here-doc），不要指望终端回应交互提示。",
         parameters,
         move |args| {
             let manager = manager.clone();
@@ -117,6 +131,7 @@ fn ssh_exec_tool(
             let workspace_id = workspace_id.clone();
             let db = db.clone();
             let review_context = review_context.clone();
+            let app_handle = app_handle.clone();
             // 取消信号在本层（唯一处于 agent 循环 task-local 作用域的边界）读取
             // 一次后向下显式传递；无 task-local（如脱离循环的调用）时为 None，
             // 传输层按「无取消源」处理，不误判为已取消。
@@ -132,6 +147,7 @@ fn ssh_exec_tool(
                     db,
                     cancel_rx,
                     review_context,
+                    app_handle,
                 )
                 .await
                 .map(ToolOutput::text)
@@ -148,6 +164,7 @@ async fn ssh_exec_text(
     db: DispatcherDb,
     cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<String, ToolExecutionError> {
     let Some(server_id) = string_arg(args, "server_id") else {
         return Err(ToolExecutionError::invalid_args(
@@ -165,6 +182,7 @@ async fn ssh_exec_text(
         ));
     };
     let stdin = string_arg(args, "stdin");
+    let elevate = args.get("sudo").and_then(Value::as_bool).unwrap_or(false);
 
     // 审计元数据需要会话标题（审查阻断记录与执行记录共用）。读取失败仅降级
     // 审计展示（标题留空），仅留日志，不应中止命令执行（对齐 sync_directory）。
@@ -181,7 +199,7 @@ async fn ssh_exec_text(
     // - 已配置且服务器开启审查：执行前评估命令（含 stdin）安全性。
     // - 审查异常或判定不通过：拦截并写入审计，不执行命令。
     // - 服务器显式关闭「执行前审查」开关：按配置放行（设计内的豁免通道）。
-    let review_outcome: Option<crate::ssh_tool::SshAuditReview> = match review_context
+    let mut review_outcome: Option<crate::ssh_tool::SshAuditReview> = match review_context
         .config
         .as_ref()
     {
@@ -234,6 +252,7 @@ async fn ssh_exec_text(
                             port: server.port,
                             username: server.username.clone(),
                             tags: server.tags.clone(),
+                            elevated: elevate,
                         },
                     ),
                     command.clone(),
@@ -282,49 +301,119 @@ async fn ssh_exec_text(
                     }
                 }
             }
-            Ok(_) => None,
+            Ok(_) => {
+                // 该服务器关闭了「执行前审查」。普通命令按配置放行；但提权命令
+                // 不接受无审查自动放行——提权即把模型输出变成 root 执行的命令，
+                // 唯一屏障就是审查/用户确认，故此处升级为通用弹窗门禁。
+                if elevate
+                    && !matches!(
+                        crate::agent::rig_ext::review_confirm::request_confirmation(
+                            app_handle.as_ref(),
+                            cancel_rx.clone(),
+                            crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                                workspace_id: workspace_id.clone(),
+                                tool: "ssh_exec".to_string(),
+                                target: format!("SSH server {server_id}"),
+                                command: command.clone(),
+                                reason: "该服务器已关闭执行前审查，提权命令需用户确认".to_string(),
+                                elevated: true,
+                            },
+                        )
+                        .await,
+                        crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
+                    )
+                {
+                    return Err(ToolExecutionError::refused(
+                        "错误：提权（sudo）命令需要用户确认，但未获批准（被拒绝、超时或本轮已取消），已拒绝执行。"
+                            .to_string(),
+                    ));
+                }
+                None
+            }
             Err(error) => return Err(ToolExecutionError::other(format!("错误：{error}"))),
         },
     };
 
-    // 判定为不通过：写入「被拦截」审计记录并阻断，同时登记命令台账
-    //（供后续命令的安全审查判断来龙去脉）。
+    // 判定为不通过：默认写入「被拦截」审计记录并阻断，同时登记命令台账
+    //（供后续命令的安全审查判断来龙去脉）。例外——需用户确认类拦截
+    //（原因带「需用户确认」标记，或提权命令）统一走通用弹窗门禁：
+    // 用户明确允许则放行执行，拒绝/超时/取消仍走 fail-closed 阻断。
     if let Some(review) = &review_outcome {
         if !review.allowed {
             let reason = review.reason.clone();
+            let approved_by_user =
+                crate::agent::rig_ext::review_confirm::needs_user_confirmation(&reason, elevate)
+                    && matches!(
+                        crate::agent::rig_ext::review_confirm::request_confirmation(
+                            app_handle.as_ref(),
+                            cancel_rx.clone(),
+                            crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                                workspace_id: workspace_id.clone(),
+                                tool: "ssh_exec".to_string(),
+                                target: format!("SSH server {server_id}"),
+                                command: command.clone(),
+                                reason: reason.clone(),
+                                elevated: elevate,
+                            },
+                        )
+                        .await,
+                        crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
+                    );
+            if !approved_by_user {
+                command_history::record(
+                    &workspace_id,
+                    "ssh_exec",
+                    &server_id,
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    &reason,
+                );
+                let record_result = manager
+                    .record_review_blocked(
+                        workspace.clone(),
+                        workspace_id.clone(),
+                        session_title.clone(),
+                        server_id.clone(),
+                        session_id.clone(),
+                        command.clone(),
+                        review.clone(),
+                    )
+                    .await;
+                if let Ok(record) = record_result {
+                    return Err(ToolExecutionError::refused(
+                        crate::agent::ssh_review::with_confirm_guidance(
+                            crate::ssh_tool::render_ssh_audit_record_markdown(&record),
+                            &reason,
+                        ),
+                    ));
+                }
+                return Err(ToolExecutionError::refused(
+                    crate::agent::ssh_review::with_confirm_guidance(
+                        format!(
+                            "错误：命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
+                        ),
+                        &reason,
+                    ),
+                ));
+            }
+            // 用户确认放行：登记台账后继续执行（下方 execute 携带提权开关）。
+            // 审计结论改标为经确认放行，避免审计记录仍显示「审查拦截/未执行」。
+            review_outcome = Some(crate::ssh_tool::SshAuditReview {
+                allowed: true,
+                reason: format!("安全审查未自动放行，经用户确认放行：{reason}"),
+            });
             command_history::record(
                 &workspace_id,
                 "ssh_exec",
                 &server_id,
                 &command,
-                CommandHistoryStatus::Blocked,
-                &reason,
+                CommandHistoryStatus::Executed,
+                if elevate {
+                    "安全审查拦截后经用户确认放行（sudo 提权）"
+                } else {
+                    "安全审查拦截后经用户确认放行"
+                },
             );
-            let record_result = manager
-                .record_review_blocked(
-                    workspace.clone(),
-                    workspace_id.clone(),
-                    session_title.clone(),
-                    server_id.clone(),
-                    session_id.clone(),
-                    command.clone(),
-                    review.clone(),
-                )
-                .await;
-            if let Ok(record) = record_result {
-                return Err(ToolExecutionError::refused(
-                    crate::agent::ssh_review::with_confirm_guidance(
-                        crate::ssh_tool::render_ssh_audit_record_markdown(&record),
-                        &reason,
-                    ),
-                ));
-            }
-            return Err(ToolExecutionError::refused(crate::agent::ssh_review::with_confirm_guidance(
-                format!(
-                    "错误：命令已被安全审查拦截：{reason}。如需放行，可在 SSH 工具配置中关闭该服务器的「执行前审查」开关。"
-                ),
-                &reason,
-            )));
         }
     }
 
@@ -343,6 +432,7 @@ async fn ssh_exec_text(
             u64_arg(args, "timeout_secs"),
             cancel_rx,
             review_outcome,
+            elevate,
         )
         .await
     {
@@ -356,7 +446,12 @@ async fn ssh_exec_text(
                 &history_server_id,
                 &history_command,
                 CommandHistoryStatus::Executed,
-                &rendered,
+                if elevate {
+                    format!("(sudo) {rendered}")
+                } else {
+                    rendered.clone()
+                }
+                .as_str(),
             );
             classify_ssh_result(&result, rendered)
         }

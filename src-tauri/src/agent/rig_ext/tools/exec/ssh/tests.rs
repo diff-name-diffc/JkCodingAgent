@@ -14,6 +14,7 @@ fn result(exit_code: i32) -> SshExecResult {
         interactive_blocked: false,
         cancelled: false,
         external_state_unknown: false,
+        elevated: false,
     }
 }
 

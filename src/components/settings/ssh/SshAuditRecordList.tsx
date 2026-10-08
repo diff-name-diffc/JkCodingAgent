@@ -49,6 +49,7 @@ function SshAuditRecordItem({
           {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           <span className="ai-ssh-audit-server">{record.serverId}</span>
           <span className="ai-ssh-audit-session">{record.sessionId}</span>
+          {record.elevated ? <span className="ai-ssh-badge is-warning">sudo 提权</span> : null}
           <ReviewBadge record={record} />
           <ExecutionBadge record={record} />
         </div>

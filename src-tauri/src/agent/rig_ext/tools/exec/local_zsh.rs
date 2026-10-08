@@ -93,6 +93,7 @@ pub(super) fn local_zsh_tool(
     exec_timeout_secs: u64,
     cancel_rx: Option<watch::Receiver<bool>>,
     review: crate::agent::rig_ext::review::RigReviewContext,
+    app_handle: Option<tauri::AppHandle>,
 ) -> PortableDynamicTool {
     let parameters = with_compression_parameters(
         json!({
@@ -118,6 +119,7 @@ pub(super) fn local_zsh_tool(
             let workspace_id = workspace_id.clone();
             let cancel_rx = crate::agent::rig_ext::r#loop::invocation::ToolInvocationContext::current().map(|context| context.cancel_rx).or_else(|| cancel_rx.clone());
             let review = review.clone();
+            let app_handle = app_handle.clone();
             Box::pin(async move {
                 run::run_local_zsh(
                     &args,
@@ -126,6 +128,7 @@ pub(super) fn local_zsh_tool(
                     exec_timeout_secs,
                     cancel_rx,
                     review,
+                    app_handle,
                 )
                 .await.map(ToolOutput::text)
             })
@@ -314,6 +317,7 @@ mod tests {
             30,
             None,
             crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
+            None,
         );
         let parameters = tool.definition().parameters;
 

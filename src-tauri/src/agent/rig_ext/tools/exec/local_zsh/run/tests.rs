@@ -36,6 +36,7 @@ async fn invalid_and_blacklisted_commands_fail_before_execution() {
             30,
             None,
             crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
+            None,
         )
         .await;
         assert!(result.is_err());

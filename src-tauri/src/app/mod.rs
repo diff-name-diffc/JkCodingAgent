@@ -151,6 +151,7 @@ pub fn run() {
             agent::commands::architecture_commands::dispatcher_send_architecture_agent_message,
             agent::commands::architecture_commands::architecture_run_complete,
             agent::commands::architecture_commands::architecture_run_claim,
+            agent::commands::confirm_commands::tool_confirm_resolve,
             agent::commands::message_commands::dispatcher_list_messages,
             agent::commands::message_commands::dispatcher_get_tool_run_tree,
             agent::commands::message_commands::dispatcher_get_session_token_usage,

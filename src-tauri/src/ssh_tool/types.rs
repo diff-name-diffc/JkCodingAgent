@@ -92,6 +92,9 @@ pub struct SshExecResult {
     pub duration_ms: u128,
     pub truncated: bool,
     pub interactive_blocked: bool,
+    /// 是否以 sudo 提权执行（审计与前端展示用）。
+    #[serde(default)]
+    pub elevated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -128,6 +131,9 @@ pub struct SshAuditRecord {
     pub truncated: bool,
     #[serde(default)]
     pub interactive_blocked: bool,
+    /// 是否以 sudo 提权执行（拦截记录为 false）。
+    #[serde(default)]
+    pub elevated: bool,
     pub error: Option<String>,
     /// 命令执行前的安全审查结论；None 表示未审查（未配置审查 AI 或服务器关闭审查）。
     #[serde(default)]

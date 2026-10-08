@@ -68,6 +68,12 @@ impl CommandFailure {
 /// `cancel` 由调用方（工具边界，唯一可读 task-local 的层）显式注入；
 /// 本层只消费信号，不反向依赖上层 agent 循环。None 表示无取消源：行为与
 /// 未取消一致（不会误判为已取消）。
+///
+/// `elevation` 为 Some(口令) 时以 sudo 提权执行：命令被包装为
+/// `sudo -k -S -p '' -- sh -c '<原命令>'`，口令作为 channel stdin 的首行写入。
+/// `-k` 强制 sudo 每次都读一次 stdin（避免 NOPASSWD 场景下 sudo 不读 stdin、
+/// 使首行口令串味给被包裹命令的 stdin）；`-p ''` 抑制提示符，因而不会命中
+/// 交互检测。口令绝不进入命令串 / 审计。
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_command_on_connection(
     connection: &Arc<SshConnection>,
@@ -79,6 +85,7 @@ pub(super) async fn run_command_on_connection(
     max_output_bytes: usize,
     started: Instant,
     cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    elevation: Option<&str>,
 ) -> Result<SshExecResult, CommandFailure> {
     if cancel
         .as_ref()
@@ -90,13 +97,28 @@ pub(super) async fn run_command_on_connection(
             kind: CommandFailureKind::CancelledNotSent,
         });
     }
+    // 提权包装在本地完成：远端只看到包装后的命令，原命令作为 sh -c 的单引号
+    // 参数传入（POSIX 转义，杜绝拼串注入）。stdin 首行写入口令。
+    let (wire_command, wire_stdin) = match elevation {
+        Some(password) => {
+            let wrapped = build_sudo_wrapped_command(command);
+            let mut input = String::with_capacity(password.len() + 1 + stdin.map_or(0, str::len));
+            input.push_str(password);
+            input.push('\n');
+            if let Some(extra) = stdin {
+                input.push_str(extra);
+            }
+            (wrapped, Some(input))
+        }
+        None => (command.to_string(), stdin.map(str::to_string)),
+    };
     let mut channel = connection
         .handle
         .channel_open_session()
         .await
         .map_err(|error| CommandFailure::new("创建 SSH channel 失败", error, connection))?;
     channel
-        .exec(true, command.as_bytes())
+        .exec(true, wire_command.as_bytes())
         .await
         .map_err(|error| CommandFailure {
             // kind 承载 external_state_unknown 语义；文本保留给模型的行为指引。
@@ -111,7 +133,7 @@ pub(super) async fn run_command_on_connection(
     // 写入 stdin（若有）并关闭输入端。写入失败（如命令很快退出、不再读输入）
     // 不判为命令失败，但要把原因带到 stderr，避免无声丢失。
     let mut stdin_write_note = None;
-    if let Some(input) = stdin.filter(|input| !input.is_empty()) {
+    if let Some(input) = wire_stdin.as_deref().filter(|input| !input.is_empty()) {
         if let Err(error) = channel.data(input.as_bytes()).await {
             stdin_write_note = Some(format!(
                 "\n[写入 stdin 失败（命令可能未读取标准输入）：{}]",
@@ -200,7 +222,22 @@ pub(super) async fn run_command_on_connection(
         duration_ms: started.elapsed().as_millis(),
         truncated: stdout_capped || stderr_capped,
         interactive_blocked: matches!(outcome, DrainOutcome::InteractiveBlocked),
+        elevated: elevation.is_some(),
     })
+}
+
+/// POSIX 单引号转义：把字符串包进 `'...'`，其中单引号替换为 `'\''`。
+/// 与 `sync/transport.rs::quote` 规则一致（同一转义语义的本地副本，避免
+/// 跨模块耦合到 sync 子系统）。
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// 构造 sudo 提权包装命令：`sudo -k -S -p '' -- sh -c '<原命令>'`。
+/// 远端 shell 展开的最外层只看到固定前缀与一个单引号参数，原命令的一切
+/// 元字符（含 `;`、`|`、`$()`、换行）都留在参数内部，不会被提前解释。
+fn build_sudo_wrapped_command(command: &str) -> String {
+    format!("sudo -k -S -p '' -- sh -c {}", shell_single_quote(command))
 }
 
 /// 静默阈值随命令超时放大：短命令保持灵敏（8s），长命令（如 300s 备份）放宽到
@@ -378,5 +415,43 @@ mod tests {
         assert_eq!(idle_thresholds(120), (8, 30));
         assert_eq!(idle_thresholds(300), (8, 60));
         assert_eq!(idle_thresholds(600), (8, 60));
+    }
+
+    #[test]
+    fn sudo_wrapper_preserves_command_verbatim() {
+        // 原命令整体作为 sh -c 的单引号参数，元字符不被外层提前解释。
+        let wrapped = build_sudo_wrapped_command("apt-get install -y nginx");
+        assert_eq!(
+            wrapped,
+            "sudo -k -S -p '' -- sh -c 'apt-get install -y nginx'"
+        );
+    }
+
+    #[test]
+    fn sudo_wrapper_escapes_embedded_single_quotes() {
+        // 命令含单引号：用 '\'' 转义，关闭-转义-重开，原命令仍逐字保留。
+        let wrapped = build_sudo_wrapped_command("echo 'hi' > /tmp/f");
+        assert_eq!(
+            wrapped,
+            "sudo -k -S -p '' -- sh -c 'echo '\\''hi'\\'' > /tmp/f'"
+        );
+    }
+
+    #[test]
+    fn sudo_wrapper_neutralizes_shell_metacharacters() {
+        // 分号 / 命令替换 / 换行都原样保留在 sh -c 的单引号参数内部，
+        // 不会被外层 shell 提前解释（注入面封闭）。
+        let command = "a; rm -rf /\n$(whoami) | tee x";
+        let wrapped = build_sudo_wrapped_command(command);
+        assert!(wrapped.starts_with("sudo -k -S -p '' -- sh -c '"));
+        assert!(wrapped.ends_with('\''));
+        // 整条原命令逐字出现在包装内（未被转义或篡改）。
+        assert!(wrapped.contains(command));
+    }
+
+    #[test]
+    fn shell_single_quote_matches_transport_rule() {
+        assert_eq!(shell_single_quote("a b"), "'a b'");
+        assert_eq!(shell_single_quote("it's"), "'it'\\''s'");
     }
 }

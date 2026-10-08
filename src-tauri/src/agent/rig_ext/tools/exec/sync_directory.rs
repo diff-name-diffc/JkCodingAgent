@@ -21,7 +21,7 @@ pub(super) fn sync_directory_tool(
     workspace_id: String,
     restrict_to_workspace: bool,
     extra_allowed_dirs: Vec<PathBuf>,
-    _app_handle: Option<AppHandle>,
+    app_handle: Option<AppHandle>,
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
@@ -48,6 +48,7 @@ pub(super) fn sync_directory_tool(
             let db = db.clone();
             let cancel_rx = cancel_rx.clone();
             let review_context = review_context.clone();
+            let app_handle = app_handle.clone();
             Box::pin(async move {
                 let cancelled = cancel_rx.clone();
                 match execute_inner(
@@ -60,6 +61,7 @@ pub(super) fn sync_directory_tool(
                     db,
                     cancel_rx,
                     review_context,
+                    app_handle,
                 )
                 .await
                 {
@@ -124,6 +126,7 @@ async fn review_sync_command(
                 port: server.port,
                 username: server.username.clone(),
                 tags: server.tags.clone(),
+                elevated: false,
             },
         ),
         command.into(),
@@ -159,6 +162,7 @@ async fn execute_inner(
     db: DispatcherDb,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
+    app_handle: Option<AppHandle>,
 ) -> Result<String, SyncFailure> {
     let mut request: SyncDirectory = serde_json::from_value(args.clone())
         .map_err(|e| SyncFailure::Recoverable(format!("错误：同步参数无效：{e}")))?;
@@ -187,37 +191,73 @@ async fn execute_inner(
 
     // 安全审查门禁（fail-closed，对齐旧实现）：未配置审查模型即拦截、
     // 服务器可显式豁免、判定不通过写审计与命令台账并阻断。
-    let review = review_sync_command(&review_context, &workspace_id, args, &server, &command).await;
+    let mut review =
+        review_sync_command(&review_context, &workspace_id, args, &server, &command).await;
     if !review.allowed {
+        // 需用户确认类拦截：统一走通用弹窗门禁，用户明确允许则放行同步；
+        // 拒绝/超时/取消按 fail-closed 走原拦截（Recoverable 错误文本）。
+        let approved_by_user =
+            crate::agent::rig_ext::review_confirm::needs_user_confirmation(&review.reason, false)
+                && matches!(
+                    crate::agent::rig_ext::review_confirm::request_confirmation(
+                        app_handle.as_ref(),
+                        cancel_rx.clone(),
+                        crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                            workspace_id: workspace_id.clone(),
+                            tool: "sync_directory".to_string(),
+                            target: format!("SSH server {}", server.id),
+                            command: command.clone(),
+                            reason: review.reason.clone(),
+                            elevated: false,
+                        },
+                    )
+                    .await,
+                    crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
+                );
+        if !approved_by_user {
+            command_history::record(
+                &workspace_id,
+                "sync_directory",
+                &server.id,
+                &command,
+                CommandHistoryStatus::Blocked,
+                &review.reason,
+            );
+            let record_result = manager
+                .record_review_blocked(
+                    workspace.clone(),
+                    workspace_id.clone(),
+                    review_context.session_title.clone(),
+                    server.id.clone(),
+                    workspace_id.clone(),
+                    command.clone(),
+                    review.clone(),
+                )
+                .await;
+            let headline = match record_result {
+                Ok(_) => format!("目录同步已被安全审查拦截：{}", review.reason),
+                Err(error) => format!(
+                    "目录同步已被安全审查拦截：{}（写入审计记录失败：{error}）",
+                    review.reason
+                ),
+            };
+            return Err(SyncFailure::Recoverable(
+                crate::agent::ssh_review::with_confirm_guidance(headline, &review.reason),
+            ));
+        }
+        // 用户确认放行：审计结论改标为经确认放行并继续正常同步路径。
+        review = crate::ssh_tool::SshAuditReview {
+            allowed: true,
+            reason: format!("安全审查未自动放行，经用户确认放行：{}", review.reason),
+        };
         command_history::record(
             &workspace_id,
             "sync_directory",
             &server.id,
             &command,
-            CommandHistoryStatus::Blocked,
-            &review.reason,
+            CommandHistoryStatus::Executed,
+            "安全审查拦截后经用户确认放行",
         );
-        let record_result = manager
-            .record_review_blocked(
-                workspace.clone(),
-                workspace_id.clone(),
-                review_context.session_title.clone(),
-                server.id.clone(),
-                workspace_id.clone(),
-                command.clone(),
-                review.clone(),
-            )
-            .await;
-        let headline = match record_result {
-            Ok(_) => format!("目录同步已被安全审查拦截：{}", review.reason),
-            Err(error) => format!(
-                "目录同步已被安全审查拦截：{}（写入审计记录失败：{error}）",
-                review.reason
-            ),
-        };
-        return Err(SyncFailure::Recoverable(
-            crate::agent::ssh_review::with_confirm_guidance(headline, &review.reason),
-        ));
     }
 
     // 审计元数据需要会话标题：旧实现由 ToolContext 注入，此处从会话库按
@@ -360,6 +400,7 @@ fn audit_record(
         }),
         review: Some(review),
         interactive_blocked: false,
+        elevated: false,
         error: result.as_ref().err().cloned().or_else(|| {
             output.and_then(|r| {
                 if r.cancelled {

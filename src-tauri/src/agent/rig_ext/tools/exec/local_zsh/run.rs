@@ -12,6 +12,7 @@ pub(super) async fn run_local_zsh(
     exec_timeout_secs: u64,
     cancel_rx: Option<watch::Receiver<bool>>,
     review_context: crate::agent::rig_ext::review::RigReviewContext,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<String, ToolExecutionError> {
     let Some(command) = string_arg(args, "command") else {
         return Err(ToolExecutionError::invalid_args(
@@ -58,7 +59,7 @@ pub(super) async fn run_local_zsh(
     // 安全审查门禁（fail-closed）：未配置审查 / 审查异常 / 判定不通过一律拒绝执行，
     // 并把「被拦截」写入 audit.json 审计（对齐旧实现的 `review_local_command` 与
     // `blocked_command_response` 的完整语义）。
-    let review = match review_local_command(
+    let mut review = match review_local_command(
         args,
         &review_context,
         &session_id,
@@ -96,21 +97,57 @@ pub(super) async fn run_local_zsh(
         }
     };
     if !review.allowed {
-        command_history::record(
-            &session_id,
-            "local_zsh",
-            "本地 zsh",
-            &command,
-            CommandHistoryStatus::Blocked,
-            &review.reason,
-        );
-        let headline = crate::agent::ssh_review::with_confirm_guidance(
-            format!("错误：命令已被安全审查拦截：{}", review.reason),
-            &review.reason,
-        );
-        return Err(ToolExecutionError::refused(
-            blocked_command_response(&run_dir, &session_id, &command, review, headline).await,
-        ));
+        // 需用户确认类拦截（原因带「需用户确认」标记）：统一走通用弹窗门禁，
+        // 用户明确允许则放行执行；拒绝/超时/取消按 fail-closed 走原拦截。
+        let approved_by_user =
+            crate::agent::rig_ext::review_confirm::needs_user_confirmation(&review.reason, false)
+                && matches!(
+                    crate::agent::rig_ext::review_confirm::request_confirmation(
+                        app_handle.as_ref(),
+                        cancel_rx.clone(),
+                        crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                            workspace_id: session_id.clone(),
+                            tool: "local_zsh".to_string(),
+                            target: "本地 zsh".to_string(),
+                            command: command.clone(),
+                            reason: review.reason.clone(),
+                            elevated: false,
+                        },
+                    )
+                    .await,
+                    crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
+                );
+        if approved_by_user {
+            // 用户确认放行：审计结论改标为经确认放行，并继续正常执行路径。
+            review = crate::ssh_tool::SshAuditReview {
+                allowed: true,
+                reason: format!("安全审查未自动放行，经用户确认放行：{}", review.reason),
+            };
+            command_history::record(
+                &session_id,
+                "local_zsh",
+                "本地 zsh",
+                &command,
+                CommandHistoryStatus::Executed,
+                "安全审查拦截后经用户确认放行",
+            );
+        } else {
+            command_history::record(
+                &session_id,
+                "local_zsh",
+                "本地 zsh",
+                &command,
+                CommandHistoryStatus::Blocked,
+                &review.reason,
+            );
+            let headline = crate::agent::ssh_review::with_confirm_guidance(
+                format!("错误：命令已被安全审查拦截：{}", review.reason),
+                &review.reason,
+            );
+            return Err(ToolExecutionError::refused(
+                blocked_command_response(&run_dir, &session_id, &command, review, headline).await,
+            ));
+        }
     }
 
     if cancel_rx

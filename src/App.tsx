@@ -8,6 +8,7 @@ import { cleanupDispatcherSession } from "./components/dispatcherSessionStore";
 import { ensureRunStateReconciliation } from "./components/dispatcher-chat/run-state-reconciliation";
 import { cleanupSubAgentEvents } from "./components/subAgentEventStore";
 import { cleanupWorkflowPlansForSession } from "./components/workflow/workflow-store";
+import { ToolConfirmHost } from "./components/confirm/ToolConfirmHost";
 import { useWorkspaceStore } from "./stores/workspace-store";
 import { normalizeThemePreference, persistThemePreference } from "./lib/theme";
 import { sortProjectsByRecency } from "./lib/project-sort";
@@ -248,6 +249,8 @@ function App() {
           </div>
         )}
       </div>
+      {/* 命令审查「需用户确认」全局弹窗宿主：任何视图下都能收到确认请求。 */}
+      <ToolConfirmHost />
     </div>
   );
 }

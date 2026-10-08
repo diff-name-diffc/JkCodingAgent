@@ -23,6 +23,7 @@ pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         deps.exec_timeout_secs,
         deps.cancel_rx.clone(),
         deps.review.clone(),
+        deps.app_handle.clone(),
     )];
     tools.extend(ssh::ssh_tools(
         deps.ssh_manager.clone(),
@@ -30,6 +31,7 @@ pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         deps.workspace_id.clone(),
         deps.db.clone(),
         deps.review.clone(),
+        deps.app_handle.clone(),
     ));
     tools.extend(ssh_memo::ssh_memo_tools(deps.ssh_manager.clone()));
     tools.push(sync_directory::sync_directory_tool(

@@ -285,6 +285,7 @@ mod tests {
             duration_ms: Some(1),
             truncated: false,
             interactive_blocked: false,
+            elevated: false,
             error: None,
             review: None,
         }

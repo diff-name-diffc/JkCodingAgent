@@ -8456,6 +8456,68 @@
     margin-top: 8px;
   }
 
+  /* 命令审查「需用户确认」弹窗（components/confirm/ToolConfirmDialog）：
+     在确认弹窗骨架上补充工具/目标/命令/原因的详情区。 */
+  .ai-tool-confirm-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 46vh;
+    margin-top: 4px;
+    overflow-y: auto;
+  }
+
+  .ai-tool-confirm-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .ai-tool-confirm-row.is-block {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .ai-tool-confirm-label {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .ai-tool-confirm-value {
+    color: var(--text-primary);
+    font-size: 12.5px;
+    word-break: break-all;
+  }
+
+  .ai-tool-confirm-code {
+    width: 100%;
+    margin: 0;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .ai-tool-confirm-reason {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+
+  .ai-tool-confirm-hint {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
   /* ── SSH 设置页（settings/ssh/*） ── */
 
   /* 服务器卡片 */

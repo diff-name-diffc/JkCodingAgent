@@ -1,8 +1,9 @@
 import { motion } from "framer-motion";
 import { Sparkles } from "lucide-react";
-import type {
-  AssistantThinkingBlock,
-  AssistantTurnSegment,
+import {
+  foldAssistantDrafts,
+  type AssistantThinkingBlock,
+  type AssistantTurnSegment,
 } from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import type { DispatcherToolArtifactRef, ModelCategory } from "../../types";
@@ -10,7 +11,6 @@ import { cn } from "../../lib/cn";
 import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { ReasoningBlock } from "./reasoning-block";
-import { SupersededBlock } from "./superseded-block";
 import { ToolCallList } from "./tool-call-card";
 
 /**
@@ -22,6 +22,10 @@ import { ToolCallList } from "./tool-call-card";
  * blinking caret at the end of the text being generated (and re-renders just
  * that block); earlier segments render in static mode. The thinking block
  * keeps its own plain-text caret.
+ *
+ * 草稿块协议：被后续正文取代的中间推理段（superseded）不再作为独立灰块
+ * 散落正文流，而是统一折叠进「思考过程」折叠块（与历史侧 AssistantMessage
+ * 共用 foldAssistantDrafts）。
  */
 export interface StreamingMessageProps {
   segments: AssistantTurnSegment[];
@@ -50,8 +54,12 @@ export function StreamingMessage({
   onConfigureModel,
   className,
 }: StreamingMessageProps) {
-  const visibleSegments = segments.filter((s) => s.text.trim());
-  const hasContent = visibleSegments.length > 0 || (tools?.length ?? 0) > 0;
+  const { visible: visibleSegments, drafts } = foldAssistantDrafts(segments);
+  const hasContent =
+    visibleSegments.length > 0 ||
+    (tools?.length ?? 0) > 0 ||
+    (thinking?.text ?? "").trim().length > 0;
+  const showReasoning = Boolean(thinking?.text?.trim()) || drafts.length > 0;
 
   return (
     <motion.div
@@ -68,11 +76,12 @@ export function StreamingMessage({
       />
 
       <div className="min-w-0 pl-[60px]">
-        {thinking?.text && (
+        {showReasoning && (
           <ReasoningBlock
             className="mb-2"
-            text={thinking.text}
-            elapsedMs={thinking.elapsedMs}
+            text={thinking?.text ?? ""}
+            drafts={drafts}
+            elapsedMs={thinking?.elapsedMs ?? 0}
             isStreaming={isStreaming}
             autoOpen={isStreaming && visibleSegments.length === 0}
           />
@@ -89,19 +98,13 @@ export function StreamingMessage({
         )}
 
         <div className="space-y-2">
-          {visibleSegments.map((segment, index) =>
-            // UI-12：实时侧同样把 superseded 段渲染为折叠灰块，
-            // 与 AssistantMessage（历史侧）同轮次视觉一致。
-            segment.superseded ? (
-              <SupersededBlock key={index} text={segment.text} />
-            ) : (
-              <MarkdownRenderer
-                key={index}
-                content={segment.text}
-                streaming={isStreaming && index === visibleSegments.length - 1}
-              />
-            ),
-          )}
+          {visibleSegments.map((segment, index) => (
+            <MarkdownRenderer
+              key={index}
+              content={segment.text}
+              streaming={isStreaming && index === visibleSegments.length - 1}
+            />
+          ))}
         </div>
 
         {!hasContent && placeholder && (

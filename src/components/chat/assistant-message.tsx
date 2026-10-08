@@ -4,9 +4,10 @@ import type {
   DispatcherToolArtifactRef,
   ModelCategory,
 } from "../../types";
-import type {
-  AssistantThinkingBlock,
-  AssistantTurnSegment,
+import {
+  foldAssistantDrafts,
+  type AssistantThinkingBlock,
+  type AssistantTurnSegment,
 } from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
@@ -14,7 +15,6 @@ import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { MessageActions } from "./message-actions";
 import { ReasoningBlock } from "./reasoning-block";
-import { SupersededBlock } from "./superseded-block";
 import { ToolCallList } from "./tool-call-card";
 import { formatTokenCountK } from "../dispatcher-chat/dispatcherChatUtils";
 
@@ -29,6 +29,10 @@ import { formatTokenCountK } from "../dispatcher-chat/dispatcherChatUtils";
  * Streaming tail is handled by <StreamingMessage /> (a slimmer variant that
  * renders the live segments from dispatcherSessionStore). This component is
  * for finalized turns.
+ *
+ * 草稿块协议：被后续正文取代的中间推理段不再作为独立灰块散落正文流，
+ * 而是与模型思考链一起折叠进「思考过程」（与实时侧 StreamingMessage
+ * 共用 foldAssistantDrafts）。
  */
 export interface AssistantMessageProps {
   segments: AssistantTurnSegment[];
@@ -74,13 +78,12 @@ export function AssistantMessage({
   onConfigureModel,
   className,
 }: AssistantMessageProps) {
-  const visibleSegments = segments.filter((s) => s.text.trim());
+  const { visible: visibleSegments, drafts } = foldAssistantDrafts(segments);
+  const showReasoning = Boolean(thinking?.text?.trim()) || drafts.length > 0;
 
   const handleCopy = () => {
-    const text = visibleSegments
-      .filter((s) => !s.superseded)
-      .map((s) => s.text)
-      .join("\n\n");
+    // 复制仅取最终正文（草稿已折叠进思考过程，不属于答复正文）。
+    const text = visibleSegments.map((s) => s.text).join("\n\n");
     if (onCopy) onCopy(text);
     else void navigator.clipboard.writeText(text);
   };
@@ -95,11 +98,12 @@ export function AssistantMessage({
       <ChatAvatar role="assistant" hidden={!showAvatar} className="absolute left-6 top-0.5" />
 
       <div className="min-w-0 pl-[60px]">
-        {thinking?.text && (
+        {showReasoning && (
           <ReasoningBlock
             className="mb-2"
-            text={thinking.text}
-            elapsedMs={thinking.elapsedMs}
+            text={thinking?.text ?? ""}
+            drafts={drafts}
+            elapsedMs={thinking?.elapsedMs ?? 0}
             persistKey={rowId === undefined ? undefined : `reasoning:${rowId}`}
           />
         )}
@@ -116,21 +120,17 @@ export function AssistantMessage({
           />
         )}
 
-        {/* Segments */}
+        {/* Segments：仅最终正文；中间推理草稿已折叠进上方思考过程。 */}
         <div className="space-y-2">
-          {visibleSegments.map((segment, index) =>
-            segment.superseded ? (
-              <SupersededBlock key={index} text={segment.text} />
-            ) : (
-              <MarkdownRenderer
-                key={index}
-                content={segment.text}
-                messageId={segment.messageId ?? messageId}
-                onRunPython={onRunPython}
-                pythonRunRecords={pythonRunRecords}
-              />
-            ),
-          )}
+          {visibleSegments.map((segment, index) => (
+            <MarkdownRenderer
+              key={index}
+              content={segment.text}
+              messageId={segment.messageId ?? messageId}
+              onRunPython={onRunPython}
+              pythonRunRecords={pythonRunRecords}
+            />
+          ))}
         </div>
 
         <MessageActions

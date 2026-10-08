@@ -55,8 +55,9 @@ export function createDispatcherEventChannel({
           ...state,
           assistantPlaceholder: "正在分析问题...",
           liveThinking: null,
-          // Demote the previous reply into a collapsed grey block instead
-          // of discarding it, so the user can still expand and read it.
+          // Demote the previous reply so it folds into the collapsed
+          // 思考过程 instead of being discarded — the user can still expand
+          // and read the intermediate reasoning.
           streamingSegments: demoteActiveTextSegments(state.streamingSegments),
         }));
         break;

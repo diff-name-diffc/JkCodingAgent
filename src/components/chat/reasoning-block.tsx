@@ -4,7 +4,13 @@ import { cn } from "../../lib/cn";
 import { usePersistedToggle } from "./row-ui-state";
 
 export interface ReasoningBlockProps {
+  /** 模型思考链正文（reasoning / ` thinking` 标签）。可为空——仅有草稿时也展示。 */
   text: string;
+  /**
+   * 折叠进思考过程的中间推理草稿：助手在工具轮次间产出的、已被后续正文
+   * 取代的文本段。按出现顺序展示在主思考链之后，不再作为独立块散落正文流。
+   */
+  drafts?: string[];
   elapsedMs: number;
   isStreaming?: boolean;
   /**
@@ -20,6 +26,7 @@ export interface ReasoningBlockProps {
 
 export function ReasoningBlock({
   text,
+  drafts,
   elapsedMs,
   isStreaming = false,
   autoOpen = false,
@@ -31,6 +38,7 @@ export function ReasoningBlock({
   const [userToggled, setUserToggled] = useState(false);
   const effectiveOpen = userToggled ? open : open || autoOpen;
   const elapsed = elapsedMs > 0 ? `${(elapsedMs / 1000).toFixed(1)}s` : null;
+  const draftList = (drafts ?? []).filter((draft) => draft.trim().length > 0);
 
   return (
     <div className={cn("ai-reasoning-block", className)}>
@@ -46,6 +54,9 @@ export function ReasoningBlock({
         <span className={cn("ai-reasoning-title", isStreaming && "ai-reasoning-shimmer")}>
           💭 思考过程
         </span>
+        {draftList.length > 0 && (
+          <span className="ai-reasoning-meta">含 {draftList.length} 段中间推理</span>
+        )}
         <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
           {isStreaming && <span>思考中…</span>}
           {elapsed && <span>{elapsed}</span>}
@@ -58,7 +69,13 @@ export function ReasoningBlock({
 
       {effectiveOpen && (
         <div className="chat-scroll max-h-[300px] overflow-y-auto border-t border-border/60 px-3 py-2.5 text-[13px] italic leading-relaxed text-muted-foreground">
-          <p className="whitespace-pre-wrap break-words">{text}</p>
+          {text.trim() && <p className="whitespace-pre-wrap break-words">{text}</p>}
+          {draftList.map((draft, index) => (
+            <div key={index} className={cn("ai-reasoning-draft", text.trim() && "mt-2.5")}>
+              <span className="ai-reasoning-draft-label">中间推理 {index + 1}</span>
+              <p className="whitespace-pre-wrap break-words">{draft}</p>
+            </div>
+          ))}
         </div>
       )}
     </div>

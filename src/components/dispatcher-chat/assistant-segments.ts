@@ -12,9 +12,9 @@ export interface AssistantTurnSegment {
   text: string;
   messageId?: string;
   // assistant-text 专用：标记为已被后续正文覆盖的前置正文。
-  // 渲染为置灰折叠条而非最终正文气泡。流式中由 demoteActiveTextSegments
-  // 在下一轮 assistantStarted 时设置；历史重载时由带 tool_calls 的消息
-  // 在 buildDispatcherDisplayItems 中设置。
+  // 渲染时经 foldAssistantDrafts 折叠进「思考过程」，不作最终正文气泡。
+  // 流式中由 demoteActiveTextSegments 在下一轮 assistantStarted 时设置；
+  // 历史重载时由带 tool_calls 的消息在 buildDispatcherDisplayItems 中设置。
   superseded?: boolean;
   toolCallId?: string;
   toolName?: string;
@@ -40,9 +40,10 @@ export function appendAssistantTextSegment(
  * Mark every active (non-superseded) assistant-text segment as superseded.
  *
  * Used at the start of a new assistant round (assistantStarted / assistantMessage)
- * to demote the previously-streamed reply into a collapsed grey block, instead
- * of discarding it. tool-summary segments are left untouched so ongoing tool
- * summaries keep accumulating.
+ * to demote the previously-streamed reply so it folds into the turn's collapsed
+ * 思考过程 (see {@link foldAssistantDrafts}) instead of being discarded.
+ * tool-summary segments are left untouched so ongoing tool summaries keep
+ * accumulating.
  */
 export function demoteActiveTextSegments(segments: AssistantTurnSegment[]): AssistantTurnSegment[] {
   return segments.map((segment) =>
@@ -50,6 +51,38 @@ export function demoteActiveTextSegments(segments: AssistantTurnSegment[]): Assi
       ? { ...segment, superseded: true }
       : segment,
   );
+}
+
+/**
+ * 助手轮次的「草稿块协议」展示分区：把分段拆成「仍有正文资格的分段」与
+ * 「应折叠进思考过程的草稿」。
+ *
+ * - `visible`：最终正文（非 superseded 段），按原序渲染为正文气泡；
+ * - `drafts`：中间推理正文（superseded 的助手文本段），按出现顺序折叠进
+ *   「思考过程」折叠块——不再作为独立的「查看中间推理」块散落在正文流里。
+ *
+ * 历史投影（`AssistantMessage`）与实时气泡（`StreamingMessage`）共用本函数，
+ * 保证「正文出现后草稿全部并入思考过程」在两处口径完全一致。
+ */
+export interface AssistantSegmentPartition {
+  /** 仍作为正文展示的分段（最终答复）。 */
+  visible: AssistantTurnSegment[];
+  /** 折叠进思考过程的草稿正文（中间推理），按出现顺序。 */
+  drafts: string[];
+}
+
+export function foldAssistantDrafts(segments: AssistantTurnSegment[]): AssistantSegmentPartition {
+  const visible: AssistantTurnSegment[] = [];
+  const drafts: string[] = [];
+  for (const segment of segments) {
+    if (!segment.text.trim()) continue;
+    if (segment.superseded) {
+      drafts.push(segment.text);
+    } else {
+      visible.push(segment);
+    }
+  }
+  return { visible, drafts };
 }
 
 export function appendToolSummarySegment(

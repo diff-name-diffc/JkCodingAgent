@@ -103,8 +103,9 @@ export function buildDispatcherDisplayItems(
       // When the assistant message contains tool calls, its text content is
       // preliminary reasoning that will be superseded by the follow-up
       // response after tool execution.  Instead of discarding it, mark it as
-      // superseded so it renders as a collapsed grey block inside the turn,
-      // preserving the intermediate reasoning for the user to expand.
+      // superseded so it folds into the turn's collapsed 思考过程 (see
+      // foldAssistantDrafts), preserving the intermediate reasoning for the
+      // user to expand.
       const hasToolCalls = toolCalls.length > 0;
       const content = message.content.trim();
       if (content) {

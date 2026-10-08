@@ -7797,6 +7797,32 @@
     font-weight: 500;
   }
 
+  /* 草稿块协议：折叠进思考过程的中间推理段计数徽标。 */
+  .ai-reasoning-meta {
+    flex-shrink: 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 1px 8px;
+    color: var(--text-muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  /* 草稿块协议：思考过程折叠区内的单段中间推理（置于主思考链之后）。 */
+  .ai-reasoning-draft {
+    border-left: 2px solid var(--border-subtle);
+    padding-left: 8px;
+  }
+
+  .ai-reasoning-draft-label {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--text-muted);
+    font-size: 10.5px;
+    font-style: normal;
+    letter-spacing: 0.02em;
+  }
+
   .ai-reasoning-shimmer {
     color: transparent;
     background: linear-gradient(

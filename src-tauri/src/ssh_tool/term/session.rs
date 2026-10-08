@@ -214,7 +214,7 @@ impl TermSession {
     }
 
     /// 底层连接句柄（tmux kill-session 等模板命令的临时通道用）。
-    pub(crate) fn connection(&self) -> &Arc<SshConnection> {
+    pub(super) fn connection(&self) -> &Arc<SshConnection> {
         &self.connection
     }
 

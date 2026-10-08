@@ -139,7 +139,7 @@ impl TermSessionRegistry {
             && matches!(params.tmux, TmuxPreference::Auto)
             && probe_command(&connection, "command -v tmux").await;
 
-        let mut channel = connection
+        let channel = connection
             .handle
             .channel_open_session()
             .await
@@ -338,10 +338,6 @@ impl TermSessionRegistry {
             // tmux 会话保留现场（detach 语义）；裸终端随连接关闭终止远端进程。
             term.close_channel().await;
         }
-    }
-
-    fn quota_message(&self, server_id: Option<&str>) -> String {
-        render_quota_message(&self.list(server_id))
     }
 }
 

@@ -362,6 +362,8 @@ impl RigOrchestratorAgent {
             app_handle: None,
             db: self.db.clone(),
             ssh_manager: crate::ssh_tool::SshSessionManager::new(self.db.pool()),
+            // 编排器无 ssh_term 工具面，空表占位（与 ssh_manager 同理）。
+            term_registry: crate::ssh_tool::term::TermSessionRegistry::new(),
             mcp_registry: crate::mcp::McpRegistry::new(self.db.clone()),
             sub_agent_manager: None,
             cancel_rx: None,
@@ -396,6 +398,8 @@ impl RigOrchestratorAgent {
             db: self.db.clone(),
             // 编排器无 SSH / MCP 工具面（模型只见四个入口），依赖仅为构造完备性。
             ssh_manager: crate::ssh_tool::SshSessionManager::new(self.db.pool()),
+            // 编排器无 ssh_term 工具面，空表占位（与 ssh_manager 同理）。
+            term_registry: crate::ssh_tool::term::TermSessionRegistry::new(),
             mcp_registry: crate::mcp::McpRegistry::new(self.db.clone()),
             sub_agent_manager: None,
             cancel_rx: Some(cancel_rx.clone()),

@@ -56,6 +56,8 @@ thiserror = "2"
 ropey = "1"
 sha2 = "0.11"
 russh = "0.63"
+# SSH 交互终端的屏幕模型（VT 解析）：ssh_tool/term 用，依赖仅 rgb + unicode-width。
+avt = "0.18"
 # 格式白名单与运行时闸门严格对齐：mime_for_ext / sniff_image_mime 仅放行
 # png/jpeg/webp/gif 四类，bmp/ico/tiff 在所有入口（粘贴、fetch 魔数嗅探、
 # 保存登记）都被拒绝——文件浏览器预览直接流原始字节给 webview，不经本 crate

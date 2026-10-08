@@ -127,6 +127,7 @@ async fn chat_turn_streams_answer_and_persists_messages() {
         config,
         McpRegistry::new(db.clone()),
         SshSessionManager::new(db.pool()),
+        crate::ssh_tool::term::TermSessionRegistry::new(),
         None,
     );
     agent.apply_settings_v2(&AhaSettingsV2::default(), AgentContext::Chat);
@@ -235,6 +236,7 @@ async fn static_catalog_lists_candidate_tools() {
         config,
         McpRegistry::new(db.clone()),
         SshSessionManager::new(db.pool()),
+        crate::ssh_tool::term::TermSessionRegistry::new(),
         None,
     );
     agent.apply_settings_v2(&AhaSettingsV2::default(), AgentContext::Chat);

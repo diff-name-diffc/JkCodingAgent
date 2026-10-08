@@ -51,6 +51,7 @@ struct AgentServices {
     config: DispatcherAgentConfig,
     mcp_registry: McpRegistry,
     ssh_manager: SshSessionManager,
+    term_registry: crate::ssh_tool::term::TermSessionRegistry,
     db: DispatcherDb,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
 }
@@ -90,6 +91,10 @@ impl DispatcherState {
         // SSH 配置已收敛为全局 SQLite 权威源：管理器直接共享 DispatcherDb
         // 连接池，配置 / 主机密钥 / 审计全部读写全局库。
         let ssh_manager = SshSessionManager::new(db.pool());
+        // SSH 交互终端会话表（ssh_term_*）：与连接池并列的应用级单例。
+        let term_registry = crate::ssh_tool::term::TermSessionRegistry::new();
+        // 调度器 claims 解析（term_id → server 互斥域）经全局入口访问。
+        crate::ssh_tool::term::set_global_registry(term_registry.clone());
 
         // MCP 全局注册表以全局库为唯一权威源：构造期强制持有 DB，
         // refresh 时按「全局 ∪ 项目文件（同名覆盖）」合并。
@@ -100,6 +105,7 @@ impl DispatcherState {
                 config,
                 mcp_registry,
                 ssh_manager,
+                term_registry,
                 db,
                 sub_agent_manager,
             },
@@ -132,6 +138,11 @@ impl DispatcherState {
         self.services.ssh_manager.clone()
     }
 
+    /// SSH 交互终端会话表（工具面与级联清理共用同一单例）。
+    pub(crate) fn term_registry(&self) -> crate::ssh_tool::term::TermSessionRegistry {
+        self.services.term_registry.clone()
+    }
+
     /// 子智能体工具清单（选择列表 + 保存校验）。与 `RigSubAgentRuntime`
     /// 实际继承的 execution profile 同源：exec + media + `notify_user_progress`，
     /// 不含嵌套子智能体工具——否则会出现「配置可保存但运行时缺工具」。
@@ -140,6 +151,7 @@ impl DispatcherState {
             self.services.config.clone(),
             self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
+            self.services.term_registry.clone(),
             self.services.sub_agent_manager.clone(),
         );
         let settings = match self.services.db.get_settings_v2() {
@@ -197,6 +209,7 @@ impl DispatcherState {
             self.services.config.clone(),
             self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
+            self.services.term_registry.clone(),
             self.services.sub_agent_manager.clone(),
         );
 
@@ -339,6 +352,7 @@ impl DispatcherState {
                 self.services.config.clone(),
                 self.services.mcp_registry.clone(),
                 self.services.ssh_manager.clone(),
+                self.services.term_registry.clone(),
                 self.services.sub_agent_manager.clone(),
             );
             let settings = tokio::task::spawn_blocking({

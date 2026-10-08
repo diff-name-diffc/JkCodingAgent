@@ -130,6 +130,9 @@ pub(crate) struct RigToolDeps {
     pub app_handle: Option<AppHandle>,
     pub db: DispatcherDb,
     pub ssh_manager: SshSessionManager,
+    /// SSH 交互终端会话表（ssh_term_* 工具组）。共享单例由应用状态注入；
+    /// 编排器侧仅构造空表占位（无 SSH 工具面）。
+    pub term_registry: crate::ssh_tool::term::TermSessionRegistry,
     pub mcp_registry: McpRegistry,
     pub sub_agent_manager: Option<Arc<SubAgentManager>>,
     /// run 级协作取消信号：长命令/扫描类工具应主动消费并终止底层

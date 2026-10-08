@@ -1,5 +1,6 @@
 pub mod db;
 pub(crate) mod memo;
+pub(crate) mod term;
 
 mod audit;
 mod command_exec;
@@ -295,6 +296,45 @@ impl SshSessionManager {
             };
             ssh_db.append_audit_record(&record)?;
             Ok(record)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    /// 写入 ssh_term_* 工具组的活动审计（open/send/close 的成功执行记录；
+    /// 审查拦截场景仍走 `record_review_blocked`）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_term_activity_audit(
+        &self,
+        workspace_path: PathBuf,
+        workspace_id: String,
+        session_title: String,
+        server_id: String,
+        session_id: String,
+        command: String,
+        review: Option<SshAuditReview>,
+    ) -> Result<(), String> {
+        let ssh_db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let record = SshAuditRecord {
+                created_at: Utc::now().to_rfc3339(),
+                workspace_path: normalize_project_key(&workspace_path),
+                workspace_id,
+                session_title,
+                server_id,
+                session_id,
+                command,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: None,
+                truncated: false,
+                interactive_blocked: false,
+                elevated: false,
+                error: None,
+                review,
+            };
+            ssh_db.append_audit_record(&record)
         })
         .await
         .map_err(|error| error.to_string())?

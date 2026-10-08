@@ -57,6 +57,7 @@ pub struct RigPlainChatAgent {
     config: DispatcherAgentConfig,
     mcp_registry: McpRegistry,
     ssh_manager: SshSessionManager,
+    term_registry: crate::ssh_tool::term::TermSessionRegistry,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
     app_handle: Option<AppHandle>,
 
@@ -86,6 +87,7 @@ impl RigPlainChatAgent {
         config: DispatcherAgentConfig,
         mcp_registry: McpRegistry,
         ssh_manager: SshSessionManager,
+        term_registry: crate::ssh_tool::term::TermSessionRegistry,
         sub_agent_manager: Option<Arc<SubAgentManager>>,
     ) -> Self {
         Self {
@@ -93,6 +95,7 @@ impl RigPlainChatAgent {
             config,
             mcp_registry,
             ssh_manager,
+            term_registry,
             sub_agent_manager,
             app_handle: None,
             system_prompt: Mutex::new(DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string()),
@@ -438,6 +441,7 @@ impl RigPlainChatAgent {
             app_handle: self.app_handle.clone(),
             db: db.clone(),
             ssh_manager: self.ssh_manager.clone(),
+            term_registry: self.term_registry.clone(),
             mcp_registry: self.mcp_registry.clone(),
             sub_agent_manager: self.sub_agent_manager.clone(),
             cancel_rx: Some(cancel_rx.clone()),
@@ -540,6 +544,7 @@ impl RigPlainChatAgent {
             db: crate::agent::db::DispatcherDb::new(self.config.db_path.clone())
                 .expect("打开工具清单用数据库句柄"),
             ssh_manager: self.ssh_manager.clone(),
+            term_registry: self.term_registry.clone(),
             mcp_registry: self.mcp_registry.clone(),
             sub_agent_manager: self.sub_agent_manager.clone(),
             cancel_rx: None,

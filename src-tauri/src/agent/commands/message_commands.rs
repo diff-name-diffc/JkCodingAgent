@@ -56,8 +56,12 @@ pub async fn dispatcher_clear_messages(
     .await;
     if result.is_ok() {
         // 会话资源清理规范：清空消息与会话删除同级回收内存态命令台账
-        //（与 delete_session / project_delete 的执行对齐）。
+        //（与 delete_session / project_delete 的执行对齐）；交互终端一并关闭。
         crate::agent::command_history::forget_session(&workspace_for_cleanup);
+        state
+            .term_registry()
+            .close_session_terms(&workspace_for_cleanup)
+            .await;
     }
     result
 }

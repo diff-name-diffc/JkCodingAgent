@@ -8,6 +8,7 @@
 mod local_zsh;
 mod ssh;
 mod ssh_memo;
+mod ssh_term;
 mod sync_directory;
 
 use rig::tool::PortableDynamicTool;
@@ -33,6 +34,7 @@ pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         deps.review.clone(),
         deps.app_handle.clone(),
     ));
+    tools.extend(ssh_term::ssh_term_tools(deps));
     tools.extend(ssh_memo::ssh_memo_tools(deps.ssh_manager.clone()));
     tools.push(sync_directory::sync_directory_tool(
         deps.ssh_manager.clone(),

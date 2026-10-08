@@ -202,6 +202,7 @@ mod tests {
             app_handle: None,
             db: db.clone(),
             ssh_manager: crate::ssh_tool::SshSessionManager::new(db.pool()),
+            term_registry: crate::ssh_tool::term::TermSessionRegistry::new(),
             mcp_registry: crate::mcp::McpRegistry::new(db),
             sub_agent_manager: None,
             cancel_rx: None,

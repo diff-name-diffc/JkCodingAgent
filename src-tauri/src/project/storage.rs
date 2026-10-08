@@ -146,5 +146,13 @@ pub async fn project_delete(
     .await
     .context("删除项目任务失败")
     .and_then(|inner| inner.context("删除项目失败"));
+    // 会话资源清理规范：被删会话打开的交互终端一并关闭（tmux 会话随 kill
+    // 不在远端残留）。终端关闭是 async，放 DB 事务成功之后执行；连接不可达
+    // 时 close 内部容忍失败（best-effort）。
+    if let Ok(delete_result) = &result {
+        for session_id in &delete_result.deleted_session_ids {
+            state.term_registry().close_session_terms(session_id).await;
+        }
+    }
     result.into_command_result()
 }

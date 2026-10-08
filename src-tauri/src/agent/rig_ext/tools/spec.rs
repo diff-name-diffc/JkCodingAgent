@@ -268,7 +268,7 @@ struct ToolProfile {
 /// 它们的审查携带完整目标环境上下文（目标服务器 / 执行目录、stdin、服务器级
 /// 审查开关），比 broker 的通用 JSON 参数审查更准确；broker 必须让位，
 /// 避免同一调用出现两套结论。新增此类工具时在此登记。
-const SELF_REVIEWED_TOOLS: &[&str] = &["local_zsh", "ssh_exec", "sync_directory"];
+const SELF_REVIEWED_TOOLS: &[&str] = &["local_zsh", "ssh_exec", "sync_directory", "ssh_term_send"];
 
 /// 未注册/未知工具名的兜底统一超时（秒）。
 const DEFAULT_UNKNOWN_TIMEOUT_SECS: u64 = 60;
@@ -636,6 +636,58 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolSafety::ReviewRequired,
         300,
         ToolPolicyOptions::UNCOMPRESSED_SELF_MANAGED,
+        ClaimResource::SshServer,
+    ),
+    // ── SSH 交互终端（ssh_term_*，设计文档 docs/ssh-term-agent-2026-10-08.md）──
+    // open/send 按命令执行类工具的最坏能力声明：send 每次输入都过审查
+    //（review_self_managed，同 ssh_exec）；open 的审查面在带 command 路径，
+    // 裸 shell / tmux 模板命令免审（应用拼装 + 会话名白名单，注入面封闭）。
+    // read/list 只读；close 关闭自开终端，效果由 term 子系统托管（同 ssh_memo
+    // 写侧口径）。统一超时 60s：read 的 wait_ms ≤25s、send 内嵌审查 30s（ssh_review
+    // 自带 REVIEW_TIMEOUT_SECS）均在预算内。
+    policy_row(
+        "ssh_term_open",
+        ToolCategory::Ssh,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        60,
+        ToolPolicyOptions::SERIAL,
+        ClaimResource::SshServer,
+    ),
+    policy_row(
+        "ssh_term_send",
+        ToolCategory::Ssh,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        60,
+        ToolPolicyOptions::SERIAL,
+        ClaimResource::SshServer,
+    ),
+    policy_row(
+        "ssh_term_read",
+        ToolCategory::Ssh,
+        ToolAccess::READONLY_UNBOUND,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+        ClaimResource::SshServer,
+    ),
+    policy_row(
+        "ssh_term_close",
+        ToolCategory::Ssh,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+        ClaimResource::SshServer,
+    ),
+    policy_row(
+        "ssh_term_list",
+        ToolCategory::Ssh,
+        ToolAccess::READONLY_UNBOUND,
+        ToolSafety::Safe,
+        30,
+        ToolPolicyOptions::SERIAL,
         ClaimResource::SshServer,
     ),
     policy_row(

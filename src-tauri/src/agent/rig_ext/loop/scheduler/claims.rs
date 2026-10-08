@@ -20,6 +20,26 @@ fn workspace_claim(scope: &std::path::Path, write: bool) -> Claim {
     }
 }
 
+/// 解析 Ssh 资源键：server_id / ssh_profile 参数优先，其次 term_id 反查，
+/// 兜底 "unknown"。
+fn ssh_resource_key(args: &serde_json::Value) -> String {
+    if let Some(key) = args
+        .get("server_id")
+        .or_else(|| args.get("ssh_profile"))
+        .and_then(serde_json::Value::as_str)
+    {
+        return key.to_string();
+    }
+    if let Some(term_id) = args.get("term_id").and_then(serde_json::Value::as_str) {
+        if let Some(server_id) = crate::ssh_tool::term::global_registry()
+            .and_then(|registry| registry.server_of(term_id))
+        {
+            return server_id;
+        }
+    }
+    "unknown".to_string()
+}
+
 pub(super) fn claims(
     tool: &PortableDynamicTool,
     call: &ToolCall,
@@ -104,15 +124,12 @@ pub(super) fn claims(
     }
     let resource = match resource_kind {
         ClaimResource::Session => Resource::Session(workspace.into()),
-        ClaimResource::SshServer | ClaimResource::SshServerAndWorkspace => Resource::Ssh(
-            call.function
-                .arguments
-                .get("server_id")
-                .or_else(|| call.function.arguments.get("ssh_profile"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-                .into(),
-        ),
+        // ssh_term_send/read/close 只带 term_id：经全局终端会话表反查
+        // server_id，保证与同 server 的 ssh_exec 等副作用互斥；查不到（已
+        // 关闭/回收/未登记）保守落 "unknown" 域。
+        ClaimResource::SshServer | ClaimResource::SshServerAndWorkspace => {
+            Resource::Ssh(ssh_resource_key(&call.function.arguments))
+        }
         ClaimResource::Workspace => Resource::LocalFilesystem(scope.clone()),
         ClaimResource::External | ClaimResource::FilePath => Resource::External,
     };

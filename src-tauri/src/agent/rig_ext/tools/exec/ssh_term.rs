@@ -45,6 +45,7 @@ pub(super) fn ssh_term_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         ssh_term_open_tool(ctx.clone()),
         ssh_term_send_tool(ctx.clone()),
         ssh_term_read_tool(ctx.clone()),
+        ssh_term_resize_tool(ctx.clone()),
         ssh_term_close_tool(ctx.clone()),
         ssh_term_list_tool(ctx),
     ]
@@ -186,6 +187,8 @@ async fn ssh_term_open_text(args: &Value, ctx: TermToolCtx) -> Result<String, To
                 &session_id,
                 command,
                 Some(args),
+                // open(command) 路径终端尚未开，无现场。
+                None,
             )
             .await?
         }
@@ -301,6 +304,8 @@ async fn ssh_term_send_text(args: &Value, ctx: TermToolCtx) -> Result<String, To
         )));
     };
 
+    // P3：送审附终端现场——审查模型看到真实屏幕（确认提示/REPL 状态）而非裸按键。
+    let screen_context = ctx.registry.screen_context_of(&term_id);
     let review = review_term_command(
         &ctx,
         "ssh_term_send",
@@ -308,6 +313,7 @@ async fn ssh_term_send_text(args: &Value, ctx: TermToolCtx) -> Result<String, To
         &session_id,
         &text,
         Some(args),
+        screen_context,
     )
     .await?;
 
@@ -411,6 +417,47 @@ async fn ssh_term_read_text(args: &Value, ctx: TermToolCtx) -> Result<String, To
         .await
         .map_err(map_term_error)?;
     render_json(&payload)
+}
+
+fn ssh_term_resize_tool(ctx: TermToolCtx) -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        "ssh_term_resize",
+        "调整终端尺寸（同时同步远端 PTY 的 window_change 与本地屏幕模型）。全屏程序显示错乱或需要更宽的输出布局时使用；cols 夹紧 40..200、rows 夹紧 10..60。调整后用 ssh_term_read 读取新布局下的屏幕。",
+        json!({
+            "type": "object",
+            "properties": {
+                "term_id": { "type": "string", "description": "ssh_term_open 返回的 termId" },
+                "cols": { "type": "integer", "description": "目标列数（夹紧 40..200）", "minimum": 40, "maximum": 200 },
+                "rows": { "type": "integer", "description": "目标行数（夹紧 10..60）", "minimum": 10, "maximum": 60 }
+            },
+            "required": ["term_id", "cols", "rows"]
+        }),
+        move |args| {
+            let ctx = ctx.clone();
+            Box::pin(async move { ssh_term_resize_text(&args, ctx).await.map(ToolOutput::text) })
+        },
+    )
+}
+
+async fn ssh_term_resize_text(
+    args: &Value,
+    ctx: TermToolCtx,
+) -> Result<String, ToolExecutionError> {
+    let Some(term_id) = string_arg(args, "term_id") else {
+        return Err(ToolExecutionError::invalid_args(
+            "错误：缺少必填参数 term_id。".to_string(),
+        ));
+    };
+    let (Some(cols), Some(rows)) = (usize_arg(args, "cols"), usize_arg(args, "rows")) else {
+        return Err(ToolExecutionError::invalid_args(
+            "错误：缺少必填参数 cols / rows。".to_string(),
+        ));
+    };
+    ctx.registry
+        .resize(&term_id, cols, rows)
+        .await
+        .map_err(map_term_error)?;
+    Ok(json!({ "termId": term_id, "ok": true, "cols": cols, "rows": rows }).to_string())
 }
 
 fn ssh_term_close_tool(ctx: TermToolCtx) -> PortableDynamicTool {
@@ -517,6 +564,8 @@ async fn review_term_command(
     session_id: &str,
     command: &str,
     args: Option<&Value>,
+    // 终端现场（仅 send 路径：让审查模型看到真实屏幕而非裸按键碎片）。
+    screen_context: Option<String>,
 ) -> Result<Option<SshAuditReview>, ToolExecutionError> {
     let session_title = session_title_of(ctx).await;
     let refuse = |reason: String| {
@@ -543,7 +592,7 @@ async fn review_term_command(
         // 服务器显式关闭「执行前审查」：设计内的豁免通道，放行但落审计。
         return Ok(None);
     }
-    let payload = ctx.review_context.build_payload(
+    let mut payload = ctx.review_context.build_payload(
         &ctx.workspace_id,
         args,
         crate::agent::ssh_review::CommandReviewTarget::Ssh(
@@ -560,6 +609,7 @@ async fn review_term_command(
         command.to_string(),
         None,
     );
+    payload.screen_context = screen_context;
     match crate::agent::ssh_review::review_shell_command(&review_config, &payload).await {
         Ok(verdict) => {
             let review = SshAuditReview {

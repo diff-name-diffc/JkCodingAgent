@@ -151,7 +151,10 @@ pub async fn project_delete(
     // 时 close 内部容忍失败（best-effort）。
     if let Ok(delete_result) = &result {
         for session_id in &delete_result.deleted_session_ids {
-            state.term_registry().close_session_terms(session_id).await;
+            state
+                .term_registry()
+                .close_session_terms(&state.ssh_manager(), session_id)
+                .await;
         }
     }
     result.into_command_result()

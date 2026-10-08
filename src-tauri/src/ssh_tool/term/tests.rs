@@ -18,10 +18,14 @@ use crate::ssh_tool::SshDb;
 // 回环服务器
 // ---------------------------------------------------------------------------
 
+/// 测试服务器侧事件（exec 命令 / 窗口变化），供断言远端实际收到了什么。
+type ServerEvents = std::sync::Arc<parking_lot::Mutex<Vec<String>>>;
+
 #[derive(Clone)]
 struct LoopServer {
     /// `command -v tmux` 的模拟结果（tmux 分路开关）。
     tmux_available: bool,
+    events: ServerEvents,
 }
 
 impl russh::server::Server for LoopServer {
@@ -29,12 +33,14 @@ impl russh::server::Server for LoopServer {
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
         LoopHandler {
             tmux_available: self.tmux_available,
+            events: self.events.clone(),
         }
     }
 }
 
 struct LoopHandler {
     tmux_available: bool,
+    events: ServerEvents,
 }
 
 impl russh::server::Handler for LoopHandler {
@@ -70,6 +76,7 @@ impl russh::server::Handler for LoopHandler {
         session: &mut russh::server::Session,
     ) -> Result<(), Self::Error> {
         let command = String::from_utf8_lossy(data).to_string();
+        self.events.lock().push(format!("exec: {command}"));
         if command == "command -v tmux" {
             if self.tmux_available {
                 session.data(channel, b"/usr/bin/tmux\r\n".to_vec())?;
@@ -88,6 +95,21 @@ impl russh::server::Handler for LoopHandler {
             session.eof(channel)?;
             session.close(channel)?;
         }
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _channel: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        self.events
+            .lock()
+            .push(format!("window-change: {col_width}x{row_height}"));
         Ok(())
     }
 
@@ -110,7 +132,7 @@ impl russh::server::Handler for LoopHandler {
 /// rand_core trait 对齐，固定 PEM 避开依赖纠缠。
 const TEST_HOST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACDu+QkbiQ5z3ZCGBDxaVo7ZrpBlccoKej8vTkTuo/3hmQAAAKAcisBNHIrA\nTQAAAAtzc2gtZWQyNTUxOQAAACDu+QkbiQ5z3ZCGBDxaVo7ZrpBlccoKej8vTkTuo/3hmQ\nAAAED9lkd8MRooMXd6QPfjYxgEdtIJodhCcWZvfIlRACLsku75CRuJDnPdkIYEPFpWjtmu\nkGVxygp6Py9ORO6j/eGZAAAAGmprQGprcy1NYWNCb29rLVByby01LmxvY2FsAQID\n-----END OPENSSH PRIVATE KEY-----";
 
-async fn spawn_loop_server(tmux_available: bool) -> u16 {
+async fn spawn_loop_server(tmux_available: bool) -> (u16, ServerEvents) {
     let config = Arc::new(russh::server::Config {
         keys: vec![russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).expect("解析测试主机密钥")],
         ..Default::default()
@@ -121,12 +143,16 @@ async fn spawn_loop_server(tmux_available: bool) -> u16 {
     let port = listener.local_addr().expect("读取端口").port();
     // RunningServer 借用 server 实例与 listener：整体 move 进后台 future，
     // 由 future 持有至进程结束（测试进程退出自然回收）。
-    let mut loop_server = LoopServer { tmux_available };
+    let events: ServerEvents = Default::default();
+    let mut loop_server = LoopServer {
+        tmux_available,
+        events: events.clone(),
+    };
     tokio::spawn(async move {
         let server = loop_server.run_on_socket(config, &listener);
         let _ = server.await;
     });
-    port
+    (port, events)
 }
 
 // ---------------------------------------------------------------------------
@@ -136,11 +162,12 @@ async fn spawn_loop_server(tmux_available: bool) -> u16 {
 struct Fixture {
     registry: TermSessionRegistry,
     manager: crate::ssh_tool::SshSessionManager,
+    events: ServerEvents,
     _guard: crate::test_util::TempDirGuard,
 }
 
 async fn fixture(tmux_available: bool) -> Fixture {
-    let port = spawn_loop_server(tmux_available).await;
+    let (port, events) = spawn_loop_server(tmux_available).await;
     let guard = crate::test_util::TempDirGuard::new("ssh-term-it");
     let pool = Arc::new(
         r2d2::Pool::builder()
@@ -165,6 +192,7 @@ async fn fixture(tmux_available: bool) -> Fixture {
     Fixture {
         registry: TermSessionRegistry::new(),
         manager: crate::ssh_tool::SshSessionManager::new(pool),
+        events,
         _guard: guard,
     }
 }
@@ -352,4 +380,100 @@ async fn custom_tmux_name_validated_and_quota_reports() {
     for id in ids {
         let _ = fx.registry.close(&id, false).await;
     }
+}
+
+#[tokio::test]
+async fn resize_propagates_window_change_to_remote() {
+    let fx = fixture(false).await;
+    let opened = fx
+        .registry
+        .open(&fx.manager, open_params())
+        .await
+        .expect("open");
+    fx.registry
+        .resize(&opened.term_id, 120, 40)
+        .await
+        .expect("resize");
+    // 等 window_change 事件传播到回环 server。
+    for _ in 0..50 {
+        if fx
+            .events
+            .lock()
+            .iter()
+            .any(|e| e == "window-change: 120x40")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        fx.events
+            .lock()
+            .iter()
+            .any(|e| e == "window-change: 120x40"),
+        "远端应收到 window_change：{:?}",
+        fx.events.lock()
+    );
+    // 调整后读屏正常（快照轨照常组装）。
+    let read = fx
+        .registry
+        .read(&opened.term_id, 0, None)
+        .await
+        .expect("read");
+    assert!(!read.screen.is_empty());
+    let _ = fx.registry.close(&opened.term_id, false).await;
+}
+
+#[tokio::test]
+async fn orphan_tmux_session_reclaimed_via_audit_backfill() {
+    let fx = fixture(true).await;
+    let opened = fx
+        .registry
+        .open(&fx.manager, open_params())
+        .await
+        .expect("open");
+    let name = opened.tmux_session.clone().expect("tmux 会话名");
+    // 模拟失联：detach 关闭（注册表移除、远端 tmux 现场保留）——正是孤儿场景
+    // 的真实路径（空闲回收 / 断连后同样只剩远端会话）。
+    fx.registry
+        .close(&opened.term_id, false)
+        .await
+        .expect("detach");
+    assert!(fx.registry.list(None).is_empty(), "注册表应已无该会话");
+    // 测试直连 registry 不经工具层，手动补 open 审计（孤儿反查的数据源）。
+    fx.manager
+        .append_term_activity_audit(
+            std::path::PathBuf::from("/tmp/ws"),
+            "ws".to_string(),
+            "orphan-test".to_string(),
+            "loop-server".to_string(),
+            "it-session".to_string(),
+            format!("ssh_term_open tmux new -A -s {name} (80x24)"),
+            None,
+        )
+        .await
+        .expect("补审计");
+    // 级联清理：注册表已无该会话，孤儿回收经审计反查 kill 远端。
+    fx.registry
+        .close_session_terms(&fx.manager, "it-session")
+        .await;
+    for _ in 0..50 {
+        if fx
+            .events
+            .lock()
+            .iter()
+            .any(|e| e == &format!("exec: tmux kill-session -t {name}"))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        fx.events
+            .lock()
+            .iter()
+            .any(|e| e == &format!("exec: tmux kill-session -t {name}")),
+        "孤儿 tmux 会话应被反查 kill：{:?}",
+        fx.events.lock()
+    );
 }

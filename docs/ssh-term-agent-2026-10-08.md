@@ -263,6 +263,8 @@ v1 **无新增**：五个工具走既有工具卡片 UI，结果 JSON 经既有�
 | 阶段 | 范围 | 验收 |
 | --- | --- | --- |
 | M1 | registry/session/screen 三模块 + open/send/read/close 四工具 + **tmux 探测与 auto 叠加（attach-or-create / 回退 / killTmuxSession）** + reaper 协调与备屏切换游标重置（§5.1/§5.4）+ ssh_exec 引导文案 | 假模型完成一次真实交互（安装类命令确认提示应答）；有 tmux 服务器上 attach-or-create 生效、无 tmux 服务器回退主路；单测全绿 |
-| M2 | `ssh_term_list` + read 的 `wait_ms` + `ssh_term_resize`（可选）+ 断连/detach 恢复指引精化 + send 送审附终端现场 + 级联清理 tmux kill 与前缀孤儿回收 + AltScreenTracker 精化 | 长任务等待无轮询空转；全屏程序场景快照正确；断连后同名 open 恢复远端现场 |
+| M2 | `ssh_term_list` + read 的 `wait_ms` + `ssh_term_resize` + 断连/detach 恢复指引精化 + send 送审附终端现场 + 级联清理 tmux kill 与前缀孤儿回收 + AltScreenTracker 精化 | 长任务等待无轮询空转；全屏程序场景快照正确；断连后同名 open 恢复远端现场 |
+
+> **M2 完成态（2026-10-08）**：全项落地。list/wait_ms 随 M1 提前交付；resize 全链（window_change + vt.resize 两侧同步，SUBSYSTEM_MANAGED 口径）；送审附屏走 `CommandReviewPayload.screen_context`（光标行就地标注 + 尾部 5 非空行，1200 字符来源侧截断，渲染层 `optional_section` 范式）；孤儿回收经审计反查（复用 `load_audit_async` 最近 100 条窗口 + `tmux new -A -s` 名提取，best-effort 接受修剪窗口）；reader 断连 note 区分 `handle.is_closed()`；AltScreenTracker 补 RIS（`ESC c`）复位。 |
 | M3（另立设计） | 方案 C 人工输入弹窗（复用 `review_confirm.rs` 挂起机制，扩自由文本） | 密码提示符场景人工接管，口令不进上下文 |
 | M4（另立设计） | 方案 D 只读围观（dump 补帧 + 增量字节流推 xterm.js） | 前端实时渲染 agent 终端 |

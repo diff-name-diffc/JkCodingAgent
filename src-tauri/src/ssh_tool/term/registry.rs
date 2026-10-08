@@ -237,6 +237,24 @@ impl TermSessionRegistry {
         session.send(text).await.map_err(TermError::Write)
     }
 
+    /// 尺寸同步：channel window_change 与屏幕模型 resize 两侧一致（夹紧在此统一）。
+    pub(crate) async fn resize(
+        &self,
+        term_id: &str,
+        cols: usize,
+        rows: usize,
+    ) -> Result<(), TermError> {
+        let session = self.get(term_id)?;
+        let cols = cols.clamp(COLS_RANGE.0, COLS_RANGE.1);
+        let rows = rows.clamp(ROWS_RANGE.0, ROWS_RANGE.1);
+        if session.snapshot_payload().exited {
+            return Err(TermError::Exited(
+                "终端已退出，无需调整尺寸（可 ssh_term_open 重开）".into(),
+            ));
+        }
+        session.resize(cols, rows).await.map_err(TermError::Write)
+    }
+
     pub(crate) async fn read(
         &self,
         term_id: &str,
@@ -287,6 +305,13 @@ impl TermSessionRegistry {
             .collect()
     }
 
+    /// 送审用终端现场（send 审查上下文）；会话不存在时 None。
+    pub(crate) fn screen_context_of(&self, term_id: &str) -> Option<String> {
+        self.get(term_id)
+            .ok()
+            .map(|session| session.screen_context())
+    }
+
     /// term_id → server_id 映射（claims.rs 的 Ssh 资源解析用）。
     pub(crate) fn server_of(&self, term_id: &str) -> Option<String> {
         self.inner
@@ -296,8 +321,12 @@ impl TermSessionRegistry {
     }
 
     /// 级联关闭某聊天会话的全部终端（session_delete / 清空消息 / 项目删除）。
-    /// tmux 会话一并 kill（远端资源不残留，对齐「不能只清本地」纪律）。
-    pub(crate) async fn close_session_terms(&self, session_id: &str) {
+    /// tmux 会话一并 kill（远端资源不残留，对齐「不能只清本地」纪律）；
+    /// 再经审计反查回收「已失联」的 tmux 孤儿（注册表已移除但远端还活着）——
+    /// 审计仅保留最近 100 条（全局修剪窗口），被修剪的旧记录查不到，孤儿
+    /// 回收按设计 best-effort 接受该窗口；连接不可达容忍失败。
+    pub(crate) async fn close_session_terms(&self, manager: &SshSessionManager, session_id: &str) {
+        let mut handled: std::collections::HashSet<String> = Default::default();
         let targets: Vec<Arc<TermSession>> = {
             let inner = self.inner.lock();
             inner
@@ -307,7 +336,26 @@ impl TermSessionRegistry {
                 .collect()
         };
         for term in targets {
+            if let Some(name) = &term.meta.tmux_session {
+                handled.insert(name.clone());
+            }
             let _ = self.close(&term.meta.term_id, true).await;
+        }
+        // 孤儿回收：审计反查该会话历史 open 过的 tmux 会话名，跳过刚处理的。
+        let Ok(log) = manager.load_audit_async().await else {
+            return;
+        };
+        for record in &log.records {
+            if record.session_id != session_id {
+                continue;
+            }
+            let Some(name) = extract_tmux_session_name(&record.command) else {
+                continue;
+            };
+            if !handled.insert(name.clone()) {
+                continue;
+            }
+            kill_tmux_orphan(manager, &record.server_id, &name, session_id).await;
         }
     }
 
@@ -358,6 +406,41 @@ fn render_quota_message(infos: &[super::TermInfo]) -> String {
     )
 }
 
+/// 从审计 command 串提取 tmux 会话名：匹配 `ssh_term_open tmux new -A -s <name>`。
+fn extract_tmux_session_name(command: &str) -> Option<String> {
+    const MARKER: &str = "tmux new -A -s ";
+    let start = command.find(MARKER)? + MARKER.len();
+    let rest = &command[start..];
+    let end = rest.find(' ').unwrap_or(rest.len());
+    let name = &rest[..end];
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// 经服务器连接 kill 一个失联的 tmux 孤儿会话（模板命令免审，best-effort）。
+async fn kill_tmux_orphan(
+    manager: &SshSessionManager,
+    server_id: &str,
+    name: &str,
+    session_id: &str,
+) {
+    let Ok(server) = manager.server_config_async(server_id.to_string()).await else {
+        return;
+    };
+    let Ok(connection) = manager
+        .connection_for(
+            SshSessionKey {
+                server_id: server_id.to_string(),
+                session_id: session_id.to_string(),
+            },
+            &server,
+        )
+        .await
+    else {
+        return;
+    };
+    run_template_command(&connection, &format!("tmux kill-session -t {name}")).await;
+}
+
 fn new_term_id() -> TermId {
     format!("term_{}", uuid::Uuid::new_v4().simple())
 }
@@ -394,4 +477,31 @@ async fn run_template_command(connection: &SshConnection, command: &str) -> Opti
 
 async fn probe_command(connection: &SshConnection, command: &str) -> bool {
     run_template_command(connection, command).await == Some(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_tmux_session_name;
+
+    #[test]
+    fn extracts_name_from_open_audit_command() {
+        assert_eq!(
+            extract_tmux_session_name("ssh_term_open tmux new -A -s jkagent-install (80x24)"),
+            Some("jkagent-install".to_string())
+        );
+        assert_eq!(
+            extract_tmux_session_name("ssh_term_open tmux new -A -s jkagent-a_b-1 (120x40)"),
+            Some("jkagent-a_b-1".to_string())
+        );
+        // 无尾部尺寸标注也能提取（取到串尾）。
+        assert_eq!(
+            extract_tmux_session_name("tmux new -A -s jkagent-x"),
+            Some("jkagent-x".to_string())
+        );
+        assert_eq!(
+            extract_tmux_session_name("ssh_term_open shell (80x24)"),
+            None
+        );
+        assert_eq!(extract_tmux_session_name("ssh_term_close detach"), None);
+    }
 }

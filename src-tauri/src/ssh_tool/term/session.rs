@@ -149,6 +149,11 @@ impl TermSession {
         self.snapshot_payload()
     }
 
+    /// 送审用终端现场（光标行 + 尾部行），send 的审查上下文。
+    pub(crate) fn screen_context(&self) -> String {
+        self.screen.lock().screen_context()
+    }
+
     /// 以当前状态组装一次双轨载荷（排空增量轨）。
     pub(crate) fn snapshot_payload(&self) -> TermReadPayload {
         let (new_lines, truncated) = {
@@ -219,7 +224,6 @@ impl TermSession {
     }
 
     /// 尺寸同步：channel window_change 与屏幕模型 resize 两侧一致。
-    #[allow(dead_code)] // M2 的 ssh_term_resize 挂载点
     pub(crate) async fn resize(&self, cols: usize, rows: usize) -> Result<(), String> {
         self.touch_activity();
         self.writer
@@ -326,9 +330,13 @@ async fn reader_loop(
         state.exited = true;
         state.exit_code = exit_status.map(|status| status as i32);
         if state.exit_code.is_none() {
-            // 无退出码即终止：连接断开或对端未上报，均按「结果未知」披露，
-            // 不伪装成正常退出（对齐 ExternalStateUnknown 纪律）。
-            state.note = Some("连接已断开或未取得退出码".into());
+            // 无退出码即终止：区分「连接断开」与「对端未上报」，均按「结果
+            // 未知」披露、不伪装成正常退出（对齐 ExternalStateUnknown 纪律）。
+            state.note = Some(if connection.handle.is_closed() {
+                "连接已断开，未取得退出码".into()
+            } else {
+                "会话终止但未取得退出码".into()
+            });
         }
     }
     drop(state);

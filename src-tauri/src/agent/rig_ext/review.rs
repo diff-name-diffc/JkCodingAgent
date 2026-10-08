@@ -59,6 +59,8 @@ impl RigReviewContext {
             conversation: self.review_conversation.clone(),
             target,
             command_history: command_history::render_for_review(workspace_id),
+            // 终端现场仅 ssh_term_send 路径填充（调用方 build 后赋值）。
+            screen_context: None,
             command,
             stdin,
         }

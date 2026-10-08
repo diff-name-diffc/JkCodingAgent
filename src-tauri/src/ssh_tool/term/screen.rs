@@ -118,6 +118,13 @@ impl AltScreenTracker {
                 }
             }
         }
+        // 终端复位（RIS，ESC c）回到主屏：视为退出备用屏事件参与最晚判定。
+        if let Some(pos) = buf.rfind("\x1bc") {
+            let end = pos + "\x1bc".len();
+            if hit.is_none() || end > hit.expect("checked").0 {
+                hit = Some((end, false));
+            }
+        }
         let event = match hit {
             Some((_, enter)) if enter != self.on_alt => {
                 self.on_alt = enter;
@@ -253,6 +260,50 @@ impl TermScreen {
         self.alt_tracker.is_alt()
     }
 
+    /// 送审用的终端现场摘要：光标行 + 屏幕尾部非空行（≤5），供审查模型判断
+    /// 按键片段的语境（设计文档 §4.2/§7——`Y\r` 单看不可判，配合屏幕上的
+    /// 确认提示即可裁决）。来源侧截断，渲染层不再二次截断。
+    pub(crate) fn screen_context(&self) -> String {
+        const TAIL_LINES: usize = 5;
+        const MAX_CHARS: usize = 1_200;
+        let mut lines: Vec<String> = self
+            .vt
+            .view()
+            .map(|line| line.text().trim_end().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        let start = lines.len().saturating_sub(TAIL_LINES);
+        let tail = lines.split_off(start);
+        let (row, _) = self.cursor();
+        let cursor_line = self
+            .vt
+            .view()
+            .nth(row)
+            .map(|line| line.text().trim_end().to_string())
+            .unwrap_or_default();
+        let mut parts: Vec<String> = Vec::new();
+        let mut cursor_marked = false;
+        for line in tail {
+            // 光标行通常就是尾部行（提示符/确认提示在屏幕底部）：就地标注，
+            // 保证审查模型始终能看出按键将落在哪一行。
+            if !cursor_marked && !cursor_line.is_empty() && line == cursor_line {
+                parts.push(format!("[光标行] {line}"));
+                cursor_marked = true;
+            } else {
+                parts.push(line);
+            }
+        }
+        if !cursor_marked && !cursor_line.is_empty() {
+            parts.insert(0, format!("[光标行] {cursor_line}"));
+        }
+        let joined = parts.join("\n");
+        if joined.chars().count() > MAX_CHARS {
+            joined.chars().take(MAX_CHARS).collect()
+        } else {
+            joined
+        }
+    }
+
     /// 尺寸同步（与 russh window_change 两侧一致）。reflow 会重排行布局，
     /// 保守重对齐增量游标、丢弃未定稿行。
     pub(crate) fn resize(&mut self, cols: usize, rows: usize) {
@@ -330,12 +381,6 @@ impl TermScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn push_all(screen: &mut TermScreen, chunks: &[&[u8]]) {
-        for chunk in chunks {
-            screen.push_bytes(chunk);
-        }
-    }
 
     #[test]
     fn framer_reassembles_multibyte_split_across_chunks() {
@@ -496,6 +541,63 @@ mod tests {
         assert!(total <= NEW_LINES_MAX_CHARS + 150);
         // 余量仍在队中，下次 read 可取。
         assert!(!screen.take_new_lines().lines.is_empty());
+    }
+
+    #[test]
+    fn alt_tracker_reset_sequence_returns_to_primary() {
+        let mut tracker = AltScreenTracker::new();
+        assert!(matches!(
+            tracker.push("\x1b[?1049h"),
+            Some(AltScreenEvent::Entered)
+        ));
+        // RIS（ESC c）终端复位：回主屏。
+        assert!(matches!(
+            tracker.push("junk\x1bc"),
+            Some(AltScreenEvent::Left)
+        ));
+        assert!(!tracker.is_alt());
+    }
+
+    #[test]
+    fn alt_tracker_nested_enter_reports_no_duplicate() {
+        let mut tracker = AltScreenTracker::new();
+        assert!(matches!(
+            tracker.push("\x1b[?1049h"),
+            Some(AltScreenEvent::Entered)
+        ));
+        // tmux 嵌套（里层程序再进备用屏）：状态不变，不重复报告。
+        assert!(tracker.push("\x1b[?47h").is_none());
+        assert!(tracker.is_alt());
+    }
+
+    #[test]
+    fn screen_context_contains_cursor_line_and_tail() {
+        let mut screen = TermScreen::new(80, 24);
+        screen.push_bytes(
+            b"$ sudo apt install htop\r\nReading... Done\r\nDo you want to continue? [Y/n] ",
+        );
+        let context = screen.screen_context();
+        // 光标行（确认提示）与尾部输出都应出现。
+        assert!(
+            context.contains("[光标行] Do you want to continue? [Y/n]"),
+            "{context}"
+        );
+        assert!(context.contains("Reading... Done"), "{context}");
+        assert!(context.contains("$ sudo apt install htop"), "{context}");
+    }
+
+    #[test]
+    fn screen_context_caps_at_five_tail_lines() {
+        let mut screen = TermScreen::new(80, 24);
+        for i in 0..10 {
+            screen.push_bytes(format!("line-{i}\r\n").as_bytes());
+        }
+        let context = screen.screen_context();
+        assert!(context.contains("line-9"), "{context}");
+        assert!(
+            !context.contains("line-0"),
+            "超出尾部 5 行的旧行不应出现：{context}"
+        );
     }
 
     #[test]

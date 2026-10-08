@@ -60,7 +60,7 @@ pub async fn dispatcher_clear_messages(
         crate::agent::command_history::forget_session(&workspace_for_cleanup);
         state
             .term_registry()
-            .close_session_terms(&workspace_for_cleanup)
+            .close_session_terms(&state.ssh_manager(), &workspace_for_cleanup)
             .await;
     }
     result

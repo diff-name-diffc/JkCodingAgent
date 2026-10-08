@@ -92,6 +92,9 @@ pub struct CommandReviewPayload {
     pub target: CommandReviewTarget,
     /// 本会话已执行命令的渲染文本（见 `command_history::render_for_review`）。
     pub command_history: Option<String>,
+    /// 终端现场（ssh_term_send 送审附屏：光标行 + 屏幕尾部行，见设计文档 §7）。
+    /// 让审查模型看到真实终端状态而非裸按键碎片，仅在 ssh_term 组填充。
+    pub screen_context: Option<String>,
     pub command: String,
     /// 通过 stdin 喂给命令的内容（如有），一并送审。
     pub stdin: Option<String>,
@@ -298,6 +301,10 @@ fn build_command_user_prompt(payload: &CommandReviewPayload) -> String {
         "本会话已执行命令（时间正序，供判断命令的来龙去脉）",
         &payload.command_history,
     ));
+    prompt.push_str(&optional_section(
+        "终端屏幕上下文（按键所发往终端的当前画面：光标行与屏幕尾部）",
+        &payload.screen_context,
+    ));
     prompt.push_str(&format!(
         "\n\n【待执行命令】\n{COMMAND_BEGIN_MARKER}\n{command}\n{COMMAND_END_MARKER}"
     ));
@@ -468,6 +475,7 @@ mod tests {
             task: String::new(),
             executor_task: None,
             conversation: None,
+            screen_context: None,
             target: CommandReviewTarget::LocalZsh {
                 workspace_path: "/tmp/ws".to_string(),
                 run_dir: "/tmp/ws".to_string(),
@@ -635,5 +643,21 @@ mod tests {
         let plain =
             with_confirm_guidance("错误：命令已被安全审查拦截".to_string(), "rm 指向根目录");
         assert!(!plain.contains(USER_CONFIRM_GUIDANCE));
+    }
+
+    #[test]
+    fn screen_context_section_rendered_when_present() {
+        let mut payload = workspace_payload("Y\r");
+        payload.screen_context =
+            Some("[光标行] Do you want to continue? [Y/n]\nReading... Done".to_string());
+        let prompt = build_command_user_prompt(&payload);
+        assert!(
+            prompt.contains("【终端屏幕上下文（按键所发往终端的当前画面：光标行与屏幕尾部）】"),
+            "应渲染终端屏幕上下文区块"
+        );
+        assert!(prompt.contains("Do you want to continue? [Y/n]"));
+        // None 态不渲染区块。
+        let bare = build_command_user_prompt(&workspace_payload("ls"));
+        assert!(!bare.contains("终端屏幕上下文"), "无现场时不应出现空区块");
     }
 }

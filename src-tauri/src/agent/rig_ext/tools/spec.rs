@@ -673,6 +673,15 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ClaimResource::SshServer,
     ),
     policy_row(
+        "ssh_term_resize",
+        ToolCategory::Ssh,
+        ToolAccess::SUBSYSTEM_MANAGED,
+        ToolSafety::Safe,
+        60,
+        ToolPolicyOptions::SERIAL,
+        ClaimResource::SshServer,
+    ),
+    policy_row(
         "ssh_term_close",
         ToolCategory::Ssh,
         ToolAccess::SUBSYSTEM_MANAGED,

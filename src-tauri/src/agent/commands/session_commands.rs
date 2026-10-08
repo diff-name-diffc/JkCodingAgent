@@ -59,7 +59,7 @@ pub async fn session_delete(
         crate::agent::command_history::forget_session(&session_for_cleanup);
         state
             .term_registry()
-            .close_session_terms(&session_for_cleanup)
+            .close_session_terms(&state.ssh_manager(), &session_for_cleanup)
             .await;
     }
     result

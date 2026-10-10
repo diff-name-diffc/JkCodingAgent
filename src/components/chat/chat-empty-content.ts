@@ -22,7 +22,7 @@ export type ChatEntryKind = "plain" | "project";
 /** 普通聊天：不绑定项目，起步提示偏向通用问答 / 写作 / 代码解释。 */
 export const PLAIN_CHAT_EMPTY_STATE: Required<ChatEmptyStateContent> = {
   title: "有什么可以帮你的？",
-  copy: "独立聊天工作区，不绑定项目。提问、写作、贴代码分析 —— 模型会在这里推理并给出结果。",
+  copy: "提问、写作，或一起读懂一段代码。这里是你的独立聊天空间，不绑定项目。",
   prompts: [
     "解释一下 React 19 的 use() hook 和 Suspense 的关系",
     "把这段 SQL 优化一下，并解释为什么更快",
@@ -34,7 +34,7 @@ export const PLAIN_CHAT_EMPTY_STATE: Required<ChatEmptyStateContent> = {
 /** 项目会话：绑定项目仓库，起步提示偏向项目文件 / Git 变更 / 工作流。 */
 export const PROJECT_CHAT_EMPTY_STATE: Required<ChatEmptyStateContent> = {
   title: "在这个项目里开始一个任务",
-  copy: "Agent 可以读取与修改项目文件、运行命令、产出工作流，并在这里汇总改了什么、如何验证。",
+  copy: "从一个想法或问题开始。Agent 会结合项目文件与 Git 变更，和你一起推进任务。",
   prompts: [
     "梳理这个项目的目录结构，说明主要模块与职责",
     "审查当前 Git 变更，总结改了什么、有哪些风险",

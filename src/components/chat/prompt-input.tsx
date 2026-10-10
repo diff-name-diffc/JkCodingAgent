@@ -131,7 +131,7 @@ export function PromptInput({
 
   return (
     <div className={cn("ai-chat-column ai-chat-composer", className)}>
-      <div className="ai-prompt-terminal rounded-2xl border border-border bg-card p-2">
+      <div className="ai-prompt-terminal p-3">
         {editing && (
           <div className="ai-prompt-editing">
             <span>正在编辑消息</span>

@@ -101,8 +101,8 @@ describe("resolveWorkspaceBudget 降级树", () => {
     expect(b.degradations.map((d) => d.kind)).toContain("terminal-height-clamped");
   });
 
-  it("默认外壳是 rail 52、无右工具栏：1320px 可以并排会话和工作流", () => {
-    expect(DEFAULT_CHROME.railWidth).toBe(52);
+  it("默认外壳是 rail 68、无右工具栏：1320px 可以并排会话和工作流", () => {
+    expect(DEFAULT_CHROME.railWidth).toBe(68);
     expect(DEFAULT_CHROME.toolbarWidth).toBe(0);
     expect(
       editorFitsBesideSession(
@@ -113,6 +113,15 @@ describe("resolveWorkspaceBudget 降级树", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("带文字导航栏的临界宽度：1304px 可双栏，少 1px 则保持单栏", () => {
+    for (const [viewportWidth, expected] of [
+      [1304, true],
+      [1303, false],
+    ] as const) {
+      expect(editorFitsBesideSession(base({ viewportWidth, navWidthPref: 248 }))).toBe(expected);
+    }
   });
 
   it("主区不够双栏最低宽度时，打开工作流必须独占编辑区", () => {

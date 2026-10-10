@@ -9,12 +9,12 @@
  *   - 窗口变小触发的是临时适配，不覆盖用户保存的偏好（偏好是冻结输入，
  *     自动适配只体现在输出与 degradations 里）。
  *
- * chrome 与当前外壳一致：rail 52、右工具栏已移除（宽 0）、导航默认 248。
- * 预算若仍按旧的 rail 56 + 工具栏 48 扣宽，中等窗口会被误判成单栏。
+ * chrome 与当前外壳一致：带文字的 rail 68、右工具栏宽 0、导航默认 248。
+ * rail 宽度须与 .ai-app-rail 同步，避免临界窗口中的双栏预算超出实际空间。
  */
 
 export interface WorkspaceChromeSizes {
-  /** 左侧项目 rail 宽（UI-07 后为全局 rail 52）。 */
+  /** 全局应用 rail 宽，包含图标下方的入口文字。 */
   railWidth: number;
   /** 右侧工具栏宽（UI-07 移除后为 0）。 */
   toolbarWidth: number;
@@ -43,7 +43,7 @@ export interface WorkspaceChromeSizes {
 export const TERMINAL_HEIGHT_LIMITS = { min: 100, max: 600 } as const;
 
 export const DEFAULT_CHROME: WorkspaceChromeSizes = {
-  railWidth: 52,
+  railWidth: 68,
   toolbarWidth: 0,
   titlebarHeight: 38,
   navMin: 216,

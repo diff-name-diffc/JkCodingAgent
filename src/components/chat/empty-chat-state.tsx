@@ -1,8 +1,8 @@
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { ArrowUpRight } from "lucide-react";
 import { cn } from "../../lib/cn";
-import appLogo from "../../assets/app-logo.png";
 import { PLAIN_CHAT_EMPTY_STATE } from "./chat-empty-content";
+import { ChatWelcomeHeading } from "./chat-welcome-heading";
 
 /**
  * Empty state for a chat surface with no messages yet.
@@ -34,38 +34,30 @@ export function EmptyChatState({
   copy = DEFAULT_COPY,
   className,
 }: EmptyChatStateProps) {
+  const reducedMotion = useReducedMotion();
   return (
     <div
       className={cn(
-        "ai-empty-state flex h-full flex-col items-center justify-center px-6 pt-12 pb-[10vh]",
+        "ai-empty-state flex h-full flex-col items-center justify-center px-4 py-8",
         className,
       )}
     >
       <motion.div
-        initial={{ opacity: 0, scale: 0.96 }}
+        initial={reducedMotion ? false : { opacity: 0, scale: 0.98 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.25, ease: [0.2, 0.8, 0.2, 1] }}
-        className="ai-empty-core flex flex-col items-center text-center"
       >
-        <img
-          src={appLogo}
-          alt="JKCodingAgent"
-          className="ai-empty-logo mb-5 h-14 w-14 rounded-2xl"
-        />
-        <h2 className="ai-empty-title text-xl font-semibold tracking-tight text-foreground">
-          {title}
-        </h2>
-        <p className="ai-empty-copy mt-2 max-w-sm text-sm text-muted-foreground">{copy}</p>
+        <ChatWelcomeHeading title={title} copy={copy} />
       </motion.div>
 
       <motion.div
-        initial="hidden"
+        initial={reducedMotion ? false : "hidden"}
         animate="show"
         variants={{
           hidden: {},
           show: { transition: { staggerChildren: 0.04, delayChildren: 0.1 } },
         }}
-        className="mt-9 grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2"
+        className="ai-chat-starters mt-8 grid w-full max-w-xl grid-cols-2 gap-3"
       >
         {prompts.map((prompt) => (
           <motion.button

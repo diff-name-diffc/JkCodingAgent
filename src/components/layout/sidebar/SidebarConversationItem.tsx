@@ -47,15 +47,14 @@ export const SidebarConversationItem = React.memo(function SidebarConversationIt
       className={cn(
         "ai-session-item group flex items-center gap-2 rounded-md transition-colors",
         searchQuery && "is-search-result",
-        active
-          ? "ai-session-item-active bg-sidebar-accent text-sidebar-accent-foreground"
-          : "text-sidebar-foreground/90 hover:bg-sidebar-hover",
+        active && "ai-session-item-active",
       )}
     >
       <button
         onClick={onSelect}
+        title={trimmedTitle}
         aria-current={active ? "true" : undefined}
-        className="flex min-w-0 flex-1 items-center gap-2 bg-transparent px-2.5 py-2.5 text-left text-[15px]"
+        className="flex min-w-0 flex-1 items-center gap-2 bg-transparent px-2.5 py-2.5 text-left text-[13px]"
       >
         {isRunning ? (
           <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
@@ -67,15 +66,17 @@ export const SidebarConversationItem = React.memo(function SidebarConversationIt
             )}
           />
         )}
-        <span className="min-w-0 flex-1 truncate">
-          <HighlightedSessionTitle title={trimmedTitle} query={searchQuery} />
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="truncate leading-5">
+            <HighlightedSessionTitle title={trimmedTitle} query={searchQuery} />
+          </span>
+          <span className="flex min-w-0 items-center gap-2 text-[11px] leading-4 text-muted-foreground">
+            <span className="shrink-0">{formatRelativeTime(session.updatedAt)}</span>
+            {categoryLabel && (
+              <span className="ai-session-category-tag truncate">{categoryLabel}</span>
+            )}
+          </span>
         </span>
-        <span className="shrink-0 text-xs text-muted-foreground">
-          {formatRelativeTime(session.updatedAt)}
-        </span>
-        {categoryLabel && (
-          <span className="ai-session-category-tag shrink-0 truncate">{categoryLabel}</span>
-        )}
       </button>
       {((categories && onMoveSessionToCategory && categories.length > 0) || onDeleteSession) && (
         <DropdownMenu>

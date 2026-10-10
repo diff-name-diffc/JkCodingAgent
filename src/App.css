@@ -1,83 +1,89 @@
 /* ── Design Tokens ─────────────────────────────────────────────── */
 :root {
   color-scheme: light;
-  /* 中性表面承担层级；品牌操作、导航焦点与语义状态各用自己的令牌。 */
-  --background: #fafafa;
-  --foreground: #262626;
+  /* 纸白内容、暖灰导航、松绿操作：依靠表面层级与留白支持长时间阅读。 */
+  --background: #fcfbf8;
+  --foreground: #242a27;
   --card: #ffffff;
-  --muted: #f2f2f2;
-  --muted-foreground: #666666;
-  --border: #d4d4d4;
-  --destructive: #dc2626;
+  --muted: #f0f1eb;
+  --muted-foreground: #616c63;
+  --border: #d8ddd4;
+  --destructive: #b93f3a;
   --accent-foreground: #ffffff;
   --destructive-foreground: #ffffff;
-  --composer-shadow: 0 2px 8px rgb(0 0 0 / 0.04);
+  --composer-shadow: 0 3px 12px rgb(36 54 42 / 0.04), 0 14px 36px rgb(36 54 42 / 0.04);
 
-  --brand-graphite: #262626;
-  --brand-graphite-2: #404040;
-  --brand-mist: #f5f5f5;
-  --brand-paper: #ffffff;
-  --brand-ember: #f97316;
-  --brand-cobalt: #2563eb;
-  --brand-violet: #7c3aed;
+  --brand-graphite: #242a27;
 
-  --bg-root: #ededed;
+  --bg-root: #e7ebe3;
   --bg-shell: var(--background);
-  --bg-titlebar: #f5f5f5;
+  --bg-titlebar: #f3f3ed;
   /* 窗口顶部拖拽区高度：与 macOS 红绿灯安全区配合，页面内容用它做顶部留白。 */
   --titlebar-h: 38px;
-  --bg-sidebar: #f5f5f5;
-  --bg-sidebar-elevated: #ebebeb;
-  --bg-panel: #ffffff;
+  --bg-sidebar: #f1f2ec;
+  --bg-sidebar-elevated: #e8ece2;
+  --bg-panel: #fcfbf8;
   --bg-card: var(--card);
-  --bg-hover: #ebebeb;
-  --bg-selected: #e5e5e5;
-  --bg-subtle: #f5f5f5;
+  --bg-hover: #e9ece4;
+  --bg-selected: #e3eee5;
+  --bg-subtle: #f3f4ee;
   --bg-input: #ffffff;
   --bg-elevated: #ffffff;
-  --bg-overlay: rgb(0 0 0 / 0.28);
+  --bg-overlay: rgb(25 35 29 / 0.3);
 
-  --border-dim: #e5e5e5;
+  --border-dim: #e5e8df;
   --border-medium: var(--border);
-  --border-strong: #a3a3a3;
-  --border-focus: #2563eb;
-  --border-accent: rgb(38 38 38 / 0.32);
+  --border-strong: #a6b2a6;
+  --border-focus: #317861;
+  --border-accent: rgb(36 100 83 / 0.3);
 
   --text-primary: var(--foreground);
-  --text-secondary: #525252;
+  --text-secondary: #505c54;
   --text-muted: var(--muted-foreground);
-  --text-hint: #666666;
-  --text-link: #1d4ed8;
-  --text-link-hover: #1e40af;
+  --text-hint: var(--muted-foreground);
+  --text-link: #246453;
+  --text-link-hover: #184737;
   --text-error: var(--danger);
 
-  --accent: #262626;
-  --accent-strong: #171717;
-  --accent-soft: #ededed;
-  --accent-hover: #404040;
-  --accent-subtle: rgb(38 38 38 / 0.06);
-  --accent-pressed: #171717;
+  --accent: #246453;
+  --accent-strong: #184737;
+  --accent-soft: #e8f0e9;
+  --accent-hover: #1d5345;
+  --accent-subtle: rgb(36 100 83 / 0.06);
+  --accent-pressed: #184737;
+  --selection-bg: #d5e9da;
+  --selection-foreground: #183f31;
 
   /* RGB 伴随令牌：用于 alpha 合成，格式 `rgb(var(--accent-rgb) / 0.5)` */
-  --accent-rgb: 38 38 38;
-  --accent-strong-rgb: 23 23 23;
-  --danger-rgb: 220 38 38;
-  --warning-rgb: 180 83 9;
-  --success-rgb: 21 128 61;
-  --info-rgb: 37 99 235;
+  --accent-rgb: 36 100 83;
+  --accent-strong-rgb: 24 71 55;
+  --danger-rgb: 185 63 58;
+  --warning-rgb: 154 91 19;
+  --success-rgb: 45 113 75;
+  --info-rgb: 55 104 149;
   /* RGB 三元组与上方 hex 令牌保持一致；Tailwind /NN 透明度由 color-mix 处理。 */
   --bg-card-rgb: 255 255 255;
-  --bg-subtle-rgb: 245 245 245;
+  --bg-subtle-rgb: 243 244 238;
   --bg-input-rgb: 255 255 255;
-  --bg-sidebar-rgb: 245 245 245;
-  --bg-sidebar-elevated-rgb: 235 235 235;
-  --bg-selected-rgb: 229 229 229;
-  --bg-hover-rgb: 235 235 235;
-  --text-primary-rgb: 38 38 38;
-  --text-secondary-rgb: 82 82 82;
-  --text-muted-rgb: 102 102 102;
-  --border-medium-rgb: 212 212 212;
-  --accent-hover-rgb: 64 64 64;
+  --bg-sidebar-rgb: 241 242 236;
+  --bg-sidebar-elevated-rgb: 232 236 226;
+  --bg-selected-rgb: 227 238 229;
+  --bg-hover-rgb: 233 236 228;
+  --text-primary-rgb: 36 42 39;
+  --text-secondary-rgb: 80 92 84;
+  --text-muted-rgb: 97 108 99;
+  --border-medium-rgb: 216 221 212;
+  --accent-hover-rgb: 29 83 69;
+
+  /* 主题缩略图同时展示两种外观，不随当前主题切换。 */
+  --theme-preview-light-bg: #fcfbf8;
+  --theme-preview-light-sidebar: #f1f2ec;
+  --theme-preview-light-ink: #242a27;
+  --theme-preview-light-accent: #246453;
+  --theme-preview-dark-bg: #19211d;
+  --theme-preview-dark-sidebar: #171e1a;
+  --theme-preview-dark-ink: #e5eae4;
+  --theme-preview-dark-accent: #9ccdb5;
 
   --chat-main-rail: var(--bg-sidebar);
   --chat-surface: var(--background);
@@ -86,7 +92,7 @@
   --chat-focus-ring: var(--shadow-focus);
   --chat-shadow: var(--shadow-md);
   --chat-shadow-soft: var(--shadow-sm);
-  --chat-user-bubble-bg: #f0f0f0;
+  --chat-user-bubble-bg: #edf1e9;
   --chat-user-bubble-text: var(--text-primary);
   --chat-composer-shadow: var(--composer-shadow);
   --motion-fast: 120ms;
@@ -98,8 +104,8 @@
   --markdown-inline-border: var(--border-dim);
   --markdown-inline-text: var(--text-primary);
   --markdown-code-shell-bg: var(--markdown-code-bg);
-  --markdown-code-toolbar-bg: #f0f0f0;
-  --markdown-code-bg: #f7f7f7;
+  --markdown-code-toolbar-bg: #eef0e8;
+  --markdown-code-bg: #f5f6f0;
   --markdown-code-border: var(--border-dim);
   --markdown-code-border-strong: var(--border-strong);
   --markdown-code-text: var(--text-primary);
@@ -117,16 +123,16 @@
   --markdown-math-text: var(--text-primary);
   --markdown-math-shadow: none;
 
-  --success: #15803d;
-  --warning: #b45309;
+  --success: #2d714b;
+  --warning: #9a5b13;
   --danger: var(--destructive);
-  --info: var(--brand-cobalt);
+  --info: #376895;
   --info-soft: rgb(var(--info-rgb) / 0.1);
 
-  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.04);
-  --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.06);
-  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.08);
-  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.12);
+  --shadow-xs: 0 1px 2px rgb(36 54 42 / 0.035);
+  --shadow-sm: 0 2px 6px rgb(36 54 42 / 0.05);
+  --shadow-md: 0 4px 18px rgb(36 54 42 / 0.07), 0 1px 3px rgb(36 54 42 / 0.03);
+  --shadow-lg: 0 16px 48px rgb(36 54 42 / 0.12), 0 3px 10px rgb(36 54 42 / 0.04);
   --shadow-focus: 0 0 0 2px var(--border-focus);
   --shadow-accent-glow: none;
 
@@ -146,68 +152,69 @@
 
 .dark {
   color-scheme: dark;
-  --background: #161616;
-  --foreground: #e5e5e5;
-  --card: #202020;
-  --muted: #262626;
-  --muted-foreground: #a3a3a3;
-  --border: #404040;
-  --destructive: #f87171;
-  --accent-foreground: #171717;
-  --destructive-foreground: #260b0b;
-  --composer-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
-  --bg-root: #101010;
-  --bg-titlebar: #1b1b1b;
-  --bg-sidebar: #141414;
-  --bg-sidebar-elevated: #262626;
-  --bg-panel: #1b1b1b;
-  --bg-hover: #2d2d2d;
-  --bg-selected: #333333;
-  --bg-subtle: #242424;
-  --bg-input: #202020;
-  --bg-elevated: #292929;
+  --background: #19211d;
+  --foreground: #e5eae4;
+  --card: #212c25;
+  --muted: #2a372e;
+  --muted-foreground: #a4b2a6;
+  --border: #425145;
+  --destructive: #f0a3a0;
+  --accent-foreground: #172a20;
+  --destructive-foreground: #341c1c;
+  --composer-shadow: 0 4px 20px rgb(0 0 0 / 0.16);
+  --bg-root: #141a16;
+  --bg-titlebar: #1c2520;
+  --bg-sidebar: #171e1a;
+  --bg-sidebar-elevated: #28352c;
+  --bg-panel: #1c2520;
+  --bg-hover: #2b3a30;
+  --bg-selected: #304738;
+  --bg-subtle: #253128;
+  --bg-input: #212c25;
+  --bg-elevated: #2a372e;
   --bg-overlay: rgb(0 0 0 / 0.58);
-  --border-dim: #333333;
-  --border-strong: #737373;
-  --border-focus: #93c5fd;
-  --border-accent: rgb(229 229 229 / 0.32);
-  --text-secondary: #bdbdbd;
-  --text-hint: #a3a3a3;
-  --text-link: #93c5fd;
-  --text-link-hover: #bfdbfe;
-  --accent: #e5e5e5;
-  --accent-strong: #f5f5f5;
-  --accent-soft: #303030;
-  --accent-hover: #ffffff;
-  --accent-subtle: rgb(229 229 229 / 0.08);
-  --accent-pressed: #d4d4d4;
-  --accent-rgb: 229 229 229;
-  --accent-strong-rgb: 245 245 245;
-  --danger-rgb: 248 113 113;
-  --warning-rgb: 251 191 36;
-  --success-rgb: 74 222 128;
-  --info-rgb: 147 197 253;
-  --bg-card-rgb: 32 32 32;
-  --bg-subtle-rgb: 36 36 36;
-  --bg-input-rgb: 32 32 32;
-  --bg-sidebar-rgb: 20 20 20;
-  --bg-sidebar-elevated-rgb: 38 38 38;
-  --bg-selected-rgb: 51 51 51;
-  --bg-hover-rgb: 45 45 45;
-  --text-primary-rgb: 229 229 229;
-  --text-secondary-rgb: 189 189 189;
-  --text-muted-rgb: 163 163 163;
-  --border-medium-rgb: 64 64 64;
-  --accent-hover-rgb: 255 255 255;
-  --chat-user-bubble-bg: #262626;
+  --border-dim: #303d33;
+  --border-strong: #697c6c;
+  --border-focus: #9ccdb5;
+  --border-accent: rgb(156 205 181 / 0.32);
+  --text-secondary: #bbc6bc;
+  --text-link: #9ccdb5;
+  --text-link-hover: #b8e2cc;
+  --accent: #9ccdb5;
+  --accent-strong: #b8e2cc;
+  --accent-soft: #2c4435;
+  --accent-hover: #b2dfc8;
+  --accent-subtle: rgb(156 205 181 / 0.08);
+  --accent-pressed: #88bfa2;
+  --selection-bg: #345b47;
+  --selection-foreground: #eff9f1;
+  --accent-rgb: 156 205 181;
+  --accent-strong-rgb: 184 226 204;
+  --danger-rgb: 240 163 160;
+  --warning-rgb: 223 190 132;
+  --success-rgb: 154 206 170;
+  --info-rgb: 165 196 224;
+  --bg-card-rgb: 33 44 37;
+  --bg-subtle-rgb: 37 49 40;
+  --bg-input-rgb: 33 44 37;
+  --bg-sidebar-rgb: 23 30 26;
+  --bg-sidebar-elevated-rgb: 40 53 44;
+  --bg-selected-rgb: 48 71 56;
+  --bg-hover-rgb: 43 58 48;
+  --text-primary-rgb: 229 234 228;
+  --text-secondary-rgb: 187 198 188;
+  --text-muted-rgb: 164 178 166;
+  --border-medium-rgb: 66 81 69;
+  --accent-hover-rgb: 178 223 200;
+  --chat-user-bubble-bg: #29392e;
 
   /* Markdown 与代码工具栏共用中性表面，语法色由代码主题负责。 */
-  --markdown-code-toolbar-bg: #242424;
-  --markdown-code-bg: #1b1b1b;
+  --markdown-code-toolbar-bg: #253128;
+  --markdown-code-bg: #1c2520;
 
-  --success: #4ade80;
-  --warning: #fbbf24;
-  --info: #93c5fd;
+  --success: #9aceaa;
+  --warning: #dfbe84;
+  --info: #a5c4e0;
   --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.16);
   --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.2);
   --shadow-md: 0 4px 16px rgb(0 0 0 / 0.28);
@@ -250,6 +257,10 @@
   input::placeholder,
   textarea::placeholder {
     color: var(--text-hint);
+  }
+  ::selection {
+    color: var(--selection-foreground);
+    background: var(--selection-bg);
   }
 
   body {
@@ -309,14 +320,28 @@
   button:focus-visible,
   input:focus-visible,
   textarea:focus-visible,
-  [role="button"]:focus-visible {
-    outline: none;
-    box-shadow: var(--chat-focus-ring);
+  select:focus-visible,
+  a:focus-visible,
+  summary:focus-visible,
+  [tabindex]:not([tabindex="-1"]):focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 3px;
   }
 
   button:not(:disabled):active,
   [role="button"]:not([aria-disabled="true"]):active {
     transform: translateY(1px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
@@ -493,7 +518,8 @@
   text-align: left;
   outline: none;
 }
-.branch-popover-item:hover {
+.branch-popover-item:hover,
+.branch-popover-item:focus-visible {
   background: var(--bg-hover);
 }
 .branch-popover-item-name {
@@ -581,7 +607,8 @@
   line-height: 1.25;
 }
 
-.file-viewer-tab-menu-item:hover {
+.file-viewer-tab-menu-item:hover,
+.file-viewer-tab-menu-item:focus-visible {
   background: var(--bg-hover);
 }
 
@@ -1406,8 +1433,8 @@
 /* ── Hunk header (@@ ... @@) ── */
 .git-diff-hunk-header {
   padding: 4px 14px 4px 96px;
-  background: rgba(88, 166, 255, 0.08);
-  color: rgba(121, 192, 255, 0.85);
+  background: var(--info-soft);
+  color: var(--info);
   font-size: 12px;
   line-height: 20px;
   border-top: 1px solid var(--border-dim);
@@ -1427,11 +1454,11 @@
 }
 
 .git-diff-line--add {
-  background: rgba(46, 160, 67, 0.12);
+  background: rgb(var(--success-rgb) / 0.08);
 }
 
 .git-diff-line--del {
-  background: rgba(248, 81, 73, 0.1);
+  background: rgb(var(--danger-rgb) / 0.06);
 }
 
 /* ── Line number gutter ── */
@@ -1441,14 +1468,14 @@
   flex-shrink: 0;
   text-align: right;
   padding-right: 8px;
-  color: rgba(128, 128, 128, 0.35);
+  color: var(--text-muted);
   user-select: none;
   font-size: 11px;
   box-sizing: border-box;
 }
 
 .git-diff-line:hover .git-diff-ln {
-  color: rgba(128, 128, 128, 0.6);
+  color: var(--text-secondary);
 }
 
 /* ── Sign column (+/-/space) ── */
@@ -1462,11 +1489,11 @@
 }
 
 .git-diff-sign--add {
-  color: #3fb950;
+  color: var(--success);
 }
 
 .git-diff-sign--del {
-  color: #f85149;
+  color: var(--danger);
 }
 
 /* ── Line content ── */
@@ -1477,11 +1504,11 @@
 }
 
 .git-diff-line--add .git-diff-content {
-  color: #afd8af;
+  color: var(--success);
 }
 
 .git-diff-line--del .git-diff-content {
-  color: #f0a8a4;
+  color: var(--danger);
 }
 
 .git-diff-line--ctx .git-diff-content {
@@ -1491,7 +1518,7 @@
 /* ── Rename display (old → new + similarity, UI-17) ── */
 .git-diff-rename-old {
   text-decoration: line-through;
-  text-decoration-color: rgb(128 128 128 / 0.55);
+  text-decoration-color: var(--text-muted);
 }
 
 .git-diff-rename-arrow {
@@ -1529,33 +1556,6 @@
   font-family: var(--font-ui);
 }
 
-/* ── Git diff accents (light) ── */
-html:not(.dark) .git-diff-line--add {
-  background: rgba(46, 160, 67, 0.1);
-}
-html:not(.dark) .git-diff-line--del {
-  background: rgba(248, 81, 73, 0.08);
-}
-html:not(.dark) .git-diff-line--add .git-diff-content {
-  color: #1a7f37;
-}
-html:not(.dark) .git-diff-line--del .git-diff-content {
-  color: #cf222e;
-}
-html:not(.dark) .git-diff-line--ctx .git-diff-content {
-  color: var(--text-secondary);
-}
-html:not(.dark) .git-diff-hunk-header {
-  background: rgba(54, 135, 235, 0.06);
-  color: rgba(36, 100, 186, 0.75);
-}
-html:not(.dark) .git-diff-sign--add {
-  color: #1a7f37;
-}
-html:not(.dark) .git-diff-sign--del {
-  color: #cf222e;
-}
-
 /* ── Split (side-by-side) diff mode (UI-17 遗留) ──
    每逻辑行 = 一个 grid 行，左右两栏等宽；内容 pre-wrap 换行而非逐行横向
    滚动——同一 grid 行两侧自动等高，行对齐不受换行影响，也避免每行产生独立
@@ -1583,10 +1583,10 @@ html:not(.dark) .git-diff-sign--del {
 }
 
 .git-diff-split-side--add {
-  background: rgba(46, 160, 67, 0.12);
+  background: rgb(var(--success-rgb) / 0.08);
 }
 .git-diff-split-side--del {
-  background: rgba(248, 81, 73, 0.1);
+  background: rgb(var(--danger-rgb) / 0.06);
 }
 .git-diff-split-side--empty {
   background: color-mix(in srgb, var(--text-hint) 7%, transparent);
@@ -1602,42 +1602,26 @@ html:not(.dark) .git-diff-sign--del {
   padding-right: 10px;
 }
 .git-diff-split-side--add .git-diff-content {
-  color: #afd8af;
+  color: var(--success);
 }
 .git-diff-split-side--del .git-diff-content {
-  color: #f0a8a4;
+  color: var(--danger);
 }
 .git-diff-split-side--ctx .git-diff-content {
   color: var(--text-secondary);
 }
 
-/* ── Split accents (light)：与 unified add/del 亮色同口径 ── */
-html:not(.dark) .git-diff-split-side--add {
-  background: rgba(46, 160, 67, 0.1);
-}
-html:not(.dark) .git-diff-split-side--del {
-  background: rgba(248, 81, 73, 0.08);
-}
-html:not(.dark) .git-diff-split-side--add .git-diff-content {
-  color: #1a7f37;
-}
-html:not(.dark) .git-diff-split-side--del .git-diff-content {
-  color: #cf222e;
-}
-html:not(.dark) .git-diff-split-side--ctx .git-diff-content {
-  color: var(--text-secondary);
-}
-
 /* ── 行内 word-level 高亮（UI-17 遗留第三批）──
-   配对 del/add 行内的变更词强调：α=0.3 强于行背景（add 0.12 / del 0.10），
-   使变更词「跳出」。走 --success-rgb/--danger-rgb 伴随令牌（浅深双主题均已
+   配对 del/add 行内的变更词强调：α=0.2 叠加行背景（add 0.08 / del 0.06），
+   正文文字色保证强调区域的可读性。走 --success-rgb/--danger-rgb 伴随令牌（浅深双主题均已
    定义），无硬编码色值、无需 html:not(.dark) 覆盖。 */
 .git-diff-word-hl {
   border-radius: 2px;
+  color: var(--text-primary);
 }
 .git-diff-word-hl--add {
-  background: rgb(var(--success-rgb) / 0.3);
+  background: rgb(var(--success-rgb) / 0.2);
 }
 .git-diff-word-hl--del {
-  background: rgb(var(--danger-rgb) / 0.3);
+  background: rgb(var(--danger-rgb) / 0.2);
 }

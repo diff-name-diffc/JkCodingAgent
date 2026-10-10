@@ -17,16 +17,21 @@ interface AppRailProps {
   projectPath?: string;
 }
 
-const ENTRIES: { key: HomeSpace; label: string; icon: typeof MessageCircle }[] = [
-  { key: "chat", label: "聊天", icon: MessageCircle },
-  { key: "projects", label: "项目", icon: Layers },
-  { key: "architecture", label: "架构设计", icon: Workflow },
+const ENTRIES: {
+  key: HomeSpace;
+  label: string;
+  shortLabel: string;
+  icon: typeof MessageCircle;
+}[] = [
+  { key: "chat", label: "聊天", shortLabel: "聊天", icon: MessageCircle },
+  { key: "projects", label: "项目", shortLabel: "项目", icon: Layers },
+  { key: "architecture", label: "架构设计", shortLabel: "架构", icon: Workflow },
 ];
 
 /**
- * 全局应用 rail（UI-07）：52px，三个工作空间入口 + 设置置底。
+ * 全局应用 rail：三个工作空间入口 + 设置置底。
  * 欢迎页与项目工作台共用同一组件，保证互转入口位置一致；
- * 文本提示用 Tooltip 补足图标可发现性（替代旧 60px 图标栏的悬停标签）。
+ * 常驻短标签支持直接识别，Tooltip 提供完整入口名称。
  */
 export function AppRail({
   space,
@@ -48,7 +53,7 @@ export function AppRail({
       </div>
 
       <nav className="ai-app-rail-list" aria-label="主导航">
-        {ENTRIES.map(({ key, label, icon: Icon }) => (
+        {ENTRIES.map(({ key, label, shortLabel, icon: Icon }) => (
           <Tooltip key={key}>
             <TooltipTrigger asChild>
               <button
@@ -59,6 +64,9 @@ export function AppRail({
                 aria-current={activeKey === key ? "page" : undefined}
               >
                 <Icon size={18} strokeWidth={1.8} />
+                <span className="ai-app-rail-label" aria-hidden="true">
+                  {shortLabel}
+                </span>
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">{label}</TooltipContent>

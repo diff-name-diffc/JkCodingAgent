@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useMemo } from "react";
-import { Search, FolderOpen, Plus, Trash2 } from "lucide-react";
+import { ArrowUpRight, Search, FolderOpen, Plus, Trash2 } from "lucide-react";
 import type { Project } from "../types";
 import { formatRelativeTime, shortenPath } from "../utils";
 import { ProjectAvatar } from "./ProjectAvatar";
@@ -26,7 +26,9 @@ function WelcomeEmpty({ hasProjects, onOpen }: { hasProjects: boolean; onOpen: (
     <AiEmptyState
       icon={<FolderOpen size={40} strokeWidth={1.2} />}
       title={hasProjects ? "没有匹配的项目" : "还没有项目"}
-      description={!hasProjects ? "打开一个本地 Git 仓库以开始使用" : undefined}
+      description={
+        hasProjects ? "试试项目名称或文件夹路径。" : "打开一个本地仓库，从熟悉的代码开始。"
+      }
       action={
         !hasProjects ? (
           <button className="ai-home-primary-btn" onClick={onOpen}>
@@ -107,7 +109,29 @@ export function WelcomePage({
 
           {view === "projects" && (
             <div className="ai-home-pane ai-home-projects">
+              <header className="ai-projects-heading">
+                <div>
+                  <p className="ai-projects-eyebrow">你的工作空间</p>
+                  <h1 className="ai-projects-title">项目工作台</h1>
+                  <p className="ai-projects-description">和 Agent 一起，把想法变成下一次提交。</p>
+                </div>
+                <div className="ai-home-search-actions">
+                  <button type="button" className="ai-home-primary-btn" onClick={onOpen}>
+                    <Plus size={16} strokeWidth={2} />
+                    <span>打开项目</span>
+                  </button>
+                </div>
+              </header>
+
               <div className="ai-home-search-row">
+                <AiSectionHeader
+                  title="最近打开"
+                  caption={
+                    query.trim()
+                      ? `找到 ${filtered.length} 个结果`
+                      : `${projects.length} 个本地项目`
+                  }
+                />
                 <div className={`ai-field ai-home-search${searchFocused ? " is-focused" : ""}`}>
                   <Search
                     size={15}
@@ -116,29 +140,15 @@ export function WelcomePage({
                     style={{ flexShrink: 0 }}
                   />
                   <input
-                    placeholder="搜索项目"
+                    aria-label="搜索项目名称或路径"
+                    placeholder="搜索项目或路径"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onFocus={() => setSearchFocused(true)}
                     onBlur={() => setSearchFocused(false)}
-                    autoFocus
                   />
                 </div>
-
-                <div className="ai-home-search-actions">
-                  <button className="ai-home-primary-btn" onClick={onOpen}>
-                    <Plus size={14} strokeWidth={2.3} />
-                    <span>打开项目</span>
-                  </button>
-                </div>
               </div>
-
-              <AiSectionHeader
-                title="最近项目"
-                caption={
-                  query.trim() ? `找到 ${filtered.length} 个结果` : `共 ${projects.length} 个项目`
-                }
-              />
 
               <div className="ai-project-recent-list">
                 {filtered.length === 0 ? (
@@ -153,13 +163,17 @@ export function WelcomePage({
                           onClick={() => onProjectClick(p)}
                           title={`${p.name} · ${p.path}`}
                         >
-                          <ProjectAvatar name={p.name} size={28} />
+                          <ProjectAvatar name={p.name} size={40} />
                           <span className="ai-project-recent-main">
                             <span className="ai-project-name">{p.name}</span>
-                            <span className="ai-project-meta">
-                              {shortenPath(p.path)} ·{" "}
-                              {formatRelativeTime(new Date(p.lastOpenedAt).toISOString())}
-                            </span>
+                            <span className="ai-project-meta">{shortenPath(p.path)}</span>
+                          </span>
+                          <span className="ai-project-recent-time">
+                            {formatRelativeTime(new Date(p.lastOpenedAt).toISOString())}
+                          </span>
+                          <span className="ai-project-recent-open" aria-hidden="true">
+                            打开
+                            <ArrowUpRight size={15} strokeWidth={1.8} />
                           </span>
                         </button>
                         <button

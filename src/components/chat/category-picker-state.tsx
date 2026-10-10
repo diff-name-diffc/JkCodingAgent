@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { ArrowUpRight, Plus } from "lucide-react";
 import type { ChatCategory } from "../../types";
 import { cn } from "../../lib/cn";
@@ -7,6 +7,7 @@ import { hexWithAlpha } from "../../lib/hex-alpha";
 import { resolveCategoryIcon } from "../../lib/category-icon";
 import { Button } from "../ui/button";
 import { ChatNewCategoryDialog, type ChatCategoryCreateConfig } from "../ChatNewCategoryDialog";
+import { ChatWelcomeHeading } from "./chat-welcome-heading";
 
 /**
  * 「选择分类开始新对话」空态（未选会话时取代消息区渲染）。
@@ -32,31 +33,29 @@ export function CategoryPickerState({
   className,
 }: CategoryPickerStateProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   return (
     <div
       className={cn(
-        "ai-category-picker flex min-h-0 flex-1 flex-col items-center justify-center px-6 pt-12 pb-[10vh]",
+        "ai-category-picker flex min-h-0 flex-1 flex-col items-center px-4 py-8",
         className,
       )}
     >
       <motion.div
-        initial={{ opacity: 0, scale: 0.96 }}
+        initial={reducedMotion ? false : { opacity: 0, scale: 0.98 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.25, ease: [0.2, 0.8, 0.2, 1] }}
         className="flex flex-col items-center text-center"
       >
-        <h2 className="text-xl font-semibold tracking-tight text-foreground">
-          选择分类，开始新对话
-        </h2>
-        <p className="mt-2 max-w-md text-sm text-muted-foreground">
-          分类决定这场对话的系统提示词、可用工具与子智能体——不同分类侧重的能力不同。
-          选择后即在对应分类下创建新会话。
-        </p>
+        <ChatWelcomeHeading
+          title="今天，想一起完成什么？"
+          copy="选择一个分类，让对话从合适的工具和上下文开始。"
+        />
       </motion.div>
 
       {loading ? (
-        <div className="ai-category-picker-grid mt-9 w-full max-w-2xl">
+        <div className="ai-category-picker-grid mt-8 w-full max-w-xl">
           {Array.from({ length: 6 }).map((_, index) => (
             <div key={index} className="ai-category-picker-card is-loading" aria-hidden="true" />
           ))}
@@ -73,13 +72,13 @@ export function CategoryPickerState({
         </div>
       ) : (
         <motion.div
-          initial="hidden"
+          initial={reducedMotion ? false : "hidden"}
           animate="show"
           variants={{
             hidden: {},
             show: { transition: { staggerChildren: 0.04, delayChildren: 0.1 } },
           }}
-          className="ai-category-picker-grid mt-9 w-full max-w-2xl"
+          className="ai-category-picker-grid mt-8 w-full max-w-xl"
         >
           {categories.map((category) => (
             <CategoryCard

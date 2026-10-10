@@ -111,7 +111,7 @@ pub(crate) fn boolish_arg(args: &Value, key: &str) -> Option<bool> {
 /// 为工具 schema 注入 `compress` / `compress_intent` 参数。
 ///
 /// `force_compress_after_chars` 必须与 runtime 侧该工具的结果策略
-/// （`loop::surface::RigToolSurface::with_policy` 挂载的阈值）一致——文案向
+/// （`loop::surface::RigToolSurface::with_policies` 挂载的阈值）一致——文案向
 /// 模型声明的阈值与运行时实际阈值出现偏差时，模型无法正确判断何时值得
 /// 声明压缩（历史教训：文案写 5000、实际 1000，导致 SSH 输出几乎每次都被压缩）。
 pub(crate) fn with_compression_parameters(

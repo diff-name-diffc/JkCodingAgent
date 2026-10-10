@@ -5,10 +5,11 @@ import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { ToolsTab } from "./tools/ToolsTab";
 import { ChatCategoryToolsTab } from "./tools/ChatCategoryToolsTab";
 import { ToolTimeoutsSection } from "./tools/ToolTimeoutsSection";
+import { ToolIterationsSection } from "./tools/ToolIterationsSection";
 
 type ToolsPageTab = "project" | "chat";
 
-/** 「工具」页：工具超时默认（全局）+ 项目智能体可用工具 + 聊天分类工具配置（变更走自动保存管线）。 */
+/** 「工具」页：工具超时默认 + 工具循环上限（全局）+ 项目智能体可用工具 + 聊天分类工具配置（变更走自动保存管线）。 */
 export function ToolsPage() {
   const store = useAhaSettings();
   const [tab, setTab] = useState<ToolsPageTab>("chat");
@@ -20,6 +21,7 @@ export function ToolsPage() {
   return (
     <div className="ai-set-page">
       <ToolTimeoutsSection />
+      <ToolIterationsSection />
       <Tabs value={tab} onValueChange={(value) => setTab(value as ToolsPageTab)}>
         <TabsList className="ai-set-tabs-list">
           <TabsTrigger value="chat" className="ai-set-subtab">

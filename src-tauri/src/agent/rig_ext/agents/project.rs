@@ -65,6 +65,9 @@ pub struct RigOrchestratorAgent {
     /// 用户配置的工具超时默认（AhaSettingsV2.toolTimeouts 解析产物）：
     /// run 期注入执行策略 deadline 与工具 HTTP 预算（同一解析，防口径漂移）。
     tool_timeouts: ToolTimeoutDefaults,
+    /// 工具迭代轮数上限（AhaSettingsV2.maxToolIterations 解析产物；
+    /// 未配置 = 内置默认），run 期注入 hooks.max_iterations。
+    max_tool_iterations: usize,
 }
 
 impl RigOrchestratorAgent {
@@ -83,6 +86,7 @@ impl RigOrchestratorAgent {
             review_config: None,
             image_credentials: Default::default(),
             tool_timeouts: Default::default(),
+            max_tool_iterations: crate::agent::config::DEFAULT_MAX_TOOL_ITERATIONS,
         }
     }
 
@@ -104,6 +108,8 @@ impl RigOrchestratorAgent {
             .then(|| settings.review.clone());
         self.image_credentials = settings.shared.image_model_credentials();
         self.tool_timeouts = ToolTimeoutDefaults::from(&settings.tool_timeouts);
+        self.max_tool_iterations =
+            crate::agent::config::effective_max_tool_iterations(settings.max_tool_iterations);
     }
 
     pub fn set_context_debug(&mut self, value: bool) {
@@ -244,13 +250,13 @@ impl RigOrchestratorAgent {
             )
         );
         let mut hooks = RigLoopHooks::from_chat_spec(&self.specs.chat);
-        hooks.max_iterations = self.config.max_tool_iterations;
+        hooks.max_iterations = self.max_tool_iterations;
         hooks.model_selection = Some(selection);
         hooks.default_model_name = self.specs.chat.model.clone();
         hooks.context_window = self.specs.chat.context_window;
         hooks.max_iterations_error = Some(format!(
             "已达到最大工具迭代次数（{}），本轮编排被终止。请检查模型是否陷入工具调用循环。",
-            self.config.max_tool_iterations
+            self.max_tool_iterations
         ));
         hooks.preamble_for_iteration = Some(Box::new(move |_iteration| {
             Some(format!(

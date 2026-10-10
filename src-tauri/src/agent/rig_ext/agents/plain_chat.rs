@@ -73,6 +73,9 @@ pub struct RigPlainChatAgent {
     /// 用户配置的工具超时默认（AhaSettingsV2.toolTimeouts 解析产物）：
     /// run 期注入执行策略 deadline 与工具 HTTP 预算（同一解析，防口径漂移）。
     tool_timeouts: Mutex<ToolTimeoutDefaults>,
+    /// 工具迭代轮数上限（AhaSettingsV2.maxToolIterations 解析产物；
+    /// 未配置 = 内置默认），run 期注入 hooks.max_iterations。
+    max_tool_iterations: Mutex<usize>,
     /// 本 run 会话已启用的子智能体快照（run 入口异步拉取一次）。
     sub_agent_exposure: Mutex<Option<SubAgentExposure>>,
 }
@@ -104,6 +107,7 @@ impl RigPlainChatAgent {
             review_config: Mutex::new(None),
             image_credentials: Mutex::new(Default::default()),
             tool_timeouts: Mutex::new(Default::default()),
+            max_tool_iterations: Mutex::new(crate::agent::config::DEFAULT_MAX_TOOL_ITERATIONS),
             sub_agent_exposure: Mutex::new(None),
         }
     }
@@ -129,6 +133,8 @@ impl RigPlainChatAgent {
             .then(|| settings.review.clone());
         *self.image_credentials.lock() = settings.shared.image_model_credentials();
         *self.tool_timeouts.lock() = ToolTimeoutDefaults::from(&settings.tool_timeouts);
+        *self.max_tool_iterations.lock() =
+            crate::agent::config::effective_max_tool_iterations(settings.max_tool_iterations);
         // 基础设置重应用时同步清除分类叠加（对齐旧实现的顺序契约）。
         *self.category_context.lock() = None;
     }
@@ -373,7 +379,7 @@ impl RigPlainChatAgent {
             render_runtime_workspace(&workspace, true, &extra_dirs_for_prompt, has_local_zsh)
         );
         let mut hooks = RigLoopHooks::from_chat_spec(&self.specs.chat);
-        hooks.max_iterations = self.config.max_tool_iterations;
+        hooks.max_iterations = *self.max_tool_iterations.lock();
         hooks.model_selection = Some(selection);
         hooks.default_model_name = self.specs.chat.model.clone();
         hooks.context_window = self.specs.chat.context_window;

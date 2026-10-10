@@ -324,7 +324,12 @@ impl DispatcherState {
             temperature: f64::from(config.temperature),
             enable_thinking: true,
         };
-        Ok(super::rig_ext::agents::architecture_agent::RigArchitectureAgent::new(config, spec))
+        Ok(
+            super::rig_ext::agents::architecture_agent::RigArchitectureAgent::new(config, spec)
+                .with_max_iterations(crate::agent::config::effective_max_tool_iterations(
+                    settings.max_tool_iterations,
+                )),
+        )
     }
 
     pub(crate) async fn list_agent_tools(

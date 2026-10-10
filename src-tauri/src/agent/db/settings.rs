@@ -280,6 +280,12 @@ pub struct AhaSettingsV2 {
     /// 解析。前端 src/types/chat.ts 的 ToolTimeoutSettings 手工同步。
     #[serde(default)]
     pub tool_timeouts: ToolTimeoutSettings,
+    /// 主对话循环的工具迭代轮数上限（设置中心「工具」页）。None = 内置默认
+    /// （`config::DEFAULT_MAX_TOOL_ITERATIONS`）；越界值归一化剥离（视同未
+    /// 配置）。运行期生效值统一经 `config::effective_max_tool_iterations`
+    /// 解析。前端 src/types/chat.ts 的 AhaSettingsV2.maxToolIterations 手工同步。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_iterations: Option<u32>,
     /// 外观主题偏好（system / light / dark）。应用级偏好，随设置统一存取；
     /// 前端 `lib/theme.ts` 据此切换根节点 `.dark` 类。
     #[serde(default = "default_theme_preference")]
@@ -335,6 +341,7 @@ impl Default for AhaSettingsV2 {
             model_library: Vec::new(),
             workflow: WorkflowExecutionConfig::default(),
             tool_timeouts: ToolTimeoutSettings::default(),
+            max_tool_iterations: None,
             theme: default_theme_preference(),
         }
     }
@@ -495,6 +502,10 @@ impl AhaSettingsV2 {
         self.chat.verifier_model_configs = Vec::new();
         self.model_library = normalized_library_entries(&self.model_library);
         self.tool_timeouts = std::mem::take(&mut self.tool_timeouts).normalized();
+        self.max_tool_iterations = normalize_capacity(
+            self.max_tool_iterations,
+            crate::agent::config::MAX_TOOL_ITERATIONS_RANGE,
+        );
         self.theme = normalize_theme_preference(&self.theme);
     }
 
@@ -519,6 +530,10 @@ impl AhaSettingsV2 {
         stored.chat.verifier_model_configs = Vec::new();
         stored.model_library = normalized_library_entries(&stored.model_library);
         stored.tool_timeouts = std::mem::take(&mut stored.tool_timeouts).normalized();
+        stored.max_tool_iterations = normalize_capacity(
+            stored.max_tool_iterations,
+            crate::agent::config::MAX_TOOL_ITERATIONS_RANGE,
+        );
         stored.theme = normalize_theme_preference(&stored.theme);
         stored
     }
@@ -784,6 +799,37 @@ mod tests {
 
         let loaded = db.get_settings_v2().unwrap();
         assert_eq!(loaded.tool_timeouts, saved.tool_timeouts);
+    }
+
+    /// 工具迭代轮数上限：越界值保存/读取两侧都剥离（视同未配置，回退内置
+    /// 默认），合法值原样保留；写后读回不漂移。
+    #[test]
+    fn max_tool_iterations_out_of_range_is_stripped_on_roundtrip() {
+        let (db, _dir) = test_db();
+        let settings = AhaSettingsV2 {
+            max_tool_iterations: Some(0), // 低于下限 1
+            ..Default::default()
+        };
+        let saved = db.save_settings_v2(&settings).unwrap();
+        assert_eq!(saved.max_tool_iterations, None);
+
+        let settings = AhaSettingsV2 {
+            max_tool_iterations: Some(2_000), // 合法
+            ..Default::default()
+        };
+        let saved = db.save_settings_v2(&settings).unwrap();
+        assert_eq!(saved.max_tool_iterations, Some(2_000));
+        assert_eq!(
+            db.get_settings_v2().unwrap().max_tool_iterations,
+            Some(2_000)
+        );
+
+        let settings = AhaSettingsV2 {
+            max_tool_iterations: Some(100_001), // 高于上限 10_000
+            ..Default::default()
+        };
+        let saved = db.save_settings_v2(&settings).unwrap();
+        assert_eq!(saved.max_tool_iterations, None);
     }
 
     #[test]

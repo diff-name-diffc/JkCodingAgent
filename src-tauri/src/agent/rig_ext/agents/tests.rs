@@ -104,7 +104,6 @@ fn test_config(api_base: String) -> DispatcherAgentConfig {
         model: "mock-chat".to_string(),
         summary_model: "mock-chat".to_string(),
         temperature: 0.0,
-        max_tool_iterations: 4,
         exec_timeout_secs: 30,
         restrict_to_workspace: false,
         context_debug: false,
@@ -250,6 +249,7 @@ async fn static_catalog_lists_candidate_tools() {
         .collect::<Vec<_>>();
     assert!(tool_names.contains(&"local_zsh"));
     assert!(tool_names.contains(&"ssh_exec"));
+    assert!(tool_names.contains(&"ssh_tmux_install"));
     assert!(
         !tool_names.contains(&"call_sub_agent"),
         "未配置子智能体管理器时不出现子智能体工具"
@@ -265,6 +265,7 @@ async fn static_catalog_lists_candidate_tools() {
         .collect::<Vec<_>>();
     assert!(sub_agent_names.contains(&"notify_user_progress".to_string()));
     assert!(sub_agent_names.contains(&"local_zsh".to_string()));
+    assert!(sub_agent_names.contains(&"ssh_tmux_install".to_string()));
     assert!(!sub_agent_names.contains(&"call_sub_agent".to_string()));
     assert!(!sub_agent_names.contains(&"list_sub_agents".to_string()));
 

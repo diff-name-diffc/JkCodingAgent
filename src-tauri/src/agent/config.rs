@@ -55,8 +55,24 @@ const DEFAULT_USER: &str = r#"# 用户偏好
 - 默认用中文；只有用户明确要求时再切换语言。
 "#;
 
-/// 默认最大工具迭代轮数（`max_tool_iterations` 缺省与 loop 钩子初值的单一出处）。
-pub(crate) const DEFAULT_MAX_TOOL_ITERATIONS: usize = 200;
+/// 内置最大工具迭代轮数（设置中心「工具」页未配置时的缺省；loop 钩子初值
+/// 同源）。用户配置经 `AhaSettingsV2.max_tool_iterations` 落库，生效值统一经
+/// `effective_max_tool_iterations` 解析。
+pub(crate) const DEFAULT_MAX_TOOL_ITERATIONS: usize = 1000;
+
+/// 用户配置的合法区间（与前端 tool-iterations.ts 的 TOOL_ITERATIONS_RANGE 镜像）。
+pub(crate) const MAX_TOOL_ITERATIONS_RANGE: (u32, u32) = (1, 10_000);
+
+/// 运行期生效的迭代上限：未配置回落内置默认；越界值视同未配置（设置归一化
+/// 已剥离，此处双保险，语义对齐容量的 `normalize_capacity`——宁可回退默认
+/// 也不静默夹紧用户的显式输入）。
+pub(crate) fn effective_max_tool_iterations(configured: Option<u32>) -> usize {
+    let (min, max) = MAX_TOOL_ITERATIONS_RANGE;
+    configured
+        .filter(|v| min <= *v && *v <= max)
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS)
+}
 
 #[derive(Debug, Clone)]
 pub struct DispatcherAgentConfig {
@@ -67,7 +83,6 @@ pub struct DispatcherAgentConfig {
     pub model: String,
     pub summary_model: String,
     pub temperature: f32,
-    pub max_tool_iterations: usize,
     pub exec_timeout_secs: u64,
     pub restrict_to_workspace: bool,
     pub context_debug: bool,
@@ -103,7 +118,6 @@ impl DispatcherAgentConfig {
             model: String::new(),
             summary_model: String::new(),
             temperature: 0.1,
-            max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
             exec_timeout_secs: 60,
             restrict_to_workspace: true,
             context_debug: false,
@@ -188,6 +202,25 @@ mod tests {
         // 不残留临时文件
         let tmp = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
         assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn effective_max_tool_iterations_resolves_default_and_range() {
+        use super::{effective_max_tool_iterations, DEFAULT_MAX_TOOL_ITERATIONS};
+        assert_eq!(
+            effective_max_tool_iterations(None),
+            DEFAULT_MAX_TOOL_ITERATIONS
+        );
+        assert_eq!(effective_max_tool_iterations(Some(50)), 50);
+        // 越界视同未配置（设置归一化已剥离，此处双保险）。
+        assert_eq!(
+            effective_max_tool_iterations(Some(0)),
+            DEFAULT_MAX_TOOL_ITERATIONS
+        );
+        assert_eq!(
+            effective_max_tool_iterations(Some(100_001)),
+            DEFAULT_MAX_TOOL_ITERATIONS
+        );
     }
 
     #[test]

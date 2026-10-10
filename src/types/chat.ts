@@ -255,6 +255,9 @@ export interface AhaSettingsV2 {
   workflow?: WorkflowExecutionConfig;
   /** 工具超时默认；权威源为后端（db/settings.rs 手工同步，越界键归一化时剥离）。 */
   toolTimeouts?: ToolTimeoutSettings;
+  /** 主对话循环的工具迭代轮数上限：未配置回退内置默认（1000），越界值后端
+   * 归一化剥离。与 db/settings.rs 的 AhaSettingsV2.max_tool_iterations 保持一致。 */
+  maxToolIterations?: number;
   /** 外观主题偏好；权威源为后端 aha_get/save_settings_v2。 */
   theme?: ThemePreference;
 }

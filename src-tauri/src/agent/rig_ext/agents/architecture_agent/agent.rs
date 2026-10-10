@@ -228,6 +228,9 @@ pub struct RigArchitectureAgent {
     config: DispatcherAgentConfig,
     spec: PurposeModelSpec,
     app_handle: Option<AppHandle>,
+    /// 工具迭代轮数上限（AhaSettingsV2.maxToolIterations 解析产物；
+    /// 未配置 = 内置默认），run 期注入 hooks.max_iterations。
+    max_tool_iterations: usize,
 }
 
 impl RigArchitectureAgent {
@@ -236,11 +239,18 @@ impl RigArchitectureAgent {
             config,
             spec,
             app_handle: None,
+            max_tool_iterations: crate::agent::config::DEFAULT_MAX_TOOL_ITERATIONS,
         }
     }
 
     pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
+        self
+    }
+
+    /// 注入设置解析的工具迭代轮数上限（构建点持有 AhaSettingsV2）。
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_tool_iterations = max_iterations;
         self
     }
 
@@ -342,13 +352,13 @@ impl RigArchitectureAgent {
             render_runtime_workspace(&workspace, true, &extra_dirs, false)
         );
         let mut hooks = RigLoopHooks::from_chat_spec(&self.spec);
-        hooks.max_iterations = self.config.max_tool_iterations;
+        hooks.max_iterations = self.max_tool_iterations;
         hooks.default_model_name = self.spec.model.clone();
         hooks.context_window = self.spec.context_window;
         hooks.cancelled_reply = Box::new(build_stopped_reply);
         hooks.max_iterations_error = Some(format!(
             "已达到最大工具迭代次数（{}），本轮画布操作被终止。请检查模型是否陷入工具调用循环。",
-            self.config.max_tool_iterations
+            self.max_tool_iterations
         ));
         hooks.preamble_for_iteration = Some(Box::new(move |_iteration| {
             Some(format!(

@@ -1,83 +1,95 @@
-import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { memo, useEffect, useRef } from "react";
+import { Brain, ChevronDown } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { usePersistedToggle } from "./row-ui-state";
+import { Button } from "../ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { usePersistedToggle, useRowUiStateContext } from "./row-ui-state";
 
 export interface ReasoningBlockProps {
-  /** 模型思考链正文（reasoning / ` thinking` 标签）。可为空——仅有草稿时也展示。 */
+  /** 模型提供的思考正文，不包含面向用户的阶段性说明。 */
   text: string;
-  /**
-   * 折叠进思考过程的中间推理草稿：助手在工具轮次间产出的、已被后续正文
-   * 取代的文本段。按出现顺序展示在主思考链之后，不再作为独立块散落正文流。
-   */
-  drafts?: string[];
   elapsedMs: number;
   isStreaming?: boolean;
-  /**
-   * 流式阶段自动展开（用户未手动操作时生效）：思考进行中实时可见，
-   * 正文开始输出后由调用方置 false 自动收起；用户点击后完全跟随用户。
-   * 历史消息块不传，保持默认折叠。
-   */
+  /** 仅决定首次展示的展开态；正文开始或流式结束时保留用户正在阅读的内容。 */
   autoOpen?: boolean;
-  /** UI-24b-1：窗口化行卸载后思考块展开态经行级 store 恢复；流式气泡不传。 */
+  /** 窗口化行卸载后恢复用户选择的展开态。 */
   persistKey?: string;
   className?: string;
 }
 
-export function ReasoningBlock({
+export const ReasoningBlock = memo(function ReasoningBlock({
   text,
-  drafts,
   elapsedMs,
   isStreaming = false,
   autoOpen = false,
   persistKey,
   className,
 }: ReasoningBlockProps) {
-  const [open, setOpen] = usePersistedToggle(persistKey, false);
-  // 用户交互后不再受 autoOpen 驱动（避免自动收起吃掉用户的手动展开）。
-  const [userToggled, setUserToggled] = useState(false);
-  const effectiveOpen = userToggled ? open : open || autoOpen;
+  const [open, setOpen] = usePersistedToggle(persistKey, autoOpen);
+  const rowUiState = useRowUiStateContext();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followingRef = useRef(true);
   const elapsed = elapsedMs > 0 ? `${(elapsedMs / 1000).toFixed(1)}s` : null;
-  const draftList = (drafts ?? []).filter((draft) => draft.trim().length > 0);
+
+  // 流式自动展开是初始默认值而非用户选择，不写 store；虚拟化卸载重挂载后
+  // autoOpen 已随流式结束变 false，自动展开会静默退回折叠。趁 autoOpen 生效
+  // 且用户尚未手动收起（store 无记录）时播种 true，让自动展开与手动展开
+  // 一样可跨重挂载恢复。
+  useEffect(() => {
+    if (autoOpen && persistKey !== undefined && rowUiState) {
+      if (rowUiState.get(persistKey) === undefined) {
+        rowUiState.set(persistKey, true);
+      }
+    }
+  }, [autoOpen, persistKey, rowUiState]);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (open && isStreaming && followingRef.current && element) {
+      element.scrollTop = element.scrollHeight;
+    }
+  }, [text, open, isStreaming]);
 
   return (
-    <div className={cn("ai-reasoning-block", className)}>
-      <button
-        type="button"
-        className="ai-reasoning-trigger"
-        aria-expanded={effectiveOpen}
-        onClick={() => {
-          setUserToggled(true);
-          setOpen((value) => !value);
-        }}
-      >
-        <span className={cn("ai-reasoning-title", isStreaming && "ai-reasoning-shimmer")}>
-          💭 思考过程
-        </span>
-        {draftList.length > 0 && (
-          <span className="ai-reasoning-meta">含 {draftList.length} 段中间推理</span>
-        )}
-        <span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          {isStreaming && <span>思考中…</span>}
-          {elapsed && <span>{elapsed}</span>}
-          <ChevronDown
-            aria-hidden
-            className={cn("h-3.5 w-3.5 transition-transform duration-fast", open && "rotate-180")}
-          />
-        </span>
-      </button>
+    <Collapsible open={open} onOpenChange={setOpen} className={cn("ai-reasoning-block", className)}>
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="ghost"
+          type="button"
+          className="ai-reasoning-trigger h-auto min-h-9 justify-start rounded-none px-3 py-2"
+        >
+          <Brain aria-hidden className="text-muted-foreground" />
+          <span className="ai-reasoning-title">模型思考</span>
+          <span className="ml-auto flex items-center gap-2 text-[11px] font-normal text-muted-foreground">
+            {isStreaming && <span>思考中…</span>}
+            {elapsed && <span title="思考用时">{elapsed}</span>}
+            <ChevronDown
+              aria-hidden
+              className={cn(
+                "transition-transform duration-fast motion-reduce:transition-none",
+                open && "rotate-180",
+              )}
+            />
+          </span>
+        </Button>
+      </CollapsibleTrigger>
 
-      {effectiveOpen && (
-        <div className="chat-scroll max-h-[300px] overflow-y-auto border-t border-border/60 px-3 py-2.5 text-[13px] italic leading-relaxed text-muted-foreground">
-          {text.trim() && <p className="whitespace-pre-wrap break-words">{text}</p>}
-          {draftList.map((draft, index) => (
-            <div key={index} className={cn("ai-reasoning-draft", text.trim() && "mt-2.5")}>
-              <span className="ai-reasoning-draft-label">中间推理 {index + 1}</span>
-              <p className="whitespace-pre-wrap break-words">{draft}</p>
-            </div>
-          ))}
+      <CollapsibleContent>
+        <div
+          ref={scrollRef}
+          tabIndex={0}
+          role="region"
+          aria-label="模型思考内容"
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            followingRef.current =
+              element.scrollHeight - element.scrollTop - element.clientHeight <= 24;
+          }}
+          className="chat-scroll max-h-48 overflow-y-auto overscroll-contain border-t border-border/60 px-3 py-2.5 text-[13px] leading-relaxed text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--border-focus)]"
+        >
+          <p className="m-0 whitespace-pre-wrap break-words">{text}</p>
         </div>
-      )}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
-}
+});

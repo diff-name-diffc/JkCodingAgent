@@ -13,10 +13,10 @@ import { isModelNotConfiguredError } from "../../lib/run-error-classify";
 import { Button } from "../ui/button";
 import { EmptyChatState } from "./empty-chat-state";
 import type { ChatEmptyStateContent } from "./chat-empty-content";
-import { MessageItem, buildItems, type MessageDisplayItem } from "./message-item";
+import { MessageItem } from "./message-item";
+import { buildItems, projectLiveMessageItems, type MessageDisplayItem } from "./message-projection";
 import { OVERSCAN_ROWS, ROW_ESTIMATE_PX, shouldUseWindowing } from "./message-list-metrics";
 import { RowUiStateProvider, useRowUiStateStore } from "./row-ui-state";
-import { StreamingMessage } from "./streaming-message";
 import { ChatScrollAnchor } from "./chat-scroll-anchor";
 import { useCopyOnSelect } from "./use-copy-on-select";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
@@ -101,15 +101,13 @@ function MessageListInner({
   // 在整个流式期间保持静止。
   const liveState = useLiveSessionStateReadonly(sessionId);
 
-  // Rebuild display items only when the message array identity changes.
-  const items: MessageDisplayItem[] = React.useMemo(() => buildItems(messages), [messages]);
+  const historyItems = React.useMemo(() => buildItems(messages), [messages]);
+  const items = React.useMemo(
+    () => projectLiveMessageItems(historyItems, liveState, sessionId),
+    [historyItems, liveState, sessionId],
+  );
 
   const isStreaming = Boolean(liveState && (liveState.hasPendingRun || liveState.isLoading));
-  const hasLiveContent =
-    (liveState?.streamingSegments.length ?? 0) > 0 ||
-    (liveState?.liveToolCalls.length ?? 0) > 0 ||
-    Boolean(liveState?.liveThinking) ||
-    Boolean(liveState?.assistantPlaceholder);
 
   const { containerRef, pinned, scrollToBottom } = useAutoScroll(sessionId);
   const handleCopyOnSelect = useCopyOnSelect();
@@ -133,14 +131,13 @@ function MessageListInner({
     overscan: OVERSCAN_ROWS,
   });
 
-  // 测量缓存按索引键控：items 数组身份变化（会话切换、截断/regenerate、
-  // finalize 追加）时清空重测，防止旧行高错位到新内容。流式期间 messages
-  // 身份稳定（活内容走 liveState 气泡），不会造成逐 token 清缓存。
+  // 历史变更或行数变化时清空索引测量；当前轮次的 token 增长由行级
+  // ResizeObserver 更新，不能因 live 投影的新数组而逐 token 清空缓存。
   React.useEffect(() => {
     virtualizer.measure();
-  }, [items, virtualizer]);
+  }, [historyItems, items.length, virtualizer]);
 
-  const isEmpty = items.length === 0 && !hasLiveContent;
+  const isEmpty = items.length === 0 && !liveState?.runError;
 
   if (isEmpty) {
     return (
@@ -199,37 +196,15 @@ function MessageListInner({
         onMouseUp={handleCopyOnSelect}
       >
         {/* 外层 column 是 useAutoScroll ResizeObserver 的观察目标
-            （firstElementChild）：窗口化时行高实测修正与流式气泡增长都
+            （firstElementChild）：窗口化时行高实测修正与当前轮次增长都
             体现为它的高度变化，pinned 跟随据此触发。 */}
-        <div
-          className={cn(
-            "chat-prose flex flex-col pt-6",
-            !useWindowing && "gap-6",
-            hasLiveContent || liveState?.runError ? "" : "pb-6",
-          )}
-        >
+        <div className={cn("chat-prose flex flex-col py-6", !useWindowing && "gap-6")}>
           {useWindowing ? (
             <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
               {virtualRows}
             </div>
           ) : (
             items.map(renderRow)
-          )}
-
-          {/* Trailing live streaming bubble（窗口化时位于总高 div 之后的
-              常规流，行 pb-6 已提供与末行的 24px 间距） */}
-          {hasLiveContent && liveState && (
-            <StreamingMessage
-              segments={liveState.streamingSegments}
-              tools={liveState.liveToolCalls}
-              thinking={liveState.liveThinking}
-              placeholder={liveState.assistantPlaceholder}
-              isStreaming={isStreaming}
-              showAvatar={items[items.length - 1]?.kind !== "assistant"}
-              onOpenArtifact={onOpenArtifact}
-              onOpenSubAgent={onOpenSubAgent}
-              onConfigureModel={onConfigureModel}
-            />
           )}
 
           {liveState?.runError && (

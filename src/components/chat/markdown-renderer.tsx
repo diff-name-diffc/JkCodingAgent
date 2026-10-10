@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useMemo } from "react";
+import { createContext, memo, useContext, useMemo, useState } from "react";
 import { Play } from "lucide-react";
 import {
   CodeBlock,
@@ -15,7 +15,7 @@ import "katex/dist/katex.min.css";
 import type { PythonCodeRunRecord } from "../../types";
 import { cn } from "../../lib/cn";
 import { stableHash } from "../../lib/stable-hash";
-import { TEAL_DARK_THEME, TEAL_LIGHT_THEME } from "../../utils/shiki";
+import { NEUTRAL_DARK_THEME, NEUTRAL_LIGHT_THEME } from "../../utils/shiki";
 import { normalizeMarkdownMath } from "../../lib/normalize-math";
 import { MarkdownImage } from "../markdown/MarkdownImage";
 import { MarkdownLink } from "../markdown/MarkdownLink";
@@ -244,9 +244,9 @@ const streamdownControls = {
   table: false,
 } as const;
 const streamdownLinkSafety = { enabled: false } as const;
-const shikiTheme = [TEAL_LIGHT_THEME, TEAL_DARK_THEME] as [
-  typeof TEAL_LIGHT_THEME,
-  typeof TEAL_DARK_THEME,
+const shikiTheme = [NEUTRAL_LIGHT_THEME, NEUTRAL_DARK_THEME] as [
+  typeof NEUTRAL_LIGHT_THEME,
+  typeof NEUTRAL_DARK_THEME,
 ];
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
@@ -257,6 +257,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   pythonRunRecords,
   className,
 }: MarkdownRendererProps) {
+  // 已经开始流式渲染的正文继续使用同一分块树；只关闭动画与光标。
+  // 切换为 static 会替换整段 DOM，工具轮切换时会丢失正在阅读的选区。
+  const [startedStreaming] = useState(streaming);
   const { effectiveContent, deferred } = useDeferredContent(content, streaming);
   const normalizedContent = useMemo(
     () => (deferred ? effectiveContent : normalizeMarkdownMath(effectiveContent)),
@@ -291,7 +294,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     >
       <PythonRunContext.Provider value={pythonRunContext}>
         <Streamdown
-          mode={streaming ? "streaming" : "static"}
+          mode={streaming || startedStreaming ? "streaming" : "static"}
           isAnimating={streaming}
           caret={streaming ? "block" : undefined}
           plugins={streamdownPlugins}

@@ -9,7 +9,7 @@ import { MarkdownImage } from "../markdown/MarkdownImage";
 /**
  * User message bubble for the refactored chat surface.
  *
- * Right-aligned, soft accent-tinted bubble with a compact identity anchor. Renders the user's
+ * Right-aligned, neutral bubble with a compact identity anchor. Renders the user's
  * text content; image segments are rendered as thumbnails below the text via MarkdownImage,
  * which resolves `chat-image://` ids through the backend and supports click-to-enlarge.
  *

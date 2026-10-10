@@ -147,7 +147,11 @@ export function subscribeDispatcherMessages(
  * 竞态守卫：list_messages 在途期间若已开启新 run，过期全量快照不得推送
  * （merge 只增不删，可能把已删消息加回来）。
  */
-export function reconcileSessionMessages(targetSessionId: string, expectedCount?: number): void {
+export function reconcileSessionMessages(
+  targetSessionId: string,
+  expectedCount?: number,
+  onReconciled?: () => void,
+): void {
   void invoke<DispatcherMessageWire[]>("dispatcher_list_messages", {
     workspaceId: targetSessionId,
   })
@@ -157,8 +161,34 @@ export function reconcileSessionMessages(targetSessionId: string, expectedCount?
         console.warn(`Finished 对账不一致：后端 ${expectedCount} 条，拉取到 ${fresh.length} 条`);
       }
       notifyDispatcherMessages(targetSessionId, fresh);
+      onReconciled?.();
     })
     .catch((err) => console.error("运行收尾对账消息失败:", err));
+}
+
+/** 终态先停止交互，权威历史就绪后再交接内容，避免清空 live 后出现空白帧。 */
+export function settleDispatcherRun(
+  sessionId: string,
+  options: { expectedCount?: number; runError?: string } = {},
+) {
+  clearDispatcherActiveRunId(sessionId);
+  const settled: DispatcherLiveSessionState = {
+    ...getOrCreateDispatcherLiveSessionState(sessionId),
+    hasPendingRun: false,
+    isLoading: false,
+    assistantPlaceholder: null,
+    runError: options.runError ?? null,
+  };
+  setDispatcherLiveSessionState(sessionId, settled);
+  notifyDispatcherLiveSessionSubscribers(sessionId, settled);
+  reconcileSessionMessages(sessionId, options.expectedCount, () => {
+    const current = getDispatcherLiveSessionState(sessionId);
+    // 旧对账不能清空后续运行；新 run 总会重建 streamingSegments 数组。
+    if (!current || current.streamingSegments !== settled.streamingSegments) return;
+    const idle = { ...createIdleLiveSessionState(), runError: current.runError };
+    setDispatcherLiveSessionState(sessionId, idle);
+    notifyDispatcherLiveSessionSubscribers(sessionId, idle);
+  });
 }
 
 export function cleanupDispatcherSession(sessionId: string) {

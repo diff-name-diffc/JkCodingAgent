@@ -15,7 +15,7 @@ import * as React from "react";
  * 边界：
  * - 仅承载「重挂载后应恢复」的瞬时 UI 布尔态，禁止放业务数据；
  * - key 由调用方保证稳定且实例内唯一（如 `tools:${turnId}`、`card:${toolCallId}`）；
- * - 流式气泡（StreamingMessage）不传 key，保持组件内临时态语义不变。
+ * - 实时与历史消息共用稳定轮次 key，收尾交接不会重置用户的展开选择。
  */
 
 export interface RowUiStateStore {
@@ -36,6 +36,11 @@ export function createRowUiStateStore(): RowUiStateStore {
 const RowUiStateContext = React.createContext<RowUiStateStore | null>(null);
 
 export const RowUiStateProvider = RowUiStateContext.Provider;
+
+/** 列表选择可见项时读取同一份展开态，避免已展开的旧项在重挂载时先被过滤。 */
+export function useRowUiStateContext(): RowUiStateStore | null {
+  return React.useContext(RowUiStateContext);
+}
 
 /** MessageList 实例级 store：ref 持有，identity 恒定，不引发重渲染。 */
 export function useRowUiStateStore(): RowUiStateStore {

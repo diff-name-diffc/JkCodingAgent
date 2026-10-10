@@ -2,12 +2,11 @@ import { useRef, useCallback, useMemo } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { DispatcherAgentEvent, DispatcherAgentTurn, ImageSegment } from "../../types";
 import {
-  clearDispatcherActiveRunId,
   createIdleLiveSessionState,
   getDispatcherActiveRunId,
   nextDispatcherActiveRunId,
   notifyDispatcherMessages,
-  reconcileSessionMessages,
+  settleDispatcherRun,
 } from "../dispatcherSessionStore";
 import type { LiveSessionUpdater } from "./useLiveSessionState";
 import { buildOptimisticUserMessage, toErrorMessage } from "./dispatcherChatUtils";
@@ -90,14 +89,8 @@ export function useDispatcherActions({
           } finally {
             if (getDispatcherActiveRunId(targetSessionId) === runId) {
               // 兜底收尾：走到这里说明终态事件（finished/failed）未送达或未通过
-              // 槽位守卫——Channel 消息经 eval 回调逐条投递，与 invoke 响应是两
-              // 条 IPC 路径，尾部事件可能在 invoke resolve 后才到达（或随丢失的
-              // 消息缺口永久滞留）。收尾必须与 finished 等价：只翻运行标记会把
-              // liveToolCalls/streamingSegments 留在 live state 里，消息列表尾部
-              // 会持续渲染一份重复的工具活动列表。
-              clearDispatcherActiveRunId(targetSessionId);
-              updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
-              reconcileSessionMessages(targetSessionId);
+              // 槽位守卫。与 finished 共用内容交接：先结束运行，再等待历史对账。
+              settleDispatcherRun(targetSessionId);
             }
           }
         });

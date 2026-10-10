@@ -26,6 +26,7 @@ import {
   nextDispatcherActiveRunId,
   notifyDispatcherMessages,
   reconcileSessionMessages,
+  settleDispatcherRun,
 } from "../../dispatcherSessionStore";
 import {
   createDispatcherEventChannel,
@@ -181,12 +182,8 @@ export function useArchitectureChat({
           } finally {
             if (getDispatcherActiveRunId(targetSessionId) === runId) {
               // 兜底收尾与 useDispatcherActions 同款：走到这里说明终态事件
-              // 未送达（Channel 尾部事件晚于 invoke resolve 或随缺口滞留），
-              // 必须做与 finished 等价的完整复位——只翻运行标记会把
-              // liveToolCalls/streamingSegments 残留成重复的工具列表。
-              clearDispatcherActiveRunId(targetSessionId);
-              updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
-              reconcileSessionMessages(targetSessionId);
+              // 未送达。保留当前内容，等历史对账成功后完成交接。
+              settleDispatcherRun(targetSessionId);
             }
           }
         });

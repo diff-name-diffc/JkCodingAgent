@@ -20,11 +20,9 @@ import {
   updateLiveToolRunActivity,
 } from "./live-tool-activity";
 import {
-  clearDispatcherActiveRunId,
-  createIdleLiveSessionState,
   getDispatcherActiveRunId,
   notifyDispatcherMessages,
-  reconcileSessionMessages,
+  settleDispatcherRun,
 } from "../dispatcherSessionStore";
 import type { LiveSessionUpdater } from "./useLiveSessionState";
 
@@ -55,9 +53,7 @@ export function createDispatcherEventChannel({
           ...state,
           assistantPlaceholder: "正在分析问题...",
           liveThinking: null,
-          // Demote the previous reply so it folds into the collapsed
-          // 思考过程 instead of being discarded — the user can still expand
-          // and read the intermediate reasoning.
+          // 前一条说明留在正文流里，下一次调用只改变阶段标记。
           streamingSegments: demoteActiveTextSegments(state.streamingSegments),
         }));
         break;
@@ -84,7 +80,11 @@ export function createDispatcherEventChannel({
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
           assistantPlaceholder: null,
-          streamingSegments: appendAssistantTextSegment(state.streamingSegments, event.data.delta),
+          streamingSegments: appendAssistantTextSegment(
+            state.streamingSegments,
+            event.data.delta,
+            event.data.messageId,
+          ),
         }));
         break;
       case "assistantThinkingDelta":
@@ -93,20 +93,20 @@ export function createDispatcherEventChannel({
           ...state,
           assistantPlaceholder: null,
           liveThinking: {
-            text: `${state.liveThinking?.text ?? ""}${event.data.delta}`,
+            messageId: event.data.messageId,
+            text: `${state.liveThinking?.messageId === event.data.messageId ? state.liveThinking.text : ""}${event.data.delta}`,
             elapsedMs: event.data.elapsedMs,
           },
         }));
         break;
       case "assistantMessage":
         if (!isActiveRun || event.data.message.workspaceId !== targetSessionId) return;
+        // 历史快照与 live 在投影层按 messageId 合并，正文不会重挂载或折叠消失。
+        notifyDispatcherMessages(targetSessionId, [event.data.message]);
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
           assistantPlaceholder: null,
-          liveThinking: null,
-          streamingSegments: demoteActiveTextSegments(state.streamingSegments),
         }));
-        notifyDispatcherMessages(targetSessionId, [event.data.message]);
         break;
       case "runUsageUpdated":
         if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
@@ -192,20 +192,13 @@ export function createDispatcherEventChannel({
         // dispatcher_list_messages 拉全量，经 mergeDispatcherMessages 按 id
         // 合并刷新（dispatcher-session-updated 的会话记录重载路径同函数复用）。
         void refreshSessionTokenUsage(targetSessionId);
-        clearDispatcherActiveRunId(targetSessionId);
-        updateLiveSessionState(targetSessionId, () => createIdleLiveSessionState());
-        reconcileSessionMessages(targetSessionId, event.data.messageCount);
+        settleDispatcherRun(targetSessionId, { expectedCount: event.data.messageCount });
         break;
       case "failed":
         if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
-        clearDispatcherActiveRunId(targetSessionId);
-        updateLiveSessionState(targetSessionId, () => ({
-          ...createIdleLiveSessionState(),
-          runError: event.data.message,
-        }));
         // 失败同样对账：run 中途已持久化的消息要落进列表，乐观 pending
         // 消息要被权威批次替换/丢弃（如发送前置校验失败，消息未持久化）。
-        reconcileSessionMessages(targetSessionId);
+        settleDispatcherRun(targetSessionId, { runError: event.data.message });
         break;
       default: {
         // 穷尽性检查：后端新增事件变体时编译期报错，而非静默忽略。

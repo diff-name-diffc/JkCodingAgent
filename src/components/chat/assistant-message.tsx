@@ -1,13 +1,13 @@
-import { motion } from "framer-motion";
+import { memo } from "react";
+import { Loader2 } from "lucide-react";
 import type {
   DispatcherMessageUsageStats,
   DispatcherToolArtifactRef,
   ModelCategory,
 } from "../../types";
-import {
-  foldAssistantDrafts,
-  type AssistantThinkingBlock,
-  type AssistantTurnSegment,
+import type {
+  AssistantThinkingBlock,
+  AssistantTurnSegment,
 } from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
@@ -18,22 +18,7 @@ import { ReasoningBlock } from "./reasoning-block";
 import { ToolCallList } from "./tool-call-card";
 import { formatTokenCountK } from "../dispatcher-chat/dispatcherChatUtils";
 
-/**
- * Assistant message bubble for the refactored chat surface.
- *
- * Renders a full assistant turn: an avatar, a sequence of text + tool-summary
- * segments, optional thinking block, tool-call cards, and usage stats. The
- * segment / turn shape comes from buildDispatcherDisplayItems (unchanged) —
- * this component only re-styles it.
- *
- * Streaming tail is handled by <StreamingMessage /> (a slimmer variant that
- * renders the live segments from dispatcherSessionStore). This component is
- * for finalized turns.
- *
- * 草稿块协议：被后续正文取代的中间推理段不再作为独立灰块散落正文流，
- * 而是与模型思考链一起折叠进「思考过程」（与实时侧 StreamingMessage
- * 共用 foldAssistantDrafts）。
- */
+/** 同一轮次从流式到完成共用此组件；阶段说明保留原位，不因后续输出而消失。 */
 export interface AssistantMessageProps {
   segments: AssistantTurnSegment[];
   tools?: ToolActivityItem[];
@@ -45,6 +30,9 @@ export interface AssistantMessageProps {
   rowId?: string;
   /** 连续 AI 消息分组中仅第一条显示头像（锚点位置保留，仅隐藏）。 */
   showAvatar?: boolean;
+  isStreaming?: boolean;
+  isThinking?: boolean;
+  placeholder?: string | null;
   pythonRunRecords?: Record<string, import("../../types").PythonCodeRunRecord>;
   onRunPython?: (target: {
     messageId: string;
@@ -61,7 +49,7 @@ export interface AssistantMessageProps {
   className?: string;
 }
 
-export function AssistantMessage({
+export const AssistantMessage = memo(function AssistantMessage({
   segments,
   tools,
   thinking,
@@ -69,6 +57,9 @@ export function AssistantMessage({
   messageId,
   rowId,
   showAvatar = true,
+  isStreaming = false,
+  isThinking = false,
+  placeholder,
   pythonRunRecords,
   onRunPython,
   onCopy,
@@ -78,32 +69,53 @@ export function AssistantMessage({
   onConfigureModel,
   className,
 }: AssistantMessageProps) {
-  const { visible: visibleSegments, drafts } = foldAssistantDrafts(segments);
-  const showReasoning = Boolean(thinking?.text?.trim()) || drafts.length > 0;
+  const textSegments = segments.filter(
+    (segment) => segment.kind === "assistant-text" && segment.text.trim(),
+  );
+  const toolIds = new Set(tools?.map((tool) => tool.id));
+  // 工具卡已经持有结果时，不再把同一份压缩输出冒充为助手答复。
+  const standaloneSummaries = segments.filter(
+    (segment) =>
+      segment.kind === "tool-summary" &&
+      segment.text.trim() &&
+      (!segment.toolCallId || !toolIds.has(segment.toolCallId)),
+  );
+  const showReasoning = Boolean(thinking?.text?.trim());
+  const runningTools = tools?.filter((tool) => tool.status === "running") ?? [];
+  const hasActiveText = textSegments.some((segment) => !segment.superseded);
+  const isWriting = isStreaming && hasActiveText && !placeholder;
+  const statusText =
+    placeholder ||
+    (runningTools.length > 0
+      ? `正在处理工具活动 · ${runningTools.length} 项待完成`
+      : isThinking
+        ? "正在思考"
+        : "正在整理回复");
 
   const handleCopy = () => {
-    // 复制仅取最终正文（草稿已折叠进思考过程，不属于答复正文）。
-    const text = visibleSegments.map((s) => s.text).join("\n\n");
+    const answer = textSegments.filter((segment) => !segment.superseded);
+    const text = (answer.length ? answer : textSegments).map((s) => s.text).join("\n\n");
     if (onCopy) onCopy(text);
     else void navigator.clipboard.writeText(text);
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-      className={cn("ai-assistant-message group relative", className)}
-    >
-      <ChatAvatar role="assistant" hidden={!showAvatar} className="absolute left-6 top-0.5" />
+    <div className={cn("ai-assistant-message group relative", className)}>
+      <ChatAvatar
+        role="assistant"
+        active={isStreaming}
+        hidden={!showAvatar}
+        className="absolute left-6 top-0.5"
+      />
 
       <div className="min-w-0 pl-[60px]">
         {showReasoning && (
           <ReasoningBlock
             className="mb-2"
             text={thinking?.text ?? ""}
-            drafts={drafts}
             elapsedMs={thinking?.elapsedMs ?? 0}
+            isStreaming={isThinking}
+            autoOpen={isStreaming}
             persistKey={rowId === undefined ? undefined : `reasoning:${rowId}`}
           />
         )}
@@ -120,27 +132,56 @@ export function AssistantMessage({
           />
         )}
 
-        {/* Segments：仅最终正文；中间推理草稿已折叠进上方思考过程。 */}
-        <div className="space-y-2">
-          {visibleSegments.map((segment, index) => (
+        {standaloneSummaries.map((segment, index) => (
+          <section
+            key={segment.toolCallId ?? segment.messageId ?? index}
+            aria-label="工具摘要"
+            className="mb-3 rounded-md border border-border/60 bg-muted/30 p-3"
+          >
+            <div className="mb-1 text-xs text-muted-foreground">工具摘要</div>
             <MarkdownRenderer
-              key={index}
               content={segment.text}
               messageId={segment.messageId ?? messageId}
-              onRunPython={onRunPython}
+              pythonRunRecords={pythonRunRecords}
+              onRunPython={isStreaming ? undefined : onRunPython}
+            />
+          </section>
+        ))}
+
+        <div className="space-y-4">
+          {textSegments.map((segment, index) => (
+            <MarkdownRenderer
+              key={segment.messageId ?? `text-${index}`}
+              content={segment.text}
+              className={cn(segment.superseded && "text-[var(--text-secondary)]")}
+              streaming={isWriting && !segment.superseded && index === textSegments.length - 1}
+              messageId={segment.messageId ?? messageId}
+              onRunPython={isStreaming ? undefined : onRunPython}
               pythonRunRecords={pythonRunRecords}
             />
           ))}
         </div>
 
-        <MessageActions
-          tokenLabel={
-            usageStats ? `${formatTokenCountK(usageStats.totalTokens)} tokens` : undefined
-          }
-          onCopy={handleCopy}
-          onRegenerate={onRegenerate}
-        />
+        {isStreaming && !isWriting && (
+          <div className="ai-agent-status" role="status" aria-live="polite">
+            <Loader2
+              aria-hidden
+              className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none"
+            />
+            <span>{statusText}</span>
+          </div>
+        )}
+
+        {!isStreaming && (
+          <MessageActions
+            tokenLabel={
+              usageStats ? `${formatTokenCountK(usageStats.totalTokens)} tokens` : undefined
+            }
+            onCopy={handleCopy}
+            onRegenerate={onRegenerate}
+          />
+        )}
       </div>
-    </motion.div>
+    </div>
   );
-}
+});

@@ -5,14 +5,10 @@ import type {
   ModelCategory,
   PythonCodeRunRecord,
 } from "../../types";
-import type {
-  AssistantThinkingBlock,
-  AssistantTurnSegment,
-} from "../dispatcher-chat/assistant-segments";
-import { buildDispatcherDisplayItems } from "../dispatcherChatView";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { AssistantMessage } from "./assistant-message";
 import { UserMessage } from "./user-message";
+import type { MessageDisplayItem } from "./message-projection";
 
 /**
  * One row in the message list. Dispatches to <UserMessage /> or
@@ -20,21 +16,6 @@ import { UserMessage } from "./user-message";
  * streaming appends to the trailing live bubble don't re-render every
  * historical row.
  */
-export type MessageDisplayItem =
-  | { kind: "user"; id: string; message: DispatcherMessage }
-  | {
-      kind: "assistant";
-      id: string;
-      segments: AssistantTurnSegment[];
-      tools: ToolActivityItem[];
-      thinking: AssistantThinkingBlock | null;
-      /** 连续 AI 消息分组中仅第一条为 true。 */
-      showAvatar: boolean;
-      usageStats?: import("../../types").DispatcherMessageUsageStats;
-      messageId?: string;
-      sourceUserMessage?: DispatcherMessage;
-    };
-
 export interface MessageItemProps {
   item: MessageDisplayItem;
   pythonRunRecords?: Record<string, PythonCodeRunRecord>;
@@ -91,6 +72,9 @@ export const MessageItem = React.memo(function MessageItem({
       messageId={item.messageId}
       rowId={item.id}
       showAvatar={item.showAvatar}
+      isStreaming={item.isStreaming}
+      isThinking={item.isThinking}
+      placeholder={item.placeholder}
       pythonRunRecords={pythonRunRecords}
       onRunPython={onRunPython}
       onCopy={onCopyMessage}
@@ -102,32 +86,3 @@ export const MessageItem = React.memo(function MessageItem({
     />
   );
 });
-
-/** Build display items from raw DispatcherMessage[] using the shared view-model layer. */
-export function buildItems(messages: DispatcherMessage[]): MessageDisplayItem[] {
-  // 复用统一的历史投影构建器：分段归组、工具卡片 upsert 与
-  // superseded 正文降级逻辑全部集中在 buildDispatcherDisplayItems。
-  const raw = buildDispatcherDisplayItems(messages);
-  let prevKind: "user" | "assistant" | null = null;
-  let sourceUserMessage: DispatcherMessage | undefined;
-  return raw.map((item) => {
-    if (item.kind === "user") {
-      prevKind = "user";
-      sourceUserMessage = item.message;
-      return { kind: "user", id: item.id, message: item.message };
-    }
-    // 连续 AI 消息为一组，仅组内第一条显示头像锚点。
-    const showAvatar = prevKind !== "assistant";
-    prevKind = "assistant";
-    return {
-      kind: "assistant",
-      id: item.id,
-      segments: item.turn.segments,
-      tools: item.turn.tools,
-      thinking: item.turn.thinking,
-      usageStats: item.turn.usageStats,
-      showAvatar,
-      sourceUserMessage,
-    };
-  });
-}

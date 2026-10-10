@@ -30,6 +30,7 @@ interface OutboundToolCall {
 
 interface DispatcherAssistantTurn {
   id: string;
+  messageIds: string[];
   tools: ToolActivityItem[];
   segments: AssistantTurnSegment[];
   thinking: AssistantThinkingBlock | null;
@@ -51,6 +52,7 @@ export function buildDispatcherDisplayItems(
   // 卡片的幽灵回合（查不到归属时回退当前回合）。
   const taskTurns = new Map<string, DispatcherAssistantTurn>();
   let currentTurn: DispatcherAssistantTurn | null = null;
+  let sourceUserId: string | undefined;
 
   const ensureAssistantTurn = (seedId: string) => {
     if (currentTurn) {
@@ -58,7 +60,8 @@ export function buildDispatcherDisplayItems(
     }
 
     currentTurn = {
-      id: `assistant-turn-${seedId}`,
+      id: `assistant-turn-${sourceUserId ?? seedId}`,
+      messageIds: [],
       tools: [],
       segments: [],
       thinking: null,
@@ -74,6 +77,7 @@ export function buildDispatcherDisplayItems(
   for (const message of messages) {
     if (message.role === "user") {
       currentTurn = null;
+      sourceUserId = message.id;
       items.push({
         kind: "user",
         id: message.id,
@@ -84,6 +88,7 @@ export function buildDispatcherDisplayItems(
 
     if (message.role === "assistant") {
       const turn = ensureAssistantTurn(message.id);
+      turn.messageIds.push(message.id);
       mergeTurnUsageStats(turn, message.usageStats);
       mergeTurnThinking(turn, message.thinkingContent, message.thinkingElapsedMs);
 
@@ -100,12 +105,7 @@ export function buildDispatcherDisplayItems(
         });
       }
 
-      // When the assistant message contains tool calls, its text content is
-      // preliminary reasoning that will be superseded by the follow-up
-      // response after tool execution.  Instead of discarding it, mark it as
-      // superseded so it folds into the turn's collapsed 思考过程 (see
-      // foldAssistantDrafts), preserving the intermediate reasoning for the
-      // user to expand.
+      // 工具调用前的文字是对用户的阶段说明，保留其消息身份与展示顺序。
       const hasToolCalls = toolCalls.length > 0;
       const content = message.content.trim();
       if (content) {

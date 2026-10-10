@@ -260,7 +260,7 @@ export function PromptInput({
         </div>
       </div>
       <div
-        className="mt-1.5 flex justify-end px-2 text-[11px] leading-4 text-muted-foreground/70"
+        className="mt-1.5 flex justify-end px-2 text-[11px] leading-4 text-muted-foreground"
         aria-hidden="true"
       >
         Enter 发送 · Shift+Enter 换行 · 支持粘贴截图

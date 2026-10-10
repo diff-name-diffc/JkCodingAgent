@@ -1,315 +1,21 @@
 import * as React from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { Bot, Check, ChevronDown, Clock3, FileSearch, Loader2, X } from "lucide-react";
-import {
-  formatToolActivitySummary,
-  summarizeToolActivity,
-  type ToolActivityItem,
-  type ToolCallStatus,
-} from "../dispatcher-chat/tool-activity";
-import type { DispatcherToolArtifactRef, ModelCategory } from "../../types";
-import {
-  inferModelNotConfiguredCategory,
-  isModelNotConfiguredError,
-} from "../../lib/run-error-classify";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { ChevronDown } from "lucide-react";
+import { summarizeToolActivity, type ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
-import { highlightCodeToHtml } from "../../utils/shiki";
-import { shikiCacheKey, shikiHighlightCache } from "../../utils/shiki-cache";
-import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
 import { Button } from "../ui/button";
-import { StatusPill } from "../detail/StatusPill";
-import { WorkflowPlanCard } from "../workflow/WorkflowPlanCard";
-import { parseWorkflowPlanId } from "../workflow/workflow-utils";
-import { usePersistedToggle } from "./row-ui-state";
-import { ToolRunTrace } from "./tool-run-trace";
-import { BrowserActivityFeed, BrowserTraceView } from "../browser/BrowserTraceView";
+import { usePersistedToggle, useRowUiStateContext } from "./row-ui-state";
+import { ToolActivityRow, type ToolActivityActions } from "./tool-activity-row";
+import { selectVisibleToolActivities } from "./tool-activity-presentation";
 
-const MAX_COLLAPSED_OUTPUT_LINES = 20;
-
-interface ToolCallCardProps {
-  item: ToolActivityItem;
-  defaultExpanded?: boolean;
-  className?: string;
-  onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
-  onOpenSubAgent?: (tool: ToolActivityItem) => void;
-  /** UI-25 第四批遗留：工具级「模型未配置」错误的「配置模型」深链。
-   *  category 由错误串推断（inferModelNotConfiguredCategory），推断不出为
-   *  undefined 时由发起点回退默认分类；缺省回调不渲染按钮（向后兼容）。 */
-  onConfigureModel?: (category?: ModelCategory) => void;
-  detail?: React.ReactNode;
-}
-
-function ToolCallCard({
-  item,
-  defaultExpanded = false,
-  className,
-  onOpenArtifact,
-  onOpenSubAgent,
-  onConfigureModel,
-  detail,
-}: ToolCallCardProps) {
-  // UI-24b-1：窗口化行卸载后展开态经行级 store 恢复（key 用工具调用 id，
-  // 全局唯一）；无 Provider/key 时退化为普通 useState，语义不变。
-  const [expanded, setExpanded] = usePersistedToggle(`card:${item.id}`, defaultExpanded);
-  // submit_workflow 收口工具：从输出文本解析 plan_id，卡片下方内联工作流计划卡。
-  const workflowPlanId =
-    item.name === "submit_workflow" && typeof item.output === "string"
-      ? parseWorkflowPlanId(item.output)
-      : null;
-  // 浏览器工具（无头化改造）：执行中滚动展示浏览器动态；展开后内嵌实时画面。
-  const isBrowserTool = item.name.startsWith("browser_");
-  const hasBrowserActivity = isBrowserTool && (item.browserActivity?.length ?? 0) > 0;
-
-  return (
-    <div
-      className={cn(
-        "ai-tool-call-card rounded-lg border bg-card/70",
-        item.status === "running" &&
-          !item.planned &&
-          "ai-tool-call-card--running border-primary/30",
-        item.status === "error" && "ai-tool-call-card--error border-destructive/60",
-        className,
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        className="ai-tool-call-trigger flex w-full items-center gap-2 px-3 py-2 text-left"
-      >
-        <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium text-foreground">
-          {item.name}
-        </span>
-        <StatusPill
-          domain="tool"
-          status={item.planned ? "planned" : item.status}
-          className="shrink-0"
-        />
-        {item.durationMs != null && (
-          <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
-            {formatDuration(item.durationMs)}
-          </span>
-        )}
-        <ChevronDown
-          aria-hidden
-          className={cn(
-            "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-fast",
-            !expanded && "-rotate-90",
-          )}
-        />
-      </button>
-
-      {workflowPlanId && <WorkflowPlanCard planId={workflowPlanId} sessionId={item.workspaceId} />}
-
-      {hasBrowserActivity && (
-        <div className="px-3 pb-2">
-          <BrowserActivityFeed
-            lines={item.browserActivity ?? []}
-            expanded={expanded}
-            active={item.status === "running"}
-          />
-        </div>
-      )}
-
-      <AnimatePresence initial={false}>
-        {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-            className="overflow-hidden border-t border-border/70"
-          >
-            <div className="space-y-3 px-3 py-3">
-              {isBrowserTool && item.workspaceId && (
-                <BrowserTraceView sessionId={item.workspaceId} />
-              )}
-              <ToolRunTrace item={item} active={expanded} />
-              {item.input != null && (
-                <DataSection
-                  label="输入"
-                  value={item.input}
-                  persistKey={`showall:${item.id}:input`}
-                />
-              )}
-              {item.output != null && item.output !== item.errorText && (
-                <DataSection
-                  label={isCompressedResult(item.resultMode) ? "输出 · 回传模型" : "输出"}
-                  value={item.output}
-                  collapsible
-                  persistKey={`showall:${item.id}:output`}
-                />
-              )}
-              {item.errorText && (
-                <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 font-mono text-[11px] leading-relaxed text-destructive">
-                  {item.errorText}
-                </div>
-              )}
-              {item.errorText && onConfigureModel && isModelNotConfiguredError(item.errorText) && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7"
-                  onClick={() =>
-                    onConfigureModel(inferModelNotConfiguredCategory(item.errorText) ?? undefined)
-                  }
-                >
-                  配置模型
-                </Button>
-              )}
-              {item.name === "call_sub_agent" && onOpenSubAgent && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7"
-                  onClick={() => onOpenSubAgent(item)}
-                >
-                  <Bot className="h-3.5 w-3.5" />
-                  查看执行轨迹
-                </Button>
-              )}
-              {detail}
-              {item.detailRefs && item.detailRefs.length > 0 && (
-                <div className="space-y-1.5">
-                  {item.detailRefs.map((ref) => (
-                    <button
-                      key={ref.id}
-                      type="button"
-                      onClick={() => onOpenArtifact?.(ref)}
-                      className="group flex w-full items-start gap-2 rounded-md border border-border/70 bg-background/60 px-2.5 py-2 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
-                    >
-                      <FileSearch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-primary" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium text-foreground">
-                          {ref.title}
-                        </span>
-                        <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                          {ref.kind} · {ref.lineCount} 行 · {ref.charCount} 字符
-                        </span>
-                        {ref.preview && (
-                          <span className="mt-1 line-clamp-2 block font-mono text-[11px] leading-relaxed text-muted-foreground">
-                            {ref.preview}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-function DataSection({
-  label,
-  value,
-  collapsible = false,
-  persistKey,
-}: {
-  label: "输入" | "输出" | "输出 · 回传模型";
-  value: unknown;
-  collapsible?: boolean;
-  /** UI-24b-1：窗口化行卸载后「展开全部」态经行级 store 恢复。 */
-  persistKey?: string;
-}) {
-  const [showAll, setShowAll] = usePersistedToggle(persistKey, false);
-  const content = serializeData(value);
-  const lines = content.split("\n");
-  const isLong = collapsible && lines.length > MAX_COLLAPSED_OUTPUT_LINES;
-  const visibleContent =
-    isLong && !showAll ? lines.slice(0, MAX_COLLAPSED_OUTPUT_LINES).join("\n") : content;
-
-  return (
-    <section>
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-        {label}
-      </div>
-      <JsonCode value={visibleContent} />
-      {isLong && (
-        <button
-          type="button"
-          onClick={() => setShowAll((value) => !value)}
-          className="mt-1.5 text-[11px] font-medium text-primary hover:text-primary-hover"
-          aria-expanded={showAll}
-        >
-          {showAll ? "收起" : `展开全部（${lines.length} 行）`}
-        </button>
-      )}
-    </section>
-  );
-}
-
-function isCompressedResult(resultMode: ToolActivityItem["resultMode"]): boolean {
-  return (
-    resultMode === "summary" ||
-    resultMode === "conservative_summary" ||
-    resultMode === "intent_compressed" ||
-    resultMode === "structured_fallback"
-  );
-}
-
-function JsonCode({ value }: { value: string }) {
-  const isDark = useIsDarkTheme();
-  // UI-24b-2：初值同步探测高亮缓存——窗口化行重挂载时命中即直出高亮 HTML，
-  // 不再闪纯文本；miss 时保持旧语义（先纯文本，异步高亮回填）。
-  const [highlighted, setHighlighted] = React.useState<string | null>(
-    () => shikiHighlightCache.get(shikiCacheKey(value, "json", isDark)) ?? null,
-  );
-
-  React.useEffect(() => {
-    let active = true;
-    // 主题切换时先回退纯文本渲染：旧主题的高亮 HTML 携带固定前景/背景色，
-    // 保留到新主题 resolve 为止会出现样式错乱。缓存命中（键含新主题）则
-    // 同步直出，无闪回。
-    const cached = shikiHighlightCache.get(shikiCacheKey(value, "json", isDark));
-    setHighlighted(cached ?? null);
-    if (cached !== undefined) return;
-    highlightCodeToHtml(value, "json", isDark)
-      .then((html) => {
-        if (active) setHighlighted(html);
-      })
-      .catch(() => {
-        if (active) setHighlighted(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [value, isDark]);
-
-  if (!highlighted) {
-    return (
-      <pre className="chat-scroll overflow-auto rounded-md bg-muted/60 p-2.5 font-mono text-[11px] leading-[1.55] text-foreground">
-        {value}
-      </pre>
-    );
-  }
-
-  return (
-    <div
-      className="ai-tool-call-code chat-scroll overflow-auto rounded-md bg-muted/60 font-mono text-[11px] leading-[1.55]"
-      dangerouslySetInnerHTML={{ __html: highlighted }}
-    />
-  );
-}
-
-export interface ToolCallListProps {
+export interface ToolCallListProps extends ToolActivityActions {
   items: ToolActivityItem[];
   className?: string;
-  /** UI-24b-1：所属消息行的稳定 id——提供时组展开态在窗口化行卸载后恢复；
-   *  流式气泡不传（临时态语义不变）。 */
+  /** 所属消息行的稳定 id；用户的全览选择在消息虚拟化卸载后仍可恢复。 */
   rowId?: string;
-  onOpenArtifact?: (artifact: DispatcherToolArtifactRef) => void;
-  onOpenSubAgent?: (tool: ToolActivityItem) => void;
-  onConfigureModel?: (category?: ModelCategory) => void;
 }
 
-export function ToolCallList({
+export const ToolCallList = React.memo(function ToolCallList({
   items,
   className,
   rowId,
@@ -317,139 +23,130 @@ export function ToolCallList({
   onOpenSubAgent,
   onConfigureModel,
 }: ToolCallListProps) {
-  const aggregated = items.length >= 3;
-  const [expanded, setExpanded] = usePersistedToggle(
+  const [showAll, setShowAll] = usePersistedToggle(
     rowId === undefined ? undefined : `tools:${rowId}`,
-    !aggregated,
+    false,
   );
-  const wasAggregated = React.useRef(aggregated);
+  const rowUiState = useRowUiStateContext();
+  const [expandedIds, setExpandedIds] = React.useState<ReadonlySet<string>>(
+    () =>
+      new Set(items.filter((item) => rowUiState?.get(`card:${item.id}`)).map((item) => item.id)),
+  );
   const summary = React.useMemo(() => summarizeToolActivity(items), [items]);
-
-  React.useEffect(() => {
-    if (aggregated && !wasAggregated.current) setExpanded(false);
-    if (!aggregated) setExpanded(true);
-    wasAggregated.current = aggregated;
-  }, [aggregated, setExpanded]);
-
-  if (items.length === 0) return null;
-
-  const renderRow = (item: ToolActivityItem, index: number, list: ToolActivityItem[]) => (
-    <div key={item.id} className="flex items-stretch gap-2">
-      <div className="relative w-6 shrink-0" aria-hidden>
-        {index < list.length - 1 && <span className="ai-tool-call-line" />}
-        <TimelineNode status={item.status} planned={item.planned} />
-      </div>
-      <ToolCallCard
-        item={item}
-        className="mb-2 min-w-0 flex-1"
-        onOpenArtifact={onOpenArtifact}
-        onOpenSubAgent={onOpenSubAgent}
-        onConfigureModel={onConfigureModel}
-      />
-    </div>
+  const compactItems = React.useMemo(
+    () => selectVisibleToolActivities(items, false, expandedIds),
+    [items, expandedIds],
+  );
+  const visibleItems = showAll ? items : compactItems;
+  const hiddenCount = items.length - compactItems.length;
+  const contentId = React.useId();
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const windowed = visibleItems.length > 40;
+  const getItemKey = React.useCallback((index: number) => visibleItems[index].id, [visibleItems]);
+  const virtualizer = useVirtualizer({
+    count: visibleItems.length,
+    enabled: windowed,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 38,
+    getItemKey,
+    overscan: 6,
+  });
+  const onExpandedChange = React.useCallback(
+    (id: string, expanded: boolean) => {
+      rowUiState?.set(`card:${id}`, expanded);
+      setExpandedIds((current) => {
+        if (current.has(id) === expanded) return current;
+        const next = new Set(current);
+        if (expanded) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    },
+    [rowUiState],
+  );
+  const row = (item: ToolActivityItem) => (
+    <ToolActivityRow
+      item={item}
+      expanded={expandedIds.has(item.id)}
+      onExpandedChange={onExpandedChange}
+      onOpenArtifact={onOpenArtifact}
+      onOpenSubAgent={onOpenSubAgent}
+      onConfigureModel={onConfigureModel}
+    />
   );
 
-  // UI-12：聚合收起时，失败/运行中/等待卡固定露出在摘要行下方——
-  // 「折叠不隐藏错误」「失败与待处理状态无需展开即可看见」。
-  // 成功的 submit_workflow 也要钉住：探索工具凑满 3 个后整组收起，
-  // 工作流卡片会一起被折进摘要，点消息区就像没有入口。
-  const pinnedItems =
-    aggregated && !expanded
-      ? items.filter(
-          (item) =>
-            item.status !== "success" ||
-            (item.name === "submit_workflow" &&
-              typeof item.output === "string" &&
-              parseWorkflowPlanId(item.output) !== null),
-        )
-      : [];
-  const allSettled = summary.failed === 0 && summary.running === 0 && summary.planned === 0;
+  if (!items.length) return null;
 
   return (
-    <div className={className}>
-      {aggregated && (
-        <button
+    <div className={cn("space-y-1", className)}>
+      <div className="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[11px] text-muted-foreground">
+        <span className="font-medium">
+          工具活动 <span className="tabular-nums">{items.length}</span>
+        </span>
+        {summary.running > 0 && <span className="text-primary">{summary.running} 项进行中</span>}
+        {summary.planned > 0 && <span>{summary.planned} 项等待</span>}
+        {summary.failed > 0 && <span className="text-destructive">{summary.failed} 项失败</span>}
+        {summary.running === 0 && summary.planned === 0 && summary.failed === 0 && (
+          <span>已完成</span>
+        )}
+      </div>
+      <div
+        id={contentId}
+        ref={scrollRef}
+        className={cn(windowed && "chat-scroll max-h-96 overflow-y-auto overscroll-contain")}
+      >
+        {windowed ? (
+          <div
+            role="list"
+            aria-label="工具活动"
+            className="relative"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
+            {virtualizer.getVirtualItems().map((virtualRow) => (
+              <div
+                key={virtualRow.key}
+                ref={virtualizer.measureElement}
+                data-index={virtualRow.index}
+                role="listitem"
+                aria-setsize={visibleItems.length}
+                aria-posinset={virtualRow.index + 1}
+                className="absolute left-0 top-0 w-full"
+                style={{ transform: `translateY(${virtualRow.start}px)` }}
+              >
+                {row(visibleItems[virtualRow.index])}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div role="list" aria-label="工具活动">
+            {visibleItems.map((item) => (
+              <div key={item.id} role="listitem">
+                {row(item)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {(hiddenCount > 0 || showAll) && (
+        <Button
           type="button"
-          onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
-          className="ai-tool-call-summary flex w-full items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-2 text-left text-xs text-foreground hover:border-primary/30 hover:bg-muted/40"
+          variant="ghost"
+          size="sm"
+          className="ml-6 h-7 gap-1.5 px-2 text-[11px] text-muted-foreground"
+          aria-expanded={showAll}
+          aria-controls={contentId}
+          onClick={() => setShowAll((current) => !current)}
         >
-          <span aria-hidden className="text-sm">
-            ⚙
-          </span>
-          <span className="min-w-0 flex-1 truncate">{formatToolActivitySummary(summary)}</span>
-          <span className="ai-tool-summary-pills flex shrink-0 items-center gap-1">
-            {summary.failed > 0 && (
-              <StatusPill domain="tool" status="error" label={`失败 ${summary.failed}`} />
-            )}
-            {summary.planned > 0 && (
-              <StatusPill domain="tool" status="planned" label={`等待 ${summary.planned}`} />
-            )}
-            {summary.running > 0 && (
-              <StatusPill domain="tool" status="running" label={`执行中 ${summary.running}`} />
-            )}
-            {allSettled && <StatusPill domain="tool" status="success" label="成功" />}
-          </span>
           <ChevronDown
             aria-hidden
             className={cn(
-              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-fast",
-              !expanded && "-rotate-90",
+              "h-3 w-3 transition-transform duration-fast motion-reduce:transition-none",
+              showAll && "rotate-180",
             )}
           />
-        </button>
+          {showAll ? "收起较早活动" : `查看全部 ${items.length} 项活动 · 另有 ${hiddenCount} 项`}
+        </Button>
       )}
-
-      {pinnedItems.length > 0 && (
-        <div className="ai-tool-call-pinned space-y-0 pt-2">
-          {pinnedItems.map((item, index) => renderRow(item, index, pinnedItems))}
-        </div>
-      )}
-
-      <AnimatePresence initial={false}>
-        {expanded && (
-          <motion.div
-            initial={aggregated ? { height: 0, opacity: 0 } : false}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-            className={cn("overflow-hidden", aggregated && "pt-2")}
-          >
-            <div className="space-y-0">
-              {items.map((item, index) => renderRow(item, index, items))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
-}
-
-function TimelineNode({ status, planned }: { status: ToolCallStatus; planned?: boolean }) {
-  const className = "h-3.5 w-3.5";
-  const variant = planned ? "planned" : status;
-  return (
-    <span className={cn("ai-tool-call-node", `ai-tool-call-node--${variant}`)}>
-      {planned && <Clock3 className={className} />}
-      {!planned && status === "running" && <Loader2 className={cn(className, "animate-spin")} />}
-      {status === "success" && <Check className={className} />}
-      {status === "error" && <X className={className} />}
-    </span>
-  );
-}
-
-function serializeData(value: unknown): string {
-  if (typeof value === "string") {
-    try {
-      return JSON.stringify(JSON.parse(value), null, 2);
-    } catch {
-      return value;
-    }
-  }
-  return JSON.stringify(value, null, 2) ?? String(value);
-}
-
-function formatDuration(durationMs: number): string {
-  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
-  return `${(durationMs / 1000).toFixed(1)}s`;
-}
+});

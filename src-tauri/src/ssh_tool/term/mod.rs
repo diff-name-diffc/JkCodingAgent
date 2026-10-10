@@ -4,9 +4,13 @@
 //! open 默认探测远端 tmux，存在则 attach-or-create（交互程序由远端 tmux daemon
 //! 保活，断连后同名 open 可恢复现场）；否则回退 russh PTY + avt 自建虚拟终端。
 
+mod interaction;
 pub(crate) mod registry;
+mod responses;
 pub(crate) mod screen;
 pub(crate) mod session;
+mod startup;
+mod tmux_history;
 
 #[cfg(test)]
 mod tests;
@@ -38,6 +42,21 @@ pub(crate) type TermId = String;
 /// tmux 会话名前缀：级联清理按此前缀识别 agent 遗留会话，避免误伤用户会话。
 pub(crate) const TMUX_SESSION_PREFIX: &str = "jkagent-";
 
+/// 最终发送（含粘贴包络/回车）的字符上限，不超过命令审查的 32000 字符预算。
+/// 超限整次拒绝，不截断、不自动拆包。
+pub(crate) const TEXT_MAX_CHARS: usize = 32_000;
+
+/// 域层错误消息不带「错误：」前缀：工具层 `map_term_error` 统一装饰，
+/// 此处再加会出现双重前缀。
+pub(crate) fn validate_send_text(text: &str) -> Result<(), String> {
+    if text.chars().count() > TEXT_MAX_CHARS {
+        return Err(format!(
+            "text 解码后（含粘贴包络和追加回车）不能超过 {TEXT_MAX_CHARS} 字符；本次未发送。长脚本请使用 ssh_exec 的 stdin 或上传文件后执行"
+        ));
+    }
+    Ok(())
+}
+
 /// `ssh_term_list` 的单条摘要。
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct TermInfo {
@@ -57,8 +76,16 @@ pub(crate) struct TermReadPayload {
     pub(crate) term_id: TermId,
     /// 自上次 read 以来定稿的新增行（增量轨）。
     pub(crate) new_lines: Vec<String>,
+    /// completed_lines = 主屏定稿行；screen_changes = 备用屏可见变化，非完整日志。
+    pub(crate) new_lines_kind: &'static str,
     /// 当前可见屏幕纯文本（快照轨，含全屏程序渲染结果）。
     pub(crate) screen: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) screen_ansi: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) history: Option<screen::HistoryPage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) wait_status: Option<TermWaitStatus>,
     pub(crate) cursor: TermCursor,
     pub(crate) alt_screen: bool,
     pub(crate) tmux_session: Option<String>,
@@ -66,9 +93,30 @@ pub(crate) struct TermReadPayload {
     pub(crate) exit_code: Option<i32>,
     /// 距上一帧输出的毫秒数，辅助判断「停在提示符等输入」。
     pub(crate) idle_ms: u64,
+    /// 当前光标行匹配输入提示且输出已静默；启发式判断，false 不代表无需输入。
+    pub(crate) awaiting_input: bool,
+    pub(crate) input_hint: Option<String>,
     pub(crate) truncated: bool,
     /// 断连 / detach 等语义提示（含 tmux 恢复指引）。
     pub(crate) note: Option<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct TermReadOptions {
+    pub(crate) wait_ms: u64,
+    /// 大小写敏感的纯文本子串，不执行正则或自动输入。
+    pub(crate) wait_for: Option<String>,
+    pub(crate) include_ansi: bool,
+    pub(crate) history: Option<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TermWaitStatus {
+    Matched,
+    TimedOut,
+    Exited,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -93,18 +141,16 @@ pub(crate) struct TermHandlePayload {
 /// （模板命令 `tmux new -A -s <name>` 的唯一模型可控输入，设计文档 §7）。
 pub(crate) fn validate_tmux_session_name(name: &str) -> Result<(), String> {
     let rest = name.strip_prefix(TMUX_SESSION_PREFIX).ok_or_else(|| {
-        format!(
-            "错误：tmuxSession 必须以 {TMUX_SESSION_PREFIX} 前缀开头（如 jkagent-install-nginx）"
-        )
+        format!("tmuxSession 必须以 {TMUX_SESSION_PREFIX} 前缀开头（如 jkagent-install-nginx）")
     })?;
     if rest.is_empty() || rest.len() > 48 {
-        return Err("错误：tmuxSession 前缀后的名称长度须为 1..48".into());
+        return Err("tmuxSession 前缀后的名称长度须为 1..48".into());
     }
     if !rest
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err("错误：tmuxSession 仅允许字母、数字、-、_".into());
+        return Err("tmuxSession 仅允许字母、数字、-、_".into());
     }
     Ok(())
 }

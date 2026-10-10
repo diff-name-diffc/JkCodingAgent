@@ -4,210 +4,22 @@
 //! 服务器行为模拟（非真实 shell）：shell 模式回显输入并在 `\r` 后补提示符；
 //! exec 模式按命令名脚本化应答（`command -v tmux` 探测 / tmux attach / 普通命令）。
 
-use std::sync::Arc;
+#[path = "test_support.rs"]
+mod support;
 
-use russh::server::{Auth, Msg, Server as _};
-use russh::ChannelId;
-use serde_json::json;
-use tokio::net::TcpListener;
+#[path = "interaction_integration_tests.rs"]
+mod interaction_integration;
 
-use super::registry::{TermOpenParams, TermSessionRegistry, TmuxPreference};
-use crate::ssh_tool::SshDb;
+#[path = "paste_integration_tests.rs"]
+mod paste_integration;
 
-// ---------------------------------------------------------------------------
-// 回环服务器
-// ---------------------------------------------------------------------------
+#[path = "tmux_history_integration_tests.rs"]
+mod tmux_history_integration;
 
-/// 测试服务器侧事件（exec 命令 / 窗口变化），供断言远端实际收到了什么。
-type ServerEvents = std::sync::Arc<parking_lot::Mutex<Vec<String>>>;
+#[path = "startup_integration_tests.rs"]
+mod startup_integration;
 
-#[derive(Clone)]
-struct LoopServer {
-    /// `command -v tmux` 的模拟结果（tmux 分路开关）。
-    tmux_available: bool,
-    events: ServerEvents,
-}
-
-impl russh::server::Server for LoopServer {
-    type Handler = LoopHandler;
-    fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
-        LoopHandler {
-            tmux_available: self.tmux_available,
-            events: self.events.clone(),
-        }
-    }
-}
-
-struct LoopHandler {
-    tmux_available: bool,
-    events: ServerEvents,
-}
-
-impl russh::server::Handler for LoopHandler {
-    type Error = russh::Error;
-
-    async fn auth_password(&mut self, _: &str, _: &str) -> Result<Auth, Self::Error> {
-        Ok(Auth::Accept)
-    }
-
-    async fn channel_open_session(
-        &mut self,
-        _channel: russh::Channel<Msg>,
-        reply: russh::server::ChannelOpenHandle,
-        _session: &mut russh::server::Session,
-    ) -> Result<(), Self::Error> {
-        reply.accept().await;
-        Ok(())
-    }
-
-    async fn shell_request(
-        &mut self,
-        channel: ChannelId,
-        session: &mut russh::server::Session,
-    ) -> Result<(), Self::Error> {
-        session.data(channel, b"$ ".to_vec())?;
-        Ok(())
-    }
-
-    async fn exec_request(
-        &mut self,
-        channel: ChannelId,
-        data: &[u8],
-        session: &mut russh::server::Session,
-    ) -> Result<(), Self::Error> {
-        let command = String::from_utf8_lossy(data).to_string();
-        self.events.lock().push(format!("exec: {command}"));
-        if command == "command -v tmux" {
-            if self.tmux_available {
-                session.data(channel, b"/usr/bin/tmux\r\n".to_vec())?;
-                session.exit_status_request(channel, 0)?;
-            } else {
-                session.exit_status_request(channel, 1)?;
-            }
-            session.eof(channel)?;
-            session.close(channel)?;
-        } else if command.starts_with("tmux new -A -s ") {
-            // 模拟 tmux client：attach 成功，保持通道（不退出）。
-            session.data(channel, b"[tmux attached]\r\n".to_vec())?;
-        } else {
-            session.data(channel, format!("run: {command}\r\n").into_bytes())?;
-            session.exit_status_request(channel, 0)?;
-            session.eof(channel)?;
-            session.close(channel)?;
-        }
-        Ok(())
-    }
-
-    async fn window_change_request(
-        &mut self,
-        _channel: ChannelId,
-        col_width: u32,
-        row_height: u32,
-        _pix_width: u32,
-        _pix_height: u32,
-        _session: &mut russh::server::Session,
-    ) -> Result<(), Self::Error> {
-        self.events
-            .lock()
-            .push(format!("window-change: {col_width}x{row_height}"));
-        Ok(())
-    }
-
-    async fn data(
-        &mut self,
-        channel: ChannelId,
-        data: &[u8],
-        session: &mut russh::server::Session,
-    ) -> Result<(), Self::Error> {
-        // 行回显 + 回车后的新提示符（模拟登录 shell 的最小行为）。
-        session.data(channel, data.to_vec())?;
-        if data.contains(&b'\r') {
-            session.data(channel, b"\r\n$ ".to_vec())?;
-        }
-        Ok(())
-    }
-}
-
-/// 固定测试密钥（仅测试用途，无敏感性）：随机密钥需要 rand 版本与 ssh-key 的
-/// rand_core trait 对齐，固定 PEM 避开依赖纠缠。
-const TEST_HOST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACDu+QkbiQ5z3ZCGBDxaVo7ZrpBlccoKej8vTkTuo/3hmQAAAKAcisBNHIrA\nTQAAAAtzc2gtZWQyNTUxOQAAACDu+QkbiQ5z3ZCGBDxaVo7ZrpBlccoKej8vTkTuo/3hmQ\nAAAED9lkd8MRooMXd6QPfjYxgEdtIJodhCcWZvfIlRACLsku75CRuJDnPdkIYEPFpWjtmu\nkGVxygp6Py9ORO6j/eGZAAAAGmprQGprcy1NYWNCb29rLVByby01LmxvY2FsAQID\n-----END OPENSSH PRIVATE KEY-----";
-
-async fn spawn_loop_server(tmux_available: bool) -> (u16, ServerEvents) {
-    let config = Arc::new(russh::server::Config {
-        keys: vec![russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).expect("解析测试主机密钥")],
-        ..Default::default()
-    });
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("绑定回环端口");
-    let port = listener.local_addr().expect("读取端口").port();
-    // RunningServer 借用 server 实例与 listener：整体 move 进后台 future，
-    // 由 future 持有至进程结束（测试进程退出自然回收）。
-    let events: ServerEvents = Default::default();
-    let mut loop_server = LoopServer {
-        tmux_available,
-        events: events.clone(),
-    };
-    tokio::spawn(async move {
-        let server = loop_server.run_on_socket(config, &listener);
-        let _ = server.await;
-    });
-    (port, events)
-}
-
-// ---------------------------------------------------------------------------
-// Fixture（内存库 + 指向回环端口的服务器配置）
-// ---------------------------------------------------------------------------
-
-struct Fixture {
-    registry: TermSessionRegistry,
-    manager: crate::ssh_tool::SshSessionManager,
-    events: ServerEvents,
-    _guard: crate::test_util::TempDirGuard,
-}
-
-async fn fixture(tmux_available: bool) -> Fixture {
-    let (port, events) = spawn_loop_server(tmux_available).await;
-    let guard = crate::test_util::TempDirGuard::new("ssh-term-it");
-    let pool = Arc::new(
-        r2d2::Pool::builder()
-            .max_size(1)
-            .build(r2d2_sqlite::SqliteConnectionManager::memory())
-            .unwrap(),
-    );
-    {
-        let mut connection = pool.get().unwrap();
-        let tx = connection.transaction().unwrap();
-        crate::ssh_tool::db::ensure_ssh_tables_tx(&tx).unwrap();
-        tx.commit().unwrap();
-    }
-    let ssh_db = SshDb::new(pool.clone());
-    ssh_db
-        .save_servers(&[serde_json::from_value(json!({
-            "id": "loop-server", "host": "127.0.0.1", "port": port,
-            "username": "tester", "password": "loop", "reviewEnabled": false
-        }))
-        .unwrap()])
-        .unwrap();
-    Fixture {
-        registry: TermSessionRegistry::new(),
-        manager: crate::ssh_tool::SshSessionManager::new(pool),
-        events,
-        _guard: guard,
-    }
-}
-
-fn open_params() -> TermOpenParams {
-    TermOpenParams {
-        server_id: "loop-server".to_string(),
-        session_id: "it-session".to_string(),
-        cols: 80,
-        rows: 24,
-        command: None,
-        tmux: TmuxPreference::Auto,
-        tmux_session: None,
-    }
-}
+use support::{fixture, fixture_with, open_params, ServerBehavior};
 
 // ---------------------------------------------------------------------------
 // 用例
@@ -223,7 +35,7 @@ async fn open_shell_reads_prompt_without_tmux() {
         .expect("open");
     assert!(
         payload.tmux_session.is_none(),
-        "tmux 探测失败应回退裸 shell"
+        "确认远端未安装 tmux 后可打开裸 shell"
     );
     assert!(
         payload.screen.contains('$'),
@@ -231,6 +43,7 @@ async fn open_shell_reads_prompt_without_tmux() {
         payload.screen
     );
     assert!(!payload.exited);
+    assert!(payload.note.as_deref().unwrap().contains("不支持保活"));
     // 收尾
     let _ = fx.registry.close(&payload.term_id, false).await;
 }
@@ -244,14 +57,31 @@ async fn send_read_roundtrip_finalizes_echo_lines() {
         .await
         .expect("open");
     // open 的首屏等待已消费提示符帧，先排空再发送。
-    let _ = fx.registry.read(&opened.term_id, 0, None).await;
+    let _ = fx
+        .registry
+        .read(
+            &opened.term_id,
+            &super::TermReadOptions {
+                wait_ms: 0,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
     fx.registry
         .send(&opened.term_id, "echo hi\r")
         .await
         .expect("send");
     let read = fx
         .registry
-        .read(&opened.term_id, 3_000, None)
+        .read(
+            &opened.term_id,
+            &super::TermReadOptions {
+                wait_ms: 3_000,
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .expect("read");
     // 回显行进入增量轨（光标行定稿）。
@@ -278,7 +108,14 @@ async fn open_with_command_runs_exec_path_and_exits() {
     // 回环服务器 exec 完成即上报 exit 0 + eof：等 reader 收口。
     let read = fx
         .registry
-        .read(&payload.term_id, 2_000, None)
+        .read(
+            &payload.term_id,
+            &super::TermReadOptions {
+                wait_ms: 2_000,
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .expect("read");
     assert!(read.exited, "命令结束应标记 exited");
@@ -417,7 +254,14 @@ async fn resize_propagates_window_change_to_remote() {
     // 调整后读屏正常（快照轨照常组装）。
     let read = fx
         .registry
-        .read(&opened.term_id, 0, None)
+        .read(
+            &opened.term_id,
+            &super::TermReadOptions {
+                wait_ms: 0,
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .expect("read");
     assert!(!read.screen.is_empty());
@@ -462,7 +306,7 @@ async fn orphan_tmux_session_reclaimed_via_audit_backfill() {
             .events
             .lock()
             .iter()
-            .any(|e| e == &format!("exec: tmux kill-session -t {name}"))
+            .any(|e| e == &format!("exec: tmux kill-session -t ={name}"))
         {
             break;
         }
@@ -472,8 +316,237 @@ async fn orphan_tmux_session_reclaimed_via_audit_backfill() {
         fx.events
             .lock()
             .iter()
-            .any(|e| e == &format!("exec: tmux kill-session -t {name}")),
+            .any(|e| e == &format!("exec: tmux kill-session -t ={name}")),
         "孤儿 tmux 会话应被反查 kill：{:?}",
         fx.events.lock()
     );
+}
+
+#[tokio::test]
+async fn eof_before_exit_status_does_not_disable_tmux() {
+    let fx = fixture_with(ServerBehavior {
+        tmux_available: true,
+        eof_before_status: true,
+        ..Default::default()
+    })
+    .await;
+    let opened = fx
+        .registry
+        .open(&fx.manager, open_params())
+        .await
+        .expect("open tmux");
+    assert!(opened.tmux_session.is_some(), "EOF 不能被当作探测失败");
+    assert!(!fx.events.lock().iter().any(|event| event == "shell"));
+    fx.registry
+        .close(&opened.term_id, true)
+        .await
+        .expect("kill");
+    assert!(fx.tmux_sessions.lock().is_empty());
+}
+
+#[tokio::test]
+async fn missing_exit_status_or_probe_error_never_falls_back_to_shell() {
+    for behavior in [
+        ServerBehavior {
+            omit_probe_status: true,
+            ..Default::default()
+        },
+        ServerBehavior {
+            probe_exit: Some(2),
+            ..Default::default()
+        },
+    ] {
+        let fx = fixture_with(behavior).await;
+        let error = fx
+            .registry
+            .open(&fx.manager, open_params())
+            .await
+            .expect_err("探测必须有可靠结果");
+        assert!(matches!(error, super::TermError::Open(_)));
+        assert!(!fx.events.lock().iter().any(|event| event == "shell"));
+        assert!(fx.registry.list(None).is_empty());
+    }
+}
+
+#[tokio::test]
+async fn explicit_tmux_name_cannot_silently_open_bare_shell() {
+    let fx = fixture(false).await;
+    for preference in [super::TmuxPreference::Auto, super::TmuxPreference::Off] {
+        let mut params = open_params();
+        params.tmux_session = Some("jkagent-recover".into());
+        params.tmux = preference;
+        fx.registry
+            .open(&fx.manager, params)
+            .await
+            .expect_err("指定名称不得忽略");
+    }
+    assert!(!fx.events.lock().iter().any(|event| event == "shell"));
+    assert!(fx.registry.list(None).is_empty());
+}
+
+#[tokio::test]
+async fn custom_session_detaches_restores_then_kills_without_false_recovery_note() {
+    let fx = fixture(true).await;
+    let mut params = open_params();
+    params.tmux_session = Some("jkagent-persistent".into());
+    let first = fx.registry.open(&fx.manager, params).await.expect("create");
+    assert!(first.note.as_deref().unwrap().contains("已新建"));
+    fx.registry
+        .close(&first.term_id, false)
+        .await
+        .expect("detach");
+    assert!(fx.tmux_sessions.lock().contains("jkagent-persistent"));
+    let mut params = open_params();
+    params.tmux_session = Some("jkagent-persistent".into());
+    let restored = fx
+        .registry
+        .open(&fx.manager, params)
+        .await
+        .expect("restore");
+    assert!(restored.note.as_deref().unwrap().contains("已恢复"));
+    assert_eq!(
+        fx.events
+            .lock()
+            .iter()
+            .filter(|event| event.starts_with("exec: tmux new-session"))
+            .count(),
+        1
+    );
+    let closed = fx
+        .registry
+        .close(&restored.term_id, true)
+        .await
+        .expect("kill");
+    assert!(fx.tmux_sessions.lock().is_empty());
+    assert!(closed.note.as_deref().unwrap().contains("已回收"));
+    assert!(!closed.note.as_deref().unwrap().contains("可恢复"));
+}
+
+#[tokio::test]
+async fn reviewed_command_runs_in_new_tmux_and_is_not_replayed_on_restore() {
+    let fx = fixture(true).await;
+    for _ in 0..2 {
+        let mut params = open_params();
+        params.tmux_session = Some("jkagent-command".into());
+        params.command = Some("printf '%s' \"$HOME\"".into());
+        let opened = fx
+            .registry
+            .open(&fx.manager, params)
+            .await
+            .expect("tmux command");
+        assert_eq!(opened.tmux_session.as_deref(), Some("jkagent-command"));
+        fx.registry
+            .close(&opened.term_id, false)
+            .await
+            .expect("detach");
+    }
+    let events = fx.events.lock();
+    let creates: Vec<_> = events
+        .iter()
+        .filter(|event| event.starts_with("exec: tmux new-session"))
+        .collect();
+    assert_eq!(creates.len(), 1);
+    assert!(creates[0].contains("'printf '\\''%s'\\'' \"$HOME\"'"));
+    assert!(!events.iter().any(|event| event.starts_with("exec: printf")));
+}
+
+#[tokio::test]
+async fn rejected_pty_shell_or_tmux_creation_is_an_open_error() {
+    for behavior in [
+        ServerBehavior {
+            reject_pty: true,
+            ..Default::default()
+        },
+        ServerBehavior {
+            reject_shell: true,
+            ..Default::default()
+        },
+        ServerBehavior {
+            tmux_available: true,
+            create_exit: 1,
+            ..Default::default()
+        },
+    ] {
+        let fx = fixture_with(behavior).await;
+        fx.registry
+            .open(&fx.manager, open_params())
+            .await
+            .expect_err("启动失败必须报错");
+        assert!(fx.registry.list(None).is_empty());
+        assert!(!fx
+            .events
+            .lock()
+            .iter()
+            .any(|event| event.starts_with("exec: tmux attach-session")));
+    }
+}
+
+#[tokio::test]
+async fn failed_tmux_kill_keeps_handle_and_reports_remote_failure() {
+    let fx = fixture_with(ServerBehavior {
+        tmux_available: true,
+        kill_exit: 1,
+        ..Default::default()
+    })
+    .await;
+    let opened = fx
+        .registry
+        .open(&fx.manager, open_params())
+        .await
+        .expect("open");
+    let error = fx
+        .registry
+        .close(&opened.term_id, true)
+        .await
+        .expect_err("kill failed");
+    assert!(matches!(error, super::TermError::Write(message) if message.contains("kill denied")));
+    assert_eq!(fx.registry.list(None).len(), 1);
+    assert_eq!(fx.tmux_sessions.lock().len(), 1);
+    fx.registry
+        .close(&opened.term_id, false)
+        .await
+        .expect("detach remains available");
+}
+
+#[tokio::test]
+async fn lost_create_receipt_or_early_command_exit_must_not_replay_side_effects() {
+    for behavior in [
+        ServerBehavior {
+            tmux_available: true,
+            create_omit_status: true,
+            ..Default::default()
+        },
+        ServerBehavior {
+            tmux_available: true,
+            attach_exit: Some(1),
+            ..Default::default()
+        },
+    ] {
+        let fx = fixture_with(behavior).await;
+        let mut params = open_params();
+        params.tmux_session = Some("jkagent-uncertain".into());
+        params.command = Some("perform-once".into());
+        let error = fx
+            .registry
+            .open(&fx.manager, params)
+            .await
+            .expect_err("远端命令可能已执行，不能返回可重试的普通错误");
+        assert!(matches!(
+            error,
+            super::TermError::ExternalStateUnknown(message)
+                if message.contains("jkagent-uncertain") && message.contains("禁止")
+        ));
+        assert!(fx.registry.list(None).is_empty());
+        let events = fx.events.lock();
+        assert!(!events.iter().any(|event| event == "shell"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("exec: tmux new-session"))
+                .count(),
+            1,
+            "发生确认丢失后不得自动重发 command",
+        );
+        assert!(!events.iter().any(|event| event == "exec: perform-once"));
+    }
 }

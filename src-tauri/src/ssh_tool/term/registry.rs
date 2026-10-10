@@ -1,21 +1,18 @@
 //! `TermSessionRegistry`：终端会话登记、配额、惰性空闲回收与级联清理。
 //!
-//! 「tmux 优先、avt 兜底」的 open 分路在此编排：auto 探测远端 tmux，命中则以
-//! attach-or-create 进入 tmux 会话（模板命令，免 LLM 审查——命令串由应用拼装、
-//! 会话名过白名单，见设计文档 §7）；未命中走裸 shell / exec 主路。tmux 启动
-//! 失败（配置损坏等，探测已排除「未安装」）以「立即退出 + exit_code」诚实上报，
-//! 由模型改传 `tmux=off` 自愈，不做隐式回退。
+//! SSH 启动握手与 tmux 探测/恢复由 startup 模块负责；这里只登记已成功启动
+//! 的终端，并维护关闭、配额与清理语义。
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use parking_lot::Mutex;
-use russh::ChannelMsg;
 
-use super::session::{TermMeta, TermSession, TERM_TYPE};
+use super::session::{TermMeta, TermSession};
+use super::startup::{run_template_command, start_terminal};
 use super::{validate_tmux_session_name, TermHandlePayload, TermId, TermInfo, TermReadPayload};
-use crate::ssh_tool::{SshConnection, SshSessionKey, SshSessionManager};
+use crate::ssh_tool::{SshSessionKey, SshSessionManager};
 
 const PER_SERVER_LIMIT: usize = 4;
 const GLOBAL_LIMIT: usize = 16;
@@ -23,16 +20,13 @@ const GLOBAL_LIMIT: usize = 16;
 const IDLE_REAP_SECS: u64 = 30 * 60;
 /// open 后等待首屏（提示符 / tmux UI / 立即退出）的窗口。
 const FIRST_SCREEN_WAIT_MS: u64 = 2_000;
-/// 模板命令（tmux 探测 / kill-session）channel 的收口超时。
-const TEMPLATE_TIMEOUT_SECS: u64 = 5;
-/// send 文本上限：对齐 ssh_tool::validation::validate_command 的 8192 口径。
-const TEXT_MAX_CHARS: usize = 8_192;
 /// cols / rows 夹紧区间（设计文档 §4.1）。
 const COLS_RANGE: (usize, usize) = (40, 200);
 const ROWS_RANGE: (usize, usize) = (10, 60);
 
 pub(crate) enum TmuxPreference {
     Auto,
+    Required,
     Off,
 }
 
@@ -41,7 +35,7 @@ pub(crate) struct TermOpenParams {
     pub(crate) session_id: String,
     pub(crate) cols: usize,
     pub(crate) rows: usize,
-    /// 审查后的交互命令（PTY + exec 路径，不叠 tmux）。
+    /// 审查后的交互命令；tmux 模式仅在新建远端会话时执行。
     pub(crate) command: Option<String>,
     pub(crate) tmux: TmuxPreference,
     pub(crate) tmux_session: Option<String>,
@@ -54,7 +48,10 @@ pub(crate) enum TermError {
     QuotaExceeded(String),
     /// 会话已终止仍尝试写入。
     Exited(String),
+    /// 启动命令可能已在远端执行；必须先核实现场，禁止自动重跑。
+    ExternalStateUnknown(String),
     Open(String),
+    Read(String),
     Write(String),
 }
 
@@ -81,13 +78,14 @@ impl TermSessionRegistry {
 
         // tmux 会话名：自定义值过白名单（模板命令的唯一模型可控输入）；
         // 缺省自动生成（跨连接恢复现场时模型显式传回同名值）。
-        let requested_tmux = match &params.tmux_session {
-            Some(name) => {
-                validate_tmux_session_name(name).map_err(TermError::Open)?;
-                Some(name.clone())
+        if let Some(name) = &params.tmux_session {
+            validate_tmux_session_name(name).map_err(TermError::Open)?;
+            if matches!(params.tmux, TmuxPreference::Off) {
+                return Err(TermError::Open(
+                    "tmux=off 不能与 tmuxSession 同时使用；恢复现场请使用 tmux=auto".into(),
+                ));
             }
-            None => None,
-        };
+        }
 
         // 配额（锁内只读计数 + 采快照；报错文案在锁外渲染——quota 文案生成
         // 需要遍历会话表，parking_lot Mutex 不可重入，锁内再 lock 会自锁死等）。
@@ -134,42 +132,7 @@ impl TermSessionRegistry {
             .await
             .map_err(TermError::Open)?;
 
-        // tmux 分路：仅 shell 路径叠加（command 路径的交互命令本身即现场）。
-        let use_tmux = params.command.is_none()
-            && matches!(params.tmux, TmuxPreference::Auto)
-            && probe_command(&connection, "command -v tmux").await;
-
-        let channel = connection
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|error| TermError::Open(format!("创建 SSH channel 失败：{error}")))?;
-        channel
-            .request_pty(false, TERM_TYPE, cols as u32, rows as u32, 0, 0, &[])
-            .await
-            .map_err(|error| TermError::Open(format!("请求 PTY 失败：{error}")))?;
-
-        let tmux_session = if let Some(command) = &params.command {
-            channel
-                .exec(true, command.as_bytes())
-                .await
-                .map_err(|error| TermError::Open(format!("执行命令失败：{error}")))?;
-            None
-        } else if use_tmux {
-            let name = requested_tmux.unwrap_or_else(|| auto_tmux_session_name());
-            let request = format!("tmux new -A -s {name}");
-            channel
-                .exec(true, request.as_bytes())
-                .await
-                .map_err(|error| TermError::Open(format!("tmux 启动请求失败：{error}")))?;
-            Some(name)
-        } else {
-            channel
-                .request_shell(false)
-                .await
-                .map_err(|error| TermError::Open(format!("打开 shell 失败：{error}")))?;
-            None
-        };
+        let started = start_terminal(&connection, &params, cols, rows).await?;
 
         let term_id = new_term_id();
         let session = TermSession::spawn(
@@ -177,31 +140,34 @@ impl TermSessionRegistry {
                 term_id: term_id.clone(),
                 server_id: params.server_id,
                 session_id: params.session_id,
-                tmux_session,
+                tmux_session: started.tmux_session,
                 created_at: chrono::Utc::now(),
                 anchor_instant: Instant::now(),
             },
             connection,
-            channel,
+            started.channel,
             cols,
             rows,
+            &started.initial_output,
         );
         // 等首屏（提示符 / tmux UI / 立即退出），PTY 被拒等异常也在此暴露。
         let payload = session.read_payload(FIRST_SCREEN_WAIT_MS, None).await;
-        self.inner.lock().insert(term_id.clone(), session.clone());
-
-        // tmux 模式立即退出（配置损坏 / 权限等罕见场景）：诚实上报 + 自愈指引。
-        let note = if payload.tmux_session.is_some() && payload.exited {
-            Some(format!(
-                "tmux 会话立即退出（exit_code={}），可改传 tmux=off 重开裸 shell",
-                payload
-                    .exit_code
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "未知".into())
-            ))
-        } else {
-            None
-        };
+        if payload.tmux_session.is_some() && payload.exited {
+            session.close_channel().await;
+            let message = format!(
+                "tmux attach 立即退出（exit_code={:?}）：{}；{}",
+                payload.exit_code,
+                payload.screen,
+                payload.note.as_deref().unwrap_or_default(),
+            );
+            let name = payload.tmux_session.as_deref().unwrap_or_default();
+            return Err(if started.command_started {
+                super::startup::command_state_unknown(name, &message)
+            } else {
+                TermError::Open(format!("{message}；远端会话 {name} 可能仍在，请先查询状态"))
+            });
+        }
+        self.inner.lock().insert(term_id.clone(), session);
 
         Ok(TermHandlePayload {
             term_id,
@@ -210,31 +176,43 @@ impl TermSessionRegistry {
             tmux_session: payload.tmux_session,
             exited: payload.exited,
             exit_code: payload.exit_code,
-            note,
+            note: match (started.note, payload.note) {
+                (Some(startup), Some(outcome)) => Some(format!("{startup}；{outcome}")),
+                (startup, outcome) => startup.or(outcome),
+            },
         })
     }
 
     pub(crate) async fn send(&self, term_id: &str, text: &str) -> Result<(), TermError> {
+        self.send_checked(term_id, text, false).await
+    }
+
+    pub(crate) fn validate_paste_state(&self, term_id: &str) -> Result<(), TermError> {
+        self.get(term_id)?
+            .validate_paste_state()
+            .map_err(TermError::Write)
+    }
+
+    pub(crate) async fn send_checked(
+        &self,
+        term_id: &str,
+        text: &str,
+        require_paste: bool,
+    ) -> Result<(), TermError> {
         let session = self.get(term_id)?;
-        // 对齐 validate_command 的 8192 字符口径（设计文档 §4.2）。
-        if text.len() > TEXT_MAX_CHARS {
-            return Err(TermError::Write(format!(
-                "错误：text 长度不能超过 {TEXT_MAX_CHARS} 字符"
+        super::validate_send_text(text).map_err(TermError::Write)?;
+        if let Some(exit_code) = session.exit_status() {
+            return Err(TermError::Exited(format!(
+                "终端已退出（exit_code={}），无法继续发送",
+                exit_code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "未知".into())
             )));
         }
-        {
-            let state = session.snapshot_payload();
-            if state.exited {
-                return Err(TermError::Exited(format!(
-                    "终端已退出（exit_code={}），无法继续发送",
-                    state
-                        .exit_code
-                        .map(|code| code.to_string())
-                        .unwrap_or_else(|| "未知".into())
-                )));
-            }
-        }
-        session.send(text).await.map_err(TermError::Write)
+        session
+            .send(text, require_paste)
+            .await
+            .map_err(TermError::Write)
     }
 
     /// 尺寸同步：channel window_change 与屏幕模型 resize 两侧一致（夹紧在此统一）。
@@ -247,7 +225,7 @@ impl TermSessionRegistry {
         let session = self.get(term_id)?;
         let cols = cols.clamp(COLS_RANGE.0, COLS_RANGE.1);
         let rows = rows.clamp(ROWS_RANGE.0, ROWS_RANGE.1);
-        if session.snapshot_payload().exited {
+        if session.exit_status().is_some() {
             return Err(TermError::Exited(
                 "终端已退出，无需调整尺寸（可 ssh_term_open 重开）".into(),
             ));
@@ -258,11 +236,14 @@ impl TermSessionRegistry {
     pub(crate) async fn read(
         &self,
         term_id: &str,
-        wait_ms: u64,
+        options: &super::TermReadOptions,
         cancel: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<TermReadPayload, TermError> {
         let session = self.get(term_id)?;
-        Ok(session.read_payload(wait_ms, cancel).await)
+        session
+            .read_with_options(options, cancel)
+            .await
+            .map_err(TermError::Read)
     }
 
     pub(crate) async fn close(
@@ -272,19 +253,31 @@ impl TermSessionRegistry {
     ) -> Result<TermHandlePayload, TermError> {
         self.reap_idle().await;
         let session = self.get(term_id)?;
+        // 先确认远端 kill 成功再移除本地句柄；失败时保留登记以便重试。
+        if kill_tmux {
+            if let Some(name) = &session.meta.tmux_session {
+                let result = run_template_command(
+                    session.connection(),
+                    &format!("tmux kill-session -t ={name}"),
+                )
+                .await
+                .map_err(TermError::Write)?;
+                result
+                    .ensure_success("终止 tmux 会话")
+                    .map_err(TermError::Write)?;
+            }
+        }
         session.close_channel().await;
         // 给 reader task 一点收口时间拿终态。
         let payload = session.read_payload(500, None).await;
         self.inner.lock().remove(term_id);
-        if kill_tmux {
-            if let Some(name) = &session.meta.tmux_session {
-                run_template_command(
-                    session.connection(),
-                    &format!("tmux kill-session -t {name}"),
-                )
-                .await;
-            }
-        }
+        let note = match (&session.meta.tmux_session, kill_tmux) {
+            (Some(name), true) => Some(format!("tmux 会话 {name} 已终止，远端现场已回收")),
+            (Some(name), false) => Some(format!(
+                "终端已断开；tmux 会话 {name} 中仍在运行的程序可用同名 tmuxSession 重新连接"
+            )),
+            (None, _) => Some("裸终端已关闭，不支持断连保活或同名恢复".into()),
+        };
         Ok(TermHandlePayload {
             term_id: term_id.to_string(),
             screen: payload.screen,
@@ -292,7 +285,7 @@ impl TermSessionRegistry {
             tmux_session: session.meta.tmux_session.clone(),
             exited: payload.exited,
             exit_code: payload.exit_code,
-            note: payload.note,
+            note,
         })
     }
 
@@ -336,10 +329,19 @@ impl TermSessionRegistry {
                 .collect()
         };
         for term in targets {
-            if let Some(name) = &term.meta.tmux_session {
-                handled.insert(name.clone());
+            match self.close(&term.meta.term_id, true).await {
+                Ok(_) => {
+                    if let Some(name) = &term.meta.tmux_session {
+                        handled.insert(name.clone());
+                    }
+                }
+                Err(error) => {
+                    eprintln!("级联终止 SSH 终端 {} 失败：{error:?}", term.meta.term_id);
+                    // 删除聊天仍须释放本地句柄；远端失败留给下方审计反查重试。
+                    term.close_channel().await;
+                    self.inner.lock().remove(&term.meta.term_id);
+                }
             }
-            let _ = self.close(&term.meta.term_id, true).await;
         }
         // 孤儿回收：审计反查该会话历史 open 过的 tmux 会话名，跳过刚处理的。
         let Ok(log) = manager.load_audit_async().await else {
@@ -413,7 +415,9 @@ fn extract_tmux_session_name(command: &str) -> Option<String> {
     let rest = &command[start..];
     let end = rest.find(' ').unwrap_or(rest.len());
     let name = &rest[..end];
-    (!name.is_empty()).then(|| name.to_string())
+    validate_tmux_session_name(name)
+        .ok()
+        .map(|()| name.to_string())
 }
 
 /// 经服务器连接 kill 一个失联的 tmux 孤儿会话（模板命令免审，best-effort）。
@@ -438,45 +442,19 @@ async fn kill_tmux_orphan(
     else {
         return;
     };
-    run_template_command(&connection, &format!("tmux kill-session -t {name}")).await;
+    if let Err(error) = async {
+        run_template_command(&connection, &format!("tmux kill-session -t ={name}"))
+            .await?
+            .ensure_success("回收孤儿 tmux 会话")
+    }
+    .await
+    {
+        eprintln!("回收 tmux 会话 {name} 失败：{error}");
+    }
 }
 
 fn new_term_id() -> TermId {
     format!("term_{}", uuid::Uuid::new_v4().simple())
-}
-
-fn auto_tmux_session_name() -> String {
-    format!(
-        "jkagent-{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..6]
-    )
-}
-
-/// 在连接上跑一条应用内模板命令（tmux 探测 / kill-session），等退出码收口。
-/// 命令串由应用拼装（模型可控输入仅白名单会话名），不属于 LLM 审查面（§7）。
-async fn run_template_command(connection: &SshConnection, command: &str) -> Option<u32> {
-    let mut channel = connection.handle.channel_open_session().await.ok()?;
-    channel.exec(true, command.as_bytes()).await.ok()?;
-    let deadline = Duration::from_secs(TEMPLATE_TIMEOUT_SECS);
-    let mut exit_status = None;
-    loop {
-        match tokio::time::timeout(deadline, channel.wait()).await {
-            Ok(Some(ChannelMsg::ExitStatus {
-                exit_status: status,
-            })) => {
-                exit_status = Some(status);
-            }
-            Ok(Some(ChannelMsg::Eof)) | Ok(Some(ChannelMsg::Close)) | Ok(None) => {
-                return exit_status;
-            }
-            Ok(Some(_)) => {}
-            Err(_) => return exit_status,
-        }
-    }
-}
-
-async fn probe_command(connection: &SshConnection, command: &str) -> bool {
-    run_template_command(connection, command).await == Some(0)
 }
 
 #[cfg(test)]

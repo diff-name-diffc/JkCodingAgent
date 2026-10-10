@@ -7,12 +7,20 @@
 //!   不触发滚动，行数不变量下 newLines 恒空，增量语义失效。
 //! - 快照轨（screen）：avt 活动缓冲区的可见行（`view()`；备用屏下即全屏程序
 //!   渲染结果，禁止用 `text()`——它恒取主缓冲）。
-//! - 备用屏期间暂停增量轨：全屏程序输出是位置绘制而非行流，进入 newLines 只会
-//!   产生噪声；退出备用屏时以当前光标行重新对齐（设计文档 §5.4 切换重置）。
+//! - 备用屏的 newLines 是两次读取之间新增/改写的可见行，忽略仅发生位置移动的
+//!   旧行；不是完整输出日志，读取间已经滚出的内容仍可能丢失。删除/清屏以快照
+//!   为准。退出备用屏时以当前光标行重新对齐。
 
 use std::collections::VecDeque;
 
+use super::responses::TerminalResponses;
 use avt::Vt;
+
+mod delta;
+mod rendering;
+
+pub(super) use rendering::captured_history;
+pub(crate) use rendering::HistoryPage;
 
 pub(crate) const DEFAULT_COLS: usize = 80;
 pub(crate) const DEFAULT_ROWS: usize = 24;
@@ -169,8 +177,11 @@ pub(crate) struct TermScreen {
     pending: VecDeque<String>,
     /// 内存闸门触发过丢弃（永久信息损失），透传 truncated 标记。
     pending_overflow: bool,
-    /// 备用屏期间暂停增量轨。
+    /// 备用屏期间暂停主屏行定稿，改用读取时的可见行差分。
     paused: bool,
+    last_alt_view: Vec<String>,
+    responses: TerminalResponses,
+    response_error: Option<String>,
 }
 
 impl TermScreen {
@@ -189,6 +200,9 @@ impl TermScreen {
             pending: VecDeque::new(),
             pending_overflow: false,
             paused: false,
+            last_alt_view: Vec::new(),
+            responses: TerminalResponses::new(),
+            response_error: None,
         }
     }
 
@@ -199,10 +213,21 @@ impl TermScreen {
             return;
         }
         let alt_event = self.alt_tracker.push(&s);
+        // 每次查询按出现当刻的光标回答；Vt::feed 不触发 GC，帧尾统一回收。
+        for ch in s.chars() {
+            self.vt.feed(ch);
+            if self.response_error.is_none() {
+                let cursor = self.vt.cursor();
+                self.response_error = self
+                    .responses
+                    .feed(ch, (cursor.row, cursor.col), self.vt.size())
+                    .err();
+            }
+        }
         // avt 未导出 Changes 类型名（vt 模块私有）：块作用域内取走 scrollback
         // 行文本，块尾 changes 整体 drop 后 &mut Vt 借用结束，才能继续借用 self。
         let scrollback_texts: Vec<String> = {
-            let changes = self.vt.feed_str(&s);
+            let changes = self.vt.feed_str("");
             changes.scrollback.map(|line| line.text()).collect()
         };
         self.ejected_so_far += scrollback_texts.len();
@@ -210,10 +235,12 @@ impl TermScreen {
             Some(AltScreenEvent::Entered) => {
                 self.paused = true;
                 self.cur_line_text.clear();
+                self.last_alt_view.clear();
             }
             Some(AltScreenEvent::Left) => {
                 self.paused = false;
                 self.realign_to_cursor();
+                self.last_alt_view.clear();
             }
             None => {}
         }
@@ -222,8 +249,37 @@ impl TermScreen {
         }
     }
 
+    pub(crate) fn take_responses(&mut self) -> Result<Vec<u8>, String> {
+        if let Some(error) = self.response_error.take() {
+            return Err(error);
+        }
+        Ok(self.responses.take_pending())
+    }
+
+    pub(crate) fn validate_paste_state(&self) -> Result<(), String> {
+        if self.responses.bracketed_paste() {
+            Ok(())
+        } else {
+            Err("远端当前未启用 bracketed paste；本次未发送，也未降级为逐键输入。多行脚本请使用 ssh_exec 的 stdin（如 command=\"bash -s\"），或等待支持粘贴的 shell/编辑器就绪。".into())
+        }
+    }
+
     /// 增量轨取货：排空前 N 行（上限内），超限部分留队待后续 read。
     pub(crate) fn take_new_lines(&mut self) -> NewLinesBatch {
+        if self.paused {
+            let mut current: Vec<String> = self
+                .vt
+                .view()
+                .map(|line| line.text().trim_end().to_string())
+                .collect();
+            while current.last().is_some_and(String::is_empty) {
+                current.pop();
+            }
+            for line in delta::added_lines(&self.last_alt_view, &current) {
+                self.enqueue_line(line);
+            }
+            self.last_alt_view = current;
+        }
         let mut lines = Vec::new();
         let mut chars = 0usize;
         let mut truncated = self.pending_overflow;
@@ -249,6 +305,33 @@ impl TermScreen {
             .map(|line| line.text().trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// 从 avt 单元格样式重建 SGR 快照；不回传 OSC、终端查询等原始控制序列。
+    pub(crate) fn snapshot_ansi(&self) -> String {
+        self.vt
+            .view()
+            .map(rendering::ansi_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// offset 从视口之前最新的历史行向前计数；每页按旧→新排列。
+    /// 备用屏通常无回滚区，此接口不代表 tmux 服务端的历史。
+    pub(crate) fn history(&self, offset: usize, limit: usize, ansi: bool) -> HistoryPage {
+        rendering::history(&self.vt, offset, limit, ansi)
+    }
+
+    /// 等待模式在不消费增量队列的前提下同时观察已定稿输出与当前屏幕。
+    pub(crate) fn matches_output(&self, pattern: &str) -> bool {
+        // 两轨存在重叠，不能拼接制造从未出现过的跨轨文本。
+        let pending = self
+            .pending
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        pending.contains(pattern) || self.snapshot().contains(pattern)
     }
 
     pub(crate) fn cursor(&self) -> (usize, usize) {
@@ -314,6 +397,10 @@ impl TermScreen {
         self.ejected_so_far += ejected;
         if !self.paused {
             self.realign_to_cursor();
+        } else {
+            // 备用屏差分基线是旧布局：reflow 换行的旧行会被 LCS 差分误判为
+            // 新增行，清空后下一次 read 按首次读取语义整体重报。
+            self.last_alt_view.clear();
         }
     }
 
@@ -379,235 +466,4 @@ impl TermScreen {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn framer_reassembles_multibyte_split_across_chunks() {
-        let mut framer = Utf8Framer::new();
-        // 「你」= E4 BD A0，三种切法都应还原。
-        assert_eq!(framer.push(&[0xE4]), "");
-        assert_eq!(framer.push(&[0xBD, 0xA0, 0xE4]), "你");
-        assert_eq!(framer.push(&[0xBD]), "");
-        assert_eq!(framer.push(&[0xA0]), "你");
-    }
-
-    #[test]
-    fn framer_passes_through_invalid_bytes_as_replacement() {
-        let mut framer = Utf8Framer::new();
-        let s = framer.push(&[b'o', 0xFF, b'k']);
-        assert_eq!(s, "o\u{fffd}k");
-    }
-
-    #[test]
-    fn alt_tracker_detects_enter_and_exit() {
-        let mut tracker = AltScreenTracker::new();
-        assert!(!tracker.is_alt());
-        assert!(matches!(
-            tracker.push("junk\x1b[?1049h\x1b[2J"),
-            Some(AltScreenEvent::Entered)
-        ));
-        assert!(tracker.is_alt());
-        assert!(matches!(
-            tracker.push("more\x1b[?1049l"),
-            Some(AltScreenEvent::Left)
-        ));
-        assert!(!tracker.is_alt());
-    }
-
-    #[test]
-    fn alt_tracker_handles_sequence_split_across_chunks() {
-        let mut tracker = AltScreenTracker::new();
-        assert!(tracker.push("\x1b[?10").is_none());
-        assert!(matches!(tracker.push("49h"), Some(AltScreenEvent::Entered)));
-        assert!(tracker.push("\x1b[?104").is_none());
-        assert!(matches!(tracker.push("9l"), Some(AltScreenEvent::Left)));
-    }
-
-    #[test]
-    fn alt_tracker_accepts_legacy_variants_without_double_switch() {
-        let mut tracker = AltScreenTracker::new();
-        assert!(matches!(
-            tracker.push("\x1b[?47h"),
-            Some(AltScreenEvent::Entered)
-        ));
-        // 已在备用屏，再进（1047h）不重复报告。
-        assert!(tracker.push("\x1b[?1047h").is_none());
-        assert!(matches!(
-            tracker.push("\x1b[?1047l\x1b[?47l"),
-            Some(AltScreenEvent::Left)
-        ));
-    }
-
-    #[test]
-    fn incremental_track_finalizes_lines_on_cursor_advance() {
-        let mut screen = TermScreen::new(80, 24);
-        // shell 提示符 + 命令回显 + 两行输出 + 新提示符（未定稿）。
-        screen.push_bytes(b"$ ls\r\nfile1\r\nfile2\r\n$ ");
-        let batch = screen.take_new_lines();
-        assert_eq!(batch.lines, vec!["$ ls", "file1", "file2"]);
-        assert!(!batch.truncated);
-        // 光标行（"$ "）永远未定稿，由快照轨呈现。
-        assert!(screen.take_new_lines().lines.is_empty());
-        assert!(screen.snapshot().lines().any(|l| l == "$"));
-    }
-
-    #[test]
-    fn incremental_track_outputs_without_scrolling() {
-        // 不满屏输出（设计初稿行数不变量的盲区）：同样产出增量。
-        let mut screen = TermScreen::new(80, 24);
-        screen.push_bytes(b"$ echo hi\r\nhi\r\n$ ");
-        assert_eq!(screen.take_new_lines().lines, vec!["$ echo hi", "hi"]);
-    }
-
-    #[test]
-    fn incremental_track_carriage_return_rewrite_finalizes_once() {
-        let mut screen = TermScreen::new(80, 24);
-        // 进度条：同行 \r 重写，只定稿最终形态。
-        screen.push_bytes(b"$ curl ...\r\n50%\r\x1b[K100%\r\n$ ");
-        assert_eq!(screen.take_new_lines().lines, vec!["$ curl ...", "100%"]);
-    }
-
-    #[test]
-    fn incremental_track_survives_scrolling() {
-        let mut screen = TermScreen::new(10, 3);
-        for i in 0..10 {
-            screen.push_bytes(format!("line{i}\r\n").as_bytes());
-        }
-        let batch = screen.take_new_lines();
-        assert_eq!(
-            batch.lines,
-            (0..10).map(|i| format!("line{i}")).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn alt_screen_pauses_and_resumes_incremental_track() {
-        let mut screen = TermScreen::new(80, 24);
-        screen.push_bytes(b"$ htop\r\n");
-        assert_eq!(screen.take_new_lines().lines, vec!["$ htop"]);
-        // 进入备用屏：位置绘制不进增量轨，快照轨承载。
-        screen.push_bytes(b"\x1b[?1049h\x1b[H\x1b[2Jhtop-screen");
-        assert!(screen.alt_screen());
-        assert!(screen.take_new_lines().lines.is_empty());
-        assert!(screen.snapshot().contains("htop-screen"));
-        // 退出备用屏：重对齐后新输出恢复定稿，且不爆发旧行。
-        screen.push_bytes(b"\x1b[?1049l");
-        assert!(!screen.alt_screen());
-        assert!(screen.take_new_lines().lines.is_empty());
-        screen.push_bytes(b"$ next\r\n");
-        assert_eq!(screen.take_new_lines().lines, vec!["$ next"]);
-    }
-
-    #[test]
-    fn take_new_lines_enforces_caps_and_keeps_remainder() {
-        let mut screen = TermScreen::new(20, 3);
-        for i in 0..50 {
-            screen.push_bytes(format!("row-{i:03}\r\n").as_bytes());
-        }
-        // 50 行 × 7 字符 = 350 字符 < 12000；行数上限 200 不触发——用字符上限
-        // 构造：改用小屏大行。这里验证行数余量与留队语义：直接人为压低上限不可行，
-        // 断言全量取出（50 < 200）。
-        let batch = screen.take_new_lines();
-        assert_eq!(batch.lines.len(), 50);
-        assert!(!batch.truncated);
-        assert!(screen.take_new_lines().lines.is_empty());
-    }
-
-    #[test]
-    fn pending_queue_overflow_sets_permanent_truncation_flag() {
-        let mut screen = TermScreen::new(20, 3);
-        // 2501 行 > PENDING_QUEUE_MAX_ROWS(2000)：最老行被丢弃。
-        for i in 0..2501 {
-            screen.push_bytes(format!("r{i:05}\r\n").as_bytes());
-        }
-        let batch = screen.take_new_lines();
-        assert!(batch.truncated);
-        assert_eq!(batch.lines.first().map(String::as_str), Some("r00501"));
-    }
-
-    #[test]
-    fn take_new_lines_char_cap_truncates_and_keeps_remainder() {
-        let mut screen = TermScreen::new(200, 3);
-        // 每行 ~150 字符，200 行 > 12000 字符上限。
-        let wide = "x".repeat(150);
-        for _ in 0..200 {
-            screen.push_bytes(format!("{wide}\r\n").as_bytes());
-        }
-        let batch = screen.take_new_lines();
-        assert!(batch.truncated);
-        assert!(batch.lines.len() < 200);
-        let total: usize = batch.lines.iter().map(String::len).sum();
-        assert!(total <= NEW_LINES_MAX_CHARS + 150);
-        // 余量仍在队中，下次 read 可取。
-        assert!(!screen.take_new_lines().lines.is_empty());
-    }
-
-    #[test]
-    fn alt_tracker_reset_sequence_returns_to_primary() {
-        let mut tracker = AltScreenTracker::new();
-        assert!(matches!(
-            tracker.push("\x1b[?1049h"),
-            Some(AltScreenEvent::Entered)
-        ));
-        // RIS（ESC c）终端复位：回主屏。
-        assert!(matches!(
-            tracker.push("junk\x1bc"),
-            Some(AltScreenEvent::Left)
-        ));
-        assert!(!tracker.is_alt());
-    }
-
-    #[test]
-    fn alt_tracker_nested_enter_reports_no_duplicate() {
-        let mut tracker = AltScreenTracker::new();
-        assert!(matches!(
-            tracker.push("\x1b[?1049h"),
-            Some(AltScreenEvent::Entered)
-        ));
-        // tmux 嵌套（里层程序再进备用屏）：状态不变，不重复报告。
-        assert!(tracker.push("\x1b[?47h").is_none());
-        assert!(tracker.is_alt());
-    }
-
-    #[test]
-    fn screen_context_contains_cursor_line_and_tail() {
-        let mut screen = TermScreen::new(80, 24);
-        screen.push_bytes(
-            b"$ sudo apt install htop\r\nReading... Done\r\nDo you want to continue? [Y/n] ",
-        );
-        let context = screen.screen_context();
-        // 光标行（确认提示）与尾部输出都应出现。
-        assert!(
-            context.contains("[光标行] Do you want to continue? [Y/n]"),
-            "{context}"
-        );
-        assert!(context.contains("Reading... Done"), "{context}");
-        assert!(context.contains("$ sudo apt install htop"), "{context}");
-    }
-
-    #[test]
-    fn screen_context_caps_at_five_tail_lines() {
-        let mut screen = TermScreen::new(80, 24);
-        for i in 0..10 {
-            screen.push_bytes(format!("line-{i}\r\n").as_bytes());
-        }
-        let context = screen.screen_context();
-        assert!(context.contains("line-9"), "{context}");
-        assert!(
-            !context.contains("line-0"),
-            "超出尾部 5 行的旧行不应出现：{context}"
-        );
-    }
-
-    #[test]
-    fn resize_realigns_without_phantom_lines() {
-        let mut screen = TermScreen::new(80, 24);
-        screen.push_bytes(b"$ long\r\n");
-        assert_eq!(screen.take_new_lines().lines, vec!["$ long"]);
-        screen.resize(100, 30);
-        assert!(screen.take_new_lines().lines.is_empty());
-        screen.push_bytes(b"$ after\r\n");
-        assert_eq!(screen.take_new_lines().lines, vec!["$ after"]);
-    }
-}
+mod tests;

@@ -1,4 +1,4 @@
-//! SSH 工具组：`ssh_list_servers` / `ssh_exec`。
+//! SSH 工具组：`ssh_list_servers` / `ssh_exec` / `ssh_tmux_install`。
 //! 迁移自旧自实现工具层（已随迁移删除）；连接池复用 `crate::ssh_tool::SshSessionManager`。
 
 use serde_json::{json, Value};
@@ -12,6 +12,9 @@ use crate::ssh_tool::{CommandFailure, CommandFailureKind, SshSessionManager};
 use rig::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
 use std::path::PathBuf;
 
+mod install_tmux;
+mod list;
+
 #[cfg(test)]
 mod tests;
 
@@ -23,51 +26,19 @@ pub(super) fn ssh_tools(
     review_context: crate::agent::rig_ext::review::RigReviewContext,
     app_handle: Option<tauri::AppHandle>,
 ) -> Vec<PortableDynamicTool> {
+    let ssh_exec = ssh_exec_tool(
+        manager.clone(),
+        workspace,
+        workspace_id,
+        db,
+        review_context,
+        app_handle,
+    );
     vec![
-        ssh_list_servers_tool(manager.clone()),
-        ssh_exec_tool(
-            manager,
-            workspace,
-            workspace_id,
-            db,
-            review_context,
-            app_handle,
-        ),
+        list::ssh_list_servers_tool(manager),
+        install_tmux::ssh_tmux_install_tool(ssh_exec.clone()),
+        ssh_exec,
     ]
-}
-
-fn ssh_list_servers_tool(manager: SshSessionManager) -> PortableDynamicTool {
-    PortableDynamicTool::new(
-        "ssh_list_servers",
-        "列出已启用的 SSH 服务器（全局配置，所有项目共享）。只返回 server_id、名称、描述和标签，不暴露 IP、端口、账号或密码。",
-        json!({
-            "type": "object",
-            "properties": {},
-            "required": []
-        }),
-        move |_args| {
-            let manager = manager.clone();
-            Box::pin(async move {
-                let text = match manager.list_servers_async().await {
-                    Ok(servers) => {
-                        if servers.is_empty() {
-                            "没有已启用的 SSH server。请先在 Aha 智能体设置中配置 SSH 工具。"
-                                .to_string()
-                        } else {
-                            match serde_json::to_string_pretty(&json!({ "servers": servers })) {
-                                Ok(text) => text,
-                                Err(error) => {
-                                    format!("错误：序列化 SSH server 列表失败：{error}")
-                                }
-                            }
-                        }
-                    }
-                    Err(error) => format!("错误：读取 SSH server 列表失败：{error}"),
-                };
-                Ok(ToolOutput::text(text))
-            })
-        },
-    )
 }
 
 /// SSH 命令执行工具。
@@ -156,6 +127,7 @@ fn ssh_exec_tool(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ssh_exec_text(
     args: &Value,
     manager: SshSessionManager,

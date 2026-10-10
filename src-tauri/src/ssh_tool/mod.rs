@@ -340,6 +340,7 @@ impl SshSessionManager {
         .map_err(|error| error.to_string())?
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_command(
         &self,
         server_id: String,

@@ -13,6 +13,21 @@ pub const DEFAULT_FORCE_COMPRESS_AFTER_CHARS: usize = 5_000;
 /// 才值得多付一次串行摘要 LLM 往返。
 pub const COMMAND_FORCE_COMPRESS_AFTER_CHARS: usize = 12_000;
 
+/// 派发后的默认共享直返窗口（毫秒）：窗口内结算的调用随本批内联交付，
+/// 未结算的转后台（accepted 回执 + 迟到 runtime 交付）。
+pub const DEFAULT_DISPATCH_WINDOW_MS: u64 = 200;
+
+/// 只读快工具（PARALLEL_READONLY 预设）的直返窗口（毫秒）：文件/搜索类
+/// 调用通常亚秒级完成，放宽窗口让扇出批次整体内联交付，避免被后台化后
+/// 模型被迫空转等待轮次。取值不超 1 秒：再慢的只读调用走后台 + 参数化
+/// 等待的路径同样廉价，不值得拉长每批派发的感知延迟。
+pub const READONLY_DISPATCH_WINDOW_MS: u64 = 1_000;
+
+/// 编译期保证只读窗口是对默认窗口的「放宽」：这是 PARALLEL_READONLY 预设
+/// 与整表一致性测试成立的设计前提，调参若出现倒置将静默破坏扇出批次
+/// 整体内联交付的意图（运行期测试只校验行值 ↔ 常量映射，不约束相对次序）。
+const _: () = assert!(READONLY_DISPATCH_WINDOW_MS >= DEFAULT_DISPATCH_WINDOW_MS);
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCategory {
@@ -268,7 +283,13 @@ struct ToolProfile {
 /// 它们的审查携带完整目标环境上下文（目标服务器 / 执行目录、stdin、服务器级
 /// 审查开关），比 broker 的通用 JSON 参数审查更准确；broker 必须让位，
 /// 避免同一调用出现两套结论。新增此类工具时在此登记。
-const SELF_REVIEWED_TOOLS: &[&str] = &["local_zsh", "ssh_exec", "sync_directory", "ssh_term_send"];
+const SELF_REVIEWED_TOOLS: &[&str] = &[
+    "local_zsh",
+    "ssh_exec",
+    "ssh_tmux_install",
+    "sync_directory",
+    "ssh_term_send",
+];
 
 /// 未注册/未知工具名的兜底统一超时（秒）。
 const DEFAULT_UNKNOWN_TIMEOUT_SECS: u64 = 60;
@@ -314,8 +335,8 @@ pub(crate) enum ClaimResource {
 
 /// 工具策略表条目：一行声明式定义一个工具的全部策略字段
 /// （category / access / safety / timeout / compress / parallel / self-managed /
-/// resource）。新增工具只需在此表补一行；未收录的工具名一律走 fail-closed
-/// 兜底（见 `ToolProfile::fail_closed`），不再静默回退到宽松默认。
+/// resource / dispatch_window）。新增工具只需在此表补一行；未收录的工具名一律走
+/// fail-closed 兜底（见 `ToolProfile::fail_closed`），不再静默回退到宽松默认。
 struct ToolPolicyRow {
     name: &'static str,
     category: ToolCategory,
@@ -327,6 +348,7 @@ struct ToolPolicyRow {
     parallel_readonly: bool,
     self_managed_timeout: bool,
     resource: ClaimResource,
+    dispatch_window_ms: u64,
 }
 
 struct ToolPolicyOptions {
@@ -334,6 +356,7 @@ struct ToolPolicyOptions {
     parallel_readonly: bool,
     self_managed_timeout: bool,
     force_compress_after_chars: usize,
+    dispatch_window_ms: u64,
 }
 
 impl ToolPolicyOptions {
@@ -342,18 +365,21 @@ impl ToolPolicyOptions {
         parallel_readonly: false,
         self_managed_timeout: false,
         force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+        dispatch_window_ms: DEFAULT_DISPATCH_WINDOW_MS,
     };
     const PARALLEL_READONLY: Self = Self {
         default_compress: false,
         parallel_readonly: true,
         self_managed_timeout: false,
         force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+        dispatch_window_ms: READONLY_DISPATCH_WINDOW_MS,
     };
     const SELF_MANAGED: Self = Self {
         default_compress: false,
         parallel_readonly: false,
         self_managed_timeout: true,
         force_compress_after_chars: DEFAULT_FORCE_COMPRESS_AFTER_CHARS,
+        dispatch_window_ms: DEFAULT_DISPATCH_WINDOW_MS,
     };
     /// 命令执行类工具（exec / local_zsh）：默认开启压缩，超时自管，
     /// 压缩阈值用命令类高阈值（内联截断兜不住的输出才值得摘要）。
@@ -362,6 +388,7 @@ impl ToolPolicyOptions {
         parallel_readonly: false,
         self_managed_timeout: true,
         force_compress_after_chars: COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+        dispatch_window_ms: DEFAULT_DISPATCH_WINDOW_MS,
     };
     /// 命令执行类工具的「默认不压缩」预设（ssh_exec）：命令输出常需逐字核对，
     /// 压缩须由模型显式声明；声明后也只在超过命令类高阈值时才真正摘要。
@@ -370,6 +397,7 @@ impl ToolPolicyOptions {
         parallel_readonly: false,
         self_managed_timeout: true,
         force_compress_after_chars: COMMAND_FORCE_COMPRESS_AFTER_CHARS,
+        dispatch_window_ms: DEFAULT_DISPATCH_WINDOW_MS,
     };
 }
 
@@ -393,6 +421,7 @@ const fn policy_row(
         parallel_readonly: options.parallel_readonly,
         self_managed_timeout: options.self_managed_timeout,
         resource,
+        dispatch_window_ms: options.dispatch_window_ms,
     }
 }
 
@@ -631,6 +660,16 @@ static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
     ),
     policy_row(
         "ssh_exec",
+        ToolCategory::Ssh,
+        ToolAccess::EXTERNAL_EFFECTS,
+        ToolSafety::ReviewRequired,
+        300,
+        ToolPolicyOptions::UNCOMPRESSED_SELF_MANAGED,
+        ClaimResource::SshServer,
+    ),
+    // 显式安装入口把固定脚本委托 ssh_exec，共用其审查与超时边界。
+    policy_row(
+        "ssh_tmux_install",
         ToolCategory::Ssh,
         ToolAccess::EXTERNAL_EFFECTS,
         ToolSafety::ReviewRequired,
@@ -886,6 +925,13 @@ pub(crate) fn claim_resource(name: &str) -> ClaimResource {
     lookup_policy(name).map_or(ClaimResource::External, |row| row.resource)
 }
 
+/// 工具的派发直返窗口：只读快工具放宽窗口让扇出批次整体内联交付，
+/// 其余工具（含未登记名，fail-closed）用默认短窗口快速转后台。
+pub(crate) fn dispatch_window(name: &str) -> std::time::Duration {
+    let ms = lookup_policy(name).map_or(DEFAULT_DISPATCH_WINDOW_MS, |row| row.dispatch_window_ms);
+    std::time::Duration::from_millis(ms)
+}
+
 /// 该工具名是否在策略表中登记（rig 运行时的台账审计用：
 /// 未登记的名字按「模型幻觉」标记 `registered=false`，不落策略字段）。
 pub fn is_registered_tool_name(name: &str) -> bool {
@@ -1000,7 +1046,7 @@ fn self_managed_settle_ceiling_secs(name: &str) -> u64 {
         // config `exec_timeout_secs` 默认 60（非前端可配），留 10× 余量
         "local_zsh" => 600,
         // 单命令参数上限 300 + 交互/静默容忍与 channel drain
-        "ssh_exec" => 600,
+        "ssh_exec" | "ssh_tmux_install" => 600,
         // rsync 无硬上限
         "sync_directory" => 900,
         // 多图批量 × 单图超时（声明 1500），留 2× 余量
@@ -1020,7 +1066,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        claim_resource, ClaimResource, ToolCategory, ToolSafety, ToolSpec, TOOL_POLICY_TABLE,
+        claim_resource, dispatch_window, ClaimResource, ToolCategory, ToolSafety, ToolSpec,
+        DEFAULT_DISPATCH_WINDOW_MS, READONLY_DISPATCH_WINDOW_MS, TOOL_POLICY_TABLE,
     };
 
     fn spec_for(name: &str) -> ToolSpec {
@@ -1229,6 +1276,20 @@ mod tests {
     }
 
     #[test]
+    fn tmux_install_reuses_ssh_execution_policy() {
+        let spec = spec_for("ssh_tmux_install");
+        assert_eq!(spec.category, ToolCategory::Ssh);
+        assert_eq!(spec.safety, ToolSafety::ReviewRequired);
+        assert!(spec.access.mutates_external_state);
+        assert!(spec.review_self_managed);
+        assert!(!spec.execution.parallelizable);
+        assert!(!spec.execution.unified_timeout);
+        assert_eq!(spec.execution.timeout_secs, 300);
+        assert_eq!(spec.execution.settle_ceiling_secs, 600);
+        assert_eq!(claim_resource("ssh_tmux_install"), ClaimResource::SshServer);
+    }
+
+    #[test]
     fn ssh_memo_tools_are_safe_with_self_managed_write_set() {
         let read = spec_for("ssh_memo_read");
         assert_eq!(read.category, ToolCategory::Ssh);
@@ -1255,7 +1316,12 @@ mod tests {
 
     #[test]
     fn command_tools_manage_their_own_review() {
-        for name in ["local_zsh", "ssh_exec", "sync_directory"] {
+        for name in [
+            "local_zsh",
+            "ssh_exec",
+            "ssh_tmux_install",
+            "sync_directory",
+        ] {
             let spec = spec_for(name);
 
             assert!(spec.review_self_managed, "{name} 应自管安全审查");
@@ -1322,6 +1388,36 @@ mod tests {
         assert_eq!(claim_resource("workflow_get"), ClaimResource::External);
         // 未登记名字 fail-closed。
         assert_eq!(claim_resource("write_file"), ClaimResource::External);
+    }
+
+    /// 派发窗口列：只读并行工具放宽窗口（扇出批次整体内联交付），
+    /// 其余工具一律默认短窗口；未登记名 fail-closed 回退默认值。
+    #[test]
+    fn dispatch_window_column_matches_parallel_readonly() {
+        for row in TOOL_POLICY_TABLE {
+            let expected = if row.parallel_readonly {
+                READONLY_DISPATCH_WINDOW_MS
+            } else {
+                DEFAULT_DISPATCH_WINDOW_MS
+            };
+            assert_eq!(
+                row.dispatch_window_ms, expected,
+                "{}：派发窗口与并行只读预设不一致",
+                row.name
+            );
+        }
+        assert_eq!(
+            dispatch_window("read_file"),
+            std::time::Duration::from_millis(READONLY_DISPATCH_WINDOW_MS)
+        );
+        assert_eq!(
+            dispatch_window("local_zsh"),
+            std::time::Duration::from_millis(DEFAULT_DISPATCH_WINDOW_MS)
+        );
+        assert_eq!(
+            dispatch_window("no_such_tool"),
+            std::time::Duration::from_millis(DEFAULT_DISPATCH_WINDOW_MS)
+        );
     }
 
     /// 自管工具的兜底上限（策略层的最后防线）必须在策略表里显式登记：

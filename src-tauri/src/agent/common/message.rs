@@ -59,6 +59,10 @@ pub(crate) fn serialize_tool_arguments(
 
 // ─── LLM Context Filtering ─────────────────────────────────────────────────────
 
+/// `wait_for_tools` 控制工具名：等待语义的唯一出处是 `rig_ext::loop::wait`
+///（re-export 本常量），历史装配过滤也按本常量识别控制对。
+pub(crate) const WAIT_TOOL_NAME: &str = "wait_for_tools";
+
 /// 纯调度 plumbing 工具名：其 assistant/tool 消息不进入 LLM 上下文。
 /// 本常量是 LLM 上下文过滤的唯一口径来源；DB 加载路径
 /// （`db::messages::queries::load_llm_history`）直接委托 `should_keep_llm_message`。
@@ -73,12 +77,14 @@ const DISPATCH_PLUMBING_TOOL_NAMES: [&str; 6] = [
     "exit_codex_session",
 ];
 
-/// 消息是否应保留在 LLM 上下文中（全仓唯一实现，G9-05）。
+/// 消息是否应保留在 LLM 上下文中（G9-05）。
 ///
 /// 过滤纯调度 plumbing 工具（dispatch_claude 等）的工具结果，以及仅承载
 /// 流程状态、对模型决策无意义的 process-only assistant 消息。
 /// DB 加载路径（`db::messages::queries::load_llm_history`）直接委托本函数，
 /// 「新 run 从 DB 重新加载」因而不存在第二份同口径实现。
+/// 装配过滤的完整口径 = 本函数（逐行无状态）+ `strip_delivered_wait_pairs`
+///（wait 控制对的成对剔除，需要跨行信息故独立成段）。
 pub(crate) fn should_keep_llm_message(message: &ChatMessage) -> bool {
     match message.role.as_str() {
         "assistant" => {
@@ -124,6 +130,80 @@ fn is_dispatch_plumbing_tool_call(call: &OutboundToolCall) -> bool {
 
 fn is_dispatch_plumbing_tool_name(name: &str) -> bool {
     DISPATCH_PLUMBING_TOOL_NAMES.contains(&name)
+}
+
+/// 剔除「已交付进展」的 wait_for_tools 控制对（纯 wait 的 assistant 调用行 +
+/// 配对 tool 结果行）：该次等待交付的事实已由紧随的 runtime 观察消息承载，
+/// 控制噪音不回灌上下文。结果 JSON 的 ready 数组非空 = 交付了进展；无进展
+/// 结果（no_pending/timeout 空/违规拒绝）与混批 assistant 行一律保留——保留
+/// 是模型的纠错反馈，防止上下文逐字节不变导致退化式重复调用。
+/// 与运行中内存侧（`rig_ext::loop::decision` 的 made_progress 分支）严格同构。
+pub(crate) fn strip_delivered_wait_pairs(messages: &mut Vec<ChatMessage>) {
+    let mut delivered_call_ids = std::collections::HashSet::<String>::new();
+    for (index, message) in messages.iter().enumerate() {
+        if message.role != "assistant" {
+            continue;
+        }
+        let Some(calls) = message.tool_calls.as_ref() else {
+            continue;
+        };
+        if calls.is_empty()
+            || !calls
+                .iter()
+                .all(|call| call.function.name == WAIT_TOOL_NAME)
+        {
+            continue;
+        }
+        for call in calls {
+            // 配对结果 = 紧随其后的连续 tool 消息中按 call id 匹配
+            //（与 repair_tool_call_pairing 的配对口径一致）。
+            let delivered = messages[index + 1..]
+                .iter()
+                .take_while(|msg| msg.role == "tool")
+                .find(|msg| msg.tool_call_id.as_deref() == Some(call.id.as_str()))
+                .is_some_and(|result| wait_result_made_progress(&result.content));
+            if delivered {
+                delivered_call_ids.insert(call.id.clone());
+            }
+        }
+    }
+    if delivered_call_ids.is_empty() {
+        return;
+    }
+    messages.retain(|message| match message.role.as_str() {
+        // 剔除分支必须复核调用名是 wait：delivered_call_ids 的命中只对
+        // 纯 wait 批有意义，而 call id 全局唯一仅由服务商行为保证（决策层
+        // 只硬校验批内重复）——若后续某行业务调用的 id 恰好碰撞，按 id 匹配
+        // 会整行误删业务调用、其结果行沦为孤儿。
+        "assistant" => !message.tool_calls.as_ref().is_some_and(|calls| {
+            !calls.is_empty()
+                && calls.iter().all(|call| {
+                    call.function.name == WAIT_TOOL_NAME && delivered_call_ids.contains(&call.id)
+                })
+        }),
+        "tool" => {
+            !(message.name.as_deref() == Some(WAIT_TOOL_NAME)
+                && message
+                    .tool_call_id
+                    .as_deref()
+                    .is_some_and(|id| delivered_call_ids.contains(id)))
+        }
+        _ => true,
+    });
+}
+
+/// wait 结果 JSON 的 ready 数组非空 = 该次等待交付了进展。解析失败一律视为
+/// 无进展（保留，fail-safe）。
+fn wait_result_made_progress(content: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("ready")?
+                .as_array()
+                .map(|ready| !ready.is_empty())
+        })
+        .unwrap_or(false)
 }
 
 // ─── LLM Context Repair ────────────────────────────────────────────────────────
@@ -211,5 +291,170 @@ fn unanswered_tool_result(tool_call_id: &str, tool_name: &str) -> ChatMessage {
         tool_call_id: Some(tool_call_id.to_string()),
         name: Some(tool_name.to_string()),
         source_id: None,
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::db::FunctionCall;
+
+    fn wait_assistant(call_id: &str) -> ChatMessage {
+        ChatMessage {
+            role: "assistant".into(),
+            content: String::new(),
+            content_parts: Vec::new(),
+            reasoning_content: None,
+            tool_calls: Some(vec![OutboundToolCall {
+                id: call_id.into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: WAIT_TOOL_NAME.into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+            tool_call_id: None,
+            name: None,
+            source_id: None,
+        }
+    }
+
+    fn tool_result(call_id: &str, name: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "tool".into(),
+            content: content.into(),
+            content_parts: Vec::new(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: Some(call_id.into()),
+            name: Some(name.into()),
+            source_id: None,
+        }
+    }
+
+    fn plain(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.into(),
+            content: content.into(),
+            content_parts: Vec::new(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            source_id: None,
+        }
+    }
+
+    #[test]
+    fn delivered_wait_pair_is_stripped_and_runtime_kept() {
+        let mut messages = vec![
+            plain("user", "查一下"),
+            wait_assistant("w1"),
+            tool_result(
+                "w1",
+                WAIT_TOOL_NAME,
+                r#"{"reason":"tools_ready","ready":[{"task_id":"t1","tool":"read_file","status":"succeeded"}],"pending_count":0}"#,
+            ),
+            plain(
+                "runtime",
+                r#"{"kind":"tool_completion","task_id":"t1","status":"succeeded"}"#,
+            ),
+            plain("assistant", "结论"),
+        ];
+        strip_delivered_wait_pairs(&mut messages);
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "runtime", "assistant"]);
+    }
+
+    #[test]
+    fn no_progress_wait_pair_is_kept_as_feedback() {
+        for content in [
+            r#"{"reason":"no_pending_tasks","ready":[],"pending_count":0}"#,
+            r#"{"reason":"timeout","ready":[],"pending_count":2}"#,
+            "控制工具必须独占一批",
+            "不是 JSON 的历史遗留文本",
+        ] {
+            let mut messages = vec![
+                wait_assistant("w1"),
+                tool_result("w1", WAIT_TOOL_NAME, content),
+            ];
+            strip_delivered_wait_pairs(&mut messages);
+            assert_eq!(messages.len(), 2, "无进展/异常结果应保留：{content}");
+        }
+    }
+
+    #[test]
+    fn mixed_batch_assistant_and_its_wait_result_are_kept() {
+        // 混批（wait + 业务调用）的 assistant 行不是纯 wait：即使 wait 结果
+        // 显示有进展，整批拒绝的纠错语义必须完整保留，配对不被拆散。
+        let mut mixed = wait_assistant("w1");
+        mixed.tool_calls.as_mut().unwrap().push(OutboundToolCall {
+            id: "r1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+        });
+        let mut messages = vec![
+            mixed,
+            tool_result(
+                "w1",
+                WAIT_TOOL_NAME,
+                r#"{"reason":"tools_ready","ready":[{"task_id":"t1"}],"pending_count":0}"#,
+            ),
+            tool_result("r1", "read_file", "文件内容"),
+        ];
+        strip_delivered_wait_pairs(&mut messages);
+        assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn strip_then_repair_leaves_no_orphans_or_placeholders() {
+        // 端到端口径：剔除后紧跟配对修复，结果应既无孤儿结果也无占位补齐。
+        let mut messages = vec![
+            plain("user", "查一下"),
+            wait_assistant("w1"),
+            tool_result(
+                "w1",
+                WAIT_TOOL_NAME,
+                r#"{"reason":"tools_ready","ready":[{"task_id":"t1"}],"pending_count":0}"#,
+            ),
+            plain("runtime", "{}"),
+        ];
+        strip_delivered_wait_pairs(&mut messages);
+        repair_tool_call_pairing(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().all(|m| m.role != "tool"));
+    }
+
+    #[test]
+    fn delivered_wait_id_collision_never_strips_business_rows() {
+        // call id 全局唯一仅由服务商行为保证（决策层只硬校验批内重复）：
+        // 退化 id（如空 id / 跨轮重复）下，业务行的 id 恰好命中已交付 wait
+        // 的 id 时，剔除只允许作用于纯 wait 行——业务行与其结果必须原样保留。
+        let mut business = wait_assistant("dup");
+        business.tool_calls.as_mut().unwrap()[0].function.name = "read_file".into();
+        let mut messages = vec![
+            wait_assistant("dup"),
+            tool_result(
+                "dup",
+                WAIT_TOOL_NAME,
+                r#"{"reason":"tools_ready","ready":[{"task_id":"t1"}],"pending_count":0}"#,
+            ),
+            business,
+            tool_result("dup", "read_file", "业务结果"),
+        ];
+        strip_delivered_wait_pairs(&mut messages);
+        assert_eq!(messages.len(), 2, "只有 wait 对被剔除，业务行不得误删");
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(
+            messages[0].tool_calls.as_ref().unwrap()[0].function.name,
+            "read_file"
+        );
+        assert_eq!(messages[1].role, "tool");
+        assert_eq!(messages[1].name.as_deref(), Some("read_file"));
     }
 }

@@ -41,6 +41,7 @@ mod support;
 mod surface;
 #[cfg(test)]
 mod tests;
+pub(crate) mod wait;
 
 /// 上下文超限（400）收缩重试上限：每次预算减半，重试耗尽后错误照常上抛。
 const MAX_CONTEXT_OVERFLOW_RETRIES: usize = 2;
@@ -92,14 +93,17 @@ where
         .get_latest_user_message_content_async(workspace_id)
         .await?;
     let preparer = super::tool_result::prepare::owned_preparer(summary, question);
-    let mut coordinator = coordinator::Coordinator::new(scheduler::TaskScheduler::new(
-        db.clone(),
-        workspace_id.into(),
-        cancel_rx.clone(),
-        preparer,
-        on_event.clone(),
-        None,
-    ));
+    let mut coordinator = coordinator::Coordinator::new(
+        scheduler::TaskScheduler::new(
+            db.clone(),
+            workspace_id.into(),
+            cancel_rx.clone(),
+            preparer,
+            on_event.clone(),
+            None,
+        ),
+        host::LoopHost::Conversation,
+    );
     coordinator.tasks.recover_completions().await?;
     let result = run_loop_inner(
         db,

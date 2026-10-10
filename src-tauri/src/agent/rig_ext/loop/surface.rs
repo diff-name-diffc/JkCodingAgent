@@ -22,8 +22,7 @@ impl RigToolSurface {
         }
     }
 
-    /// 挂载单个工具的结果策略（覆盖默认值）。
-    /// 批量挂载结果策略（工具面装配期从策略表派生）。
+    /// 批量挂载结果策略（工具面装配期从策略表派生，覆盖默认值）。
     pub fn with_policies(
         mut self,
         policies: impl IntoIterator<Item = (String, RigToolResultPolicy)>,

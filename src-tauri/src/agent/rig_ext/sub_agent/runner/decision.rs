@@ -1,5 +1,6 @@
 //! 子 scope 模型决策；工具调度与交付由共享协调器管理。
 use super::*;
+use crate::agent::rig_ext::r#loop::wait;
 
 impl RigSubAgentRuntime {
     #[allow(clippy::too_many_arguments)]
@@ -14,13 +15,12 @@ impl RigSubAgentRuntime {
         last_iteration: &mut u32,
         coordinator: &mut crate::agent::rig_ext::r#loop::coordinator::Coordinator,
     ) -> Result<String, String> {
-        let mut definitions_all = self
+        let definitions_all = self
             .surface
             .iter()
             .map(PortableDynamicTool::definition)
             .collect::<Vec<_>>();
 
-        definitions_all.push(rig::completion::ToolDefinition { name: "wait_for_tools".into(), description: "等待工具完成，独占一批。宿主会自动唤醒。".into(), parameters: serde_json::json!({"type":"object","properties":{"reason":{"type":"string"}},"additionalProperties":false}) });
         let channel = self.loop_events.clone();
         let mut task_usage = crate::agent::common::UsageTracker::new();
         let surface = crate::agent::rig_ext::r#loop::RigToolSurface::new(self.surface.clone());
@@ -68,11 +68,31 @@ impl RigSubAgentRuntime {
                 .await
                 .map_err(|e| e.to_string())?;
 
+            // 在途任务快照：重建首条 system 消息（base + 快照段），与主循环的
+            // preamble 注入同义（子智能体的 system 位于 messages[0]，逐轮重建）。
+            // 覆写前固化契约：首条必须是 system——入口构造变化（注入工作区
+            // 上下文等）时静默覆写会丢内容，空 messages 会越界 panic。
+            debug_assert!(
+                matches!(messages.first(), Some(Message::System { .. })),
+                "run_loop 契约：messages[0] 必须为 system 消息"
+            );
+            messages[0] = Message::system(
+                match wait::render_pending_snapshot(&coordinator.tasks.pending_tasks()) {
+                    Some(snapshot) => format!("{}\n\n{snapshot}", self.config.system_prompt),
+                    None => self.config.system_prompt.clone(),
+                },
+            );
+
             // 强制收口阶段传空工具集，逼模型给出最终结论。
+            // 仅当存在未结算任务时才提供等待工具：结构性消除空调用。
             let definitions = if *force_final_response {
                 Vec::new()
             } else {
-                definitions_all.clone()
+                let mut definitions = definitions_all.clone();
+                if coordinator.unsettled() {
+                    definitions.push(wait::wait_tool_definition());
+                }
+                definitions
             };
             let request = build_completion_request(
                 None,
@@ -193,7 +213,12 @@ impl RigSubAgentRuntime {
                     .map_err(|e| e.to_string())?;
                 if coordinator.unsettled() {
                     messages.push(Message::assistant(&visible_text));
-                    coordinator.tasks.wait().await.map_err(|e| e.to_string())?;
+                    // 隐式等待：任一任务结算即唤醒（渐进响应语义 + 合并宽限）。
+                    coordinator
+                        .tasks
+                        .wait_for(&wait::WaitCondition::any_pending())
+                        .await
+                        .map_err(|e| e.to_string())?;
                     continue;
                 }
                 return Ok(truncate_tool_result(&visible_text));
@@ -223,20 +248,58 @@ impl RigSubAgentRuntime {
                 .map_err(|e| e.to_string())?;
             if tool_calls
                 .iter()
-                .any(|call| call.function.name == "wait_for_tools")
+                .any(|call| call.function.name == wait::WAIT_TOOL_NAME)
             {
-                let reason = if tool_calls.len() != 1 {
-                    "控制工具必须独占一批"
-                } else {
-                    coordinator.tasks.wait().await.map_err(|e| e.to_string())?;
-                    if coordinator.tasks.ready.is_empty() {
-                        "no_pending_tasks"
-                    } else {
-                        "tools_ready"
+                if tool_calls.len() != 1 {
+                    // 混批/独占违规：结果照常推入上下文，作为模型的纠错反馈
+                    //（与主循环同口径：结构化 JSON，reason=违规文案、ready 为空）。
+                    let text = wait::render_wait_result(
+                        wait::EXCLUSIVE_BATCH_VIOLATION,
+                        &[],
+                        coordinator.tasks.unsettled_count(),
+                    );
+                    for call in &tool_calls {
+                        messages.push(tool_result_message(call, text.clone()));
+                    }
+                    continue;
+                }
+                let waited = coordinator
+                    .tasks
+                    .wait_for(&wait::parse_wait_args(&tool_calls[0].function.arguments))
+                    .await;
+                let reason = match waited {
+                    Ok(reason) => reason,
+                    Err(error) => {
+                        // 与主循环出错路径同口径：先补齐配对结果再上抛，保持
+                        // 「assistant 调用必有紧随结果」的上下文不变量（当前
+                        // Memory 宿主出错即丢弃 messages，此为防御性对齐）。
+                        messages.push(tool_result_message(
+                            &tool_calls[0],
+                            wait::render_wait_result("cancelled_or_failed", &[], 0),
+                        ));
+                        return Err(error.to_string());
                     }
                 };
-                for call in &tool_calls {
-                    messages.push(tool_result_message(call, reason.into()));
+                // 与主循环同口径（对齐 DB 重载侧 strip_delivered_wait_pairs
+                // 的「ready 数组非空 = 交付了进展」判定，原因不限 tools_ready）：
+                // 有进展（就绪结算将由循环顶部 deliver 交付）时纯 wait 控制对
+                // 不进入上下文（回退已推入的 assistant 调用消息）；无进展
+                // （no_pending/timeout 空）保留结构化结果作反馈。
+                let ready = coordinator
+                    .tasks
+                    .ready
+                    .values()
+                    .filter(|c| c.delivery_message_id.is_none())
+                    .collect::<Vec<_>>();
+                if !ready.is_empty() {
+                    messages.pop();
+                } else {
+                    let text = wait::render_wait_result(
+                        reason.as_str(),
+                        &ready,
+                        coordinator.tasks.unsettled_count(),
+                    );
+                    messages.push(tool_result_message(&tool_calls[0], text));
                 }
                 continue;
             }

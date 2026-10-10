@@ -746,8 +746,11 @@ async fn slow_tool_runs_across_model_turns_and_runtime_delivers_once() {
     let mut hooks = RigLoopHooks::from_chat_spec(&spec());
     let (_cancel, rx) = watch::channel(false);
     let mut usage = UsageTracker::new();
+    // 只读工具的派发直返窗口已放宽到秒级（spec.rs 的 READONLY_DISPATCH_WINDOW_MS）：
+    // 首轮 read_file 的闸门要等第二轮 list_dir 运行才放行，故首轮派发会占满窗口
+    // 再转 accepted，超时上限相应放宽。
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(10),
         run_rig_loop(
             &fixture.db,
             &fixture.workspace_id,
@@ -852,7 +855,7 @@ async fn explicit_wait_is_event_driven_and_completion_causes_next_decision() {
         assert_eq!(model.request_count(), 2, "等待时不能请求模型轮询");
         gate.notify_one();
     };
-    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         tokio::join!(run, signal)
     })
     .await
@@ -865,9 +868,317 @@ async fn explicit_wait_is_event_driven_and_completion_causes_next_decision() {
             .iter()
             .filter(|m| m.tool_call_id.as_deref() == Some("wait"))
             .count(),
-        1
+        1,
+        "wait 控制对照常落库（审计与前端卡片语义不变）"
     );
     assert_eq!(messages.iter().filter(|m| m.role == "runtime").count(), 1);
+
+    // 条件注入：首轮无在途任务不提供 wait_for_tools；accepted 后才注入。
+    let requests = model.requests();
+    assert!(
+        !requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "wait_for_tools"),
+        "无在途任务时不应注入 wait_for_tools"
+    );
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "wait_for_tools"),
+        "有未结算任务时必须注入 wait_for_tools"
+    );
+    // P3：等待有进展后，wait 控制对不进入后续请求上下文；事实由 runtime
+    // 交付消息承载（最后一次请求含 tool_completion 观察）。
+    assert!(
+        !request_mentions_wait_control(&requests[2]),
+        "有进展的 wait 控制对不应进入后续请求：{:?}",
+        requests[2].chat_history
+    );
+    assert!(
+        request_has_tool_completion(&requests[2]),
+        "唤醒后的请求应携带 runtime 交付的工具完成观察"
+    );
+}
+
+/// 请求历史中是否出现 wait_for_tools 控制对（assistant 调用或工具结果）。
+fn request_mentions_wait_control(request: &CompletionRequest) -> bool {
+    request.chat_history.iter().any(|message| match message {
+        Message::Assistant { content, .. } => content.iter().any(|part| {
+            matches!(
+                part,
+                rig::message::AssistantContent::ToolCall(call)
+                    if call.function.name == "wait_for_tools"
+            )
+        }),
+        Message::User { content } => content.iter().any(|part| {
+            matches!(
+                part,
+                rig::message::UserContent::ToolResult(result) if result.name == "wait_for_tools"
+            )
+        }),
+        _ => false,
+    })
+}
+
+/// 请求历史中是否携带 runtime 交付的工具完成观察。
+fn request_has_tool_completion(request: &CompletionRequest) -> bool {
+    request.chat_history.iter().any(|message| {
+        matches!(message, Message::User { content } if content.iter().any(|part| {
+            matches!(part, rig::message::UserContent::Text(text)
+                if text.text.contains("tool_completion"))
+        }))
+    })
+}
+
+/// P0 join 语义：fan-out 批次默认一次等待全部结算、单次唤醒、同一轮请求前
+/// 一并交付；有进展的 wait 控制对不进入后续请求上下文（DB 照常落库）。
+#[tokio::test]
+async fn wait_all_joins_fanout_and_strips_control_pair_from_context() {
+    let fixture = Fixture::new();
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let observed_wait = waiting.clone();
+    let channel = Channel::new(move |body| {
+        if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if value["event"] == "runPhaseChanged" && value["data"]["phase"] == "waiting" {
+                observed_wait.notify_one();
+            }
+        }
+        Ok(())
+    });
+    let gate_a = Arc::new(tokio::sync::Notify::new());
+    let gate_b = Arc::new(tokio::sync::Notify::new());
+    let worker_a = gate_a.clone();
+    let worker_b = gate_b.clone();
+    let surface = RigToolSurface::new(vec![
+        PortableDynamicTool::new(
+            "read_file",
+            "blocked read A",
+            serde_json::json!({"type":"object"}),
+            move |_| {
+                let gate = worker_a.clone();
+                Box::pin(async move {
+                    gate.notified().await;
+                    Ok(ToolOutput::text("A 完成"))
+                })
+            },
+        ),
+        PortableDynamicTool::new(
+            "list_dir",
+            "blocked read B",
+            serde_json::json!({"type":"object"}),
+            move |_| {
+                let gate = worker_b.clone();
+                Box::pin(async move {
+                    gate.notified().await;
+                    Ok(ToolOutput::text("B 完成"))
+                })
+            },
+        ),
+    ]);
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("a", "read_file", serde_json::json!({})),
+            MockStreamEvent::tool_call("b", "list_dir", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::tool_call("wait", "wait_for_tools", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("都完成"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let (_cancel, rx) = watch::channel(false);
+    let mut usage = UsageTracker::new();
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    let run = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("并行读两项")],
+        vec![],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &channel,
+        rx,
+        &mut usage,
+    );
+    let signal = async {
+        waiting.notified().await;
+        assert_eq!(model.request_count(), 2, "等待时不能请求模型轮询");
+        gate_a.notify_one();
+        gate_b.notify_one();
+    };
+    // 只读派发窗口放宽到秒级：首批两个受阻调用占满窗口再转 accepted。
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(run, signal)
+    })
+    .await
+    .expect("两个任务结算后应单次唤醒");
+    assert_eq!(result.unwrap().plain_text(), "都完成");
+    assert_eq!(
+        model.request_count(),
+        3,
+        "join 语义：两个任务一次等待、一次唤醒"
+    );
+
+    let requests = model.requests();
+    assert!(
+        !request_mentions_wait_control(&requests[2]),
+        "有进展的 wait 控制对不应进入后续请求"
+    );
+    // P1a：首轮无在途任务不带快照；accepted 后请求的在途快照注入 preamble。
+    assert!(
+        !requests[0]
+            .preamble
+            .as_deref()
+            .unwrap_or_default()
+            .contains("在途工具任务"),
+        "首轮无在途任务不带快照"
+    );
+    let snapshot = requests[1].preamble.as_deref().unwrap_or_default();
+    assert!(
+        snapshot.contains("## 在途工具任务"),
+        "缺在途快照：{snapshot}"
+    );
+    assert!(
+        snapshot.contains("read_file") && snapshot.contains("list_dir"),
+        "快照应列出在途任务：{snapshot}"
+    );
+    let completions = requests[2]
+        .chat_history
+        .iter()
+        .filter(|message| {
+            matches!(message, Message::User { content } if content.iter().any(|part| {
+                matches!(part, rig::message::UserContent::Text(text) if text.text.contains("tool_completion"))
+            }))
+        })
+        .count();
+    assert_eq!(completions, 2, "两个完成观察应在同一轮请求前一并交付");
+
+    let messages = list_visible(&fixture);
+    assert_eq!(messages.iter().filter(|m| m.role == "runtime").count(), 2);
+    let wait_row = messages
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("wait"))
+        .expect("wait 控制对照常落库");
+    let payload: serde_json::Value =
+        serde_json::from_str(&wait_row.plain_text()).expect("wait 结果为 JSON");
+    assert_eq!(payload["reason"], "tools_ready");
+    assert_eq!(payload["ready"].as_array().map(Vec::len), Some(2));
+    assert_eq!(payload["pending_count"], 0);
+}
+
+/// 超时等待且无就绪结果：控制对保留在后续请求上下文中作反馈（防止上下文
+/// 逐字节不变导致退化式重复等待），结果 JSON 带 timeout 原因。
+#[tokio::test]
+async fn wait_timeout_keeps_feedback_pair_in_context() {
+    let fixture = Fixture::new();
+    // 用 mpsc 数 waiting 阶段：第一次是显式 wait（1s 超时自行到点，不放行），
+    // 第二次是答复后的隐式等待（放行闸门）。
+    let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let channel = Channel::new(move |body| {
+        if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if value["event"] == "runPhaseChanged" && value["data"]["phase"] == "waiting" {
+                let _ = phase_tx.send(());
+            }
+        }
+        Ok(())
+    });
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let worker_gate = gate.clone();
+    let surface = RigToolSurface::new(vec![PortableDynamicTool::new(
+        "read_file",
+        "blocked read",
+        serde_json::json!({"type":"object"}),
+        move |_| {
+            let gate = worker_gate.clone();
+            Box::pin(async move {
+                gate.notified().await;
+                Ok(ToolOutput::text("迟到结果"))
+            })
+        },
+    )]);
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("a", "read_file", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::tool_call(
+                "wait",
+                "wait_for_tools",
+                serde_json::json!({"timeout_secs": 1}),
+            ),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("还在跑"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("完成"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    let (_cancel, rx) = watch::channel(false);
+    let mut usage = UsageTracker::new();
+    let mut hooks = RigLoopHooks::from_chat_spec(&spec());
+    let run = run_rig_loop(
+        &fixture.db,
+        &fixture.workspace_id,
+        &model,
+        vec![Message::user("等待会超时")],
+        vec![],
+        &surface,
+        &DirectToolExecution,
+        None::<&RigSummaryModel<'_, MockCompletionModel>>,
+        &mut hooks,
+        &channel,
+        rx,
+        &mut usage,
+    );
+    let signal = async {
+        phase_rx.recv().await; // 显式 wait 进入等待（1s 超时到点自行唤醒）
+        phase_rx.recv().await; // 答复后的隐式等待
+        gate.notify_one();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(run, signal)
+    })
+    .await
+    .expect("超时等待应按时交回决策权");
+    assert_eq!(result.unwrap().plain_text(), "完成");
+    assert_eq!(model.request_count(), 4);
+
+    let requests = model.requests();
+    assert!(
+        request_mentions_wait_control(&requests[2]),
+        "无进展的超时控制对应保留在下一轮请求上下文中作反馈"
+    );
+    assert!(
+        request_has_tool_completion(&requests[3]),
+        "任务完成后应经 runtime 观察交付"
+    );
+
+    let messages = list_visible(&fixture);
+    let wait_row = messages
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some("wait"))
+        .expect("wait 控制对照常落库");
+    let payload: serde_json::Value =
+        serde_json::from_str(&wait_row.plain_text()).expect("wait 结果为 JSON");
+    assert_eq!(payload["reason"], "timeout");
+    assert_eq!(payload["ready"].as_array().map(Vec::len), Some(0));
+    assert_eq!(payload["pending_count"], 1);
 }
 
 // ─── 取消路径回归（R26/R27/R28） ────────────────────────────────────────────
@@ -1025,7 +1336,8 @@ async fn cancel_during_wait_after_reply_keeps_the_persisted_reply() {
         // 放行慢工具 worker，保证 shutdown 的 drain 能收尾。
         gate.notify_one();
     };
-    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    // 只读派发窗口放宽到秒级后，首轮 dispatch 占满窗口再转 accepted。
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         tokio::join!(run, signal)
     })
     .await

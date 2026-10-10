@@ -40,6 +40,32 @@ use tokio::{
 
 static LEAF_LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
+/// 叶子执行全局并发上限：生产为单机单应用的 4。测试进程内数十个 run 循环
+/// 共用此静态信号量——4 个额度会被少数闸门慢测试挤占，让无关测试的 worker
+/// 排队错过派发窗口（flaky 根源）；测试构建放宽到与每 run 叶子预算
+/// （`budgets.rs` 的 32）同量级。
+#[cfg(not(test))]
+const LEAF_CONCURRENCY: usize = 4;
+#[cfg(test)]
+const LEAF_CONCURRENCY: usize = 32;
+
+/// 任务级控制块：派发轮次、任务取消通道、是否已进入实际执行、入队时刻
+/// （在途快照需要入队时刻计算已耗时）。
+pub(crate) struct TaskControl {
+    pub round: u64,
+    pub cancel_tx: watch::Sender<bool>,
+    pub active: Arc<std::sync::atomic::AtomicBool>,
+    pub enqueued_at: Instant,
+}
+
+/// 在途任务快照行（注入每轮 preamble 的数据源；渲染见 `wait::render_pending_snapshot`）。
+pub(crate) struct PendingTask {
+    pub task_id: String,
+    pub tool_name: String,
+    pub running: bool,
+    pub elapsed: Duration,
+}
+
 /// 取消/超时信号发出后，在途 worker 收敛的兜底上限（app_policy 的统一超时
 /// 收口与此处共用同一上限，单一出处防止两层数值漂移）。
 ///
@@ -48,6 +74,10 @@ static LEAF_LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
 /// 卡死的 worker，而不是把正常的慢工具误判为未收敛；到达上限不丢弃在途调用
 /// （见 `hand_off`），只把监督权转交后台。
 pub(super) const SETTLE_CEILING: Duration = Duration::from_secs(600);
+
+/// wait 唤醒条件满足后的合并宽限：把近同时完成的结算一次性吸收交付，
+/// 避免 fan-out 批次被拆成多次唤醒（每次唤醒都是一轮完整模型请求）。
+const WAIT_COALESCE_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, thiserror::Error)]
 #[error("Agent 运行已取消")]
@@ -63,11 +93,14 @@ pub(crate) struct TaskScheduler {
     jobs: JoinSet<Result<i64>>,
     pub ready: BTreeMap<i64, ToolCompletion>,
     pub recovered: std::collections::BTreeSet<i64>,
+    /// 本 run 内已结算（拿到终态 completion）的任务 id 全集：含失败/取消终态，
+    /// 交付与观察确认后仍保留——wait 条件判定的唯一事实来源。
+    settled: std::collections::BTreeSet<String>,
     cancel: watch::Receiver<bool>,
     prepare: ResultPreparer,
     budgets: Arc<super::budgets::RunBudgets>,
     delivery_permits: BTreeMap<String, tokio::sync::OwnedSemaphorePermit>,
-    controls: BTreeMap<String, (u64, watch::Sender<bool>, Arc<std::sync::atomic::AtomicBool>)>,
+    controls: BTreeMap<String, TaskControl>,
     run_lease: Option<ActiveRunHandle>,
     events: tauri::ipc::Channel<crate::agent::rig_ext::events::AgentEvent>,
     /// 可选的第二条事件通道：只有当宿主需要把叶子台账的 `ToolRunUpdated`
@@ -105,6 +138,7 @@ impl TaskScheduler {
             jobs: JoinSet::new(),
             ready: BTreeMap::new(),
             recovered: Default::default(),
+            settled: Default::default(),
             cancel,
             prepare,
             budgets,
@@ -125,6 +159,7 @@ impl TaskScheduler {
             completion.fatal = false;
             completion.usage_json = None;
             self.recovered.insert(completion.event_id);
+            self.settled.insert(completion.tool_run_id.clone());
             self.ready.insert(completion.event_id, completion);
         }
         Ok(())
@@ -134,10 +169,41 @@ impl TaskScheduler {
         !self.calls.is_empty()
     }
 
-    pub(crate) fn delivered(&mut self, task: &str) -> Option<ToolCall> {
+    pub(crate) fn delivered(&mut self, task: &str) {
         self.delivery_permits.remove(task);
         self.controls.remove(task);
-        self.calls.remove(task)
+        self.calls.remove(task);
+    }
+
+    /// 尚未结算（无终态 completion）的在途任务快照，供 wait 条件判定与
+    /// preamble 在途清单使用。
+    pub(crate) fn pending_tasks(&self) -> Vec<PendingTask> {
+        let now = Instant::now();
+        self.calls
+            .iter()
+            .filter(|(id, _)| !self.settled.contains(*id))
+            .map(|(id, call)| {
+                let control = self.controls.get(id);
+                PendingTask {
+                    task_id: id.clone(),
+                    tool_name: call.function.name.clone(),
+                    running: control.is_some_and(|control| {
+                        control.active.load(std::sync::atomic::Ordering::Acquire)
+                    }),
+                    elapsed: control.map_or(Duration::ZERO, |control| {
+                        now.saturating_duration_since(control.enqueued_at)
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    /// 尚未结算的在途任务数（wait 结果 JSON 的 pending_count）。
+    pub(crate) fn unsettled_count(&self) -> usize {
+        self.calls
+            .keys()
+            .filter(|id| !self.settled.contains(*id))
+            .count()
     }
 
     /// 按 task_id 取回并移除自身结算（共享调度器下每个宿主只取自己的那条）。
@@ -164,15 +230,39 @@ impl TaskScheduler {
             tokio::task::spawn_blocking(move || db.pending_tool_completions(&run, &scope, event))
                 .await??;
         for row in rows {
+            self.settled.insert(row.tool_run_id.clone());
             self.ready.entry(row.event_id).or_insert(row);
         }
         Ok(())
     }
+
+    /// fatal 结算守卫：与 `drive` 同语义——发现致命故障即请求取消并停止循环。
+    fn ensure_no_fatal(&self) -> Result<()> {
+        if self.ready.values().any(|event| event.fatal) {
+            if let Some(lease) = &self.run_lease {
+                lease.request_cancel();
+            }
+            anyhow::bail!("工具发生致命故障，已停止模型请求与新工具调用");
+        }
+        Ok(())
+    }
+
+    /// 唤醒条件满足后的合并宽限：排空近同时完成的结算，一次唤醒交付一批，
+    /// 避免 fan-out 批次被拆成多次唤醒。无在途 job 时立即返回。
+    async fn coalesce_ready(&mut self) -> Result<()> {
+        let deadline = Instant::now() + WAIT_COALESCE_GRACE;
+        while !self.jobs.is_empty() {
+            tokio::select! {
+                job = self.jobs.join_next() => {
+                    if let Some(job) = job { self.absorb(job.context("工具 worker 退出异常")??).await?; }
+                }
+                _ = tokio::time::sleep_until(deadline) => break,
+            }
+        }
+        Ok(())
+    }
     pub(crate) async fn drive<F: std::future::Future>(&mut self, future: F) -> Result<F::Output> {
-        anyhow::ensure!(
-            !self.ready.values().any(|event| event.fatal),
-            "工具发生致命故障，停止模型请求"
-        );
+        self.ensure_no_fatal()?;
         self.runtime.phase("deciding");
         tokio::pin!(future);
         let mut cancel = self.cancel.clone();
@@ -185,10 +275,7 @@ impl TaskScheduler {
                 _ = cancel.changed() => { return Err(RuntimeCancelled.into()); },
                 job = self.jobs.join_next(), if !self.jobs.is_empty() => {
                     if let Some(job) = job { self.absorb(job.context("工具 worker 退出异常")??).await?; }
-                    if self.ready.values().any(|event| event.fatal) {
-                        if let Some(lease) = &self.run_lease { lease.request_cancel(); }
-                        anyhow::bail!("工具发生致命故障，已停止模型请求与新工具调用");
-                    }
+                    self.ensure_no_fatal()?;
                 }
             }
         }
@@ -214,34 +301,80 @@ impl TaskScheduler {
         }
         Ok(())
     }
-    pub(crate) async fn wait(&mut self) -> Result<()> {
+    /// 条件等待（`wait_for_tools` 显式等待与答复后隐式等待的唯一实现）：
+    /// 挂起决策直到目标任务结算、取消或超时；事件驱动，无轮询。条件满足后
+    /// 经合并宽限排空近同时完成的结算，一次唤醒交付一批。
+    pub(crate) async fn wait_for(
+        &mut self,
+        condition: &super::wait::WaitCondition,
+    ) -> Result<super::wait::WaitReason> {
+        use super::wait::{WaitMode, WaitReason};
         self.runtime.phase("waiting");
-        self.collect_ready().await?;
-        if !self.ready.is_empty() || !self.pending() {
-            return Ok(());
-        }
+        // 目标集：显式 task_ids 取与已知任务的交集（幻觉 id 被过滤）；缺省为
+        // 当前全部未交付任务（已结算未交付的即刻满足条件，不会阻塞）。
+        let targets: Vec<String> = match &condition.targets {
+            Some(ids) => ids
+                .iter()
+                .filter(|id| self.calls.contains_key(*id))
+                .cloned()
+                .collect(),
+            None => self.calls.keys().cloned().collect(),
+        };
+        let deadline = condition.timeout.map(|timeout| Instant::now() + timeout);
         let mut cancel = self.cancel.clone();
-        if *cancel.borrow() {
-            return Err(RuntimeCancelled.into());
+        loop {
+            self.collect_ready().await?;
+            self.ensure_no_fatal()?;
+            if targets.is_empty() {
+                return Ok(WaitReason::NoPendingTasks);
+            }
+            let met = match condition.mode {
+                WaitMode::All => targets.iter().all(|id| self.settled.contains(id)),
+                WaitMode::Any => targets.iter().any(|id| self.settled.contains(id)),
+            };
+            if met {
+                self.coalesce_ready().await?;
+                self.ensure_no_fatal()?;
+                return Ok(WaitReason::Ready);
+            }
+            // 条件未满足但已无在途 worker（如结算监督已移交后台）：不悬空等待，
+            // 交回决策权，由循环顶部交付现有结果。以独立原因如实上报，避免
+            // 渲染出 reason=tools_ready 而 ready 为空的自相矛盾反馈。
+            if self.jobs.is_empty() {
+                return Ok(WaitReason::NoActiveWorkers);
+            }
+            if *cancel.borrow() {
+                return Err(RuntimeCancelled.into());
+            }
+            tokio::select! {
+                job = self.jobs.join_next() => {
+                    if let Some(job) = job { self.absorb(job.context("工具 worker 退出异常")??).await?; }
+                }
+                _ = cancel.changed() => return Err(RuntimeCancelled.into()),
+                _ = async {
+                    match deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.collect_ready().await?;
+                    self.ensure_no_fatal()?;
+                    return Ok(WaitReason::Timeout);
+                }
+            }
         }
-        tokio::select! {
-            job = self.jobs.join_next() => {
-                if let Some(job) = job { self.absorb(job.context("工具 worker 退出异常")??).await?; }
-            },
-            _ = cancel.changed() => return Err(RuntimeCancelled.into()),
-        }
-        Ok(())
     }
     pub(crate) fn cancel_all(&self) {
-        for (_, sender, _) in self.controls.values() {
-            sender.send_replace(true);
+        for control in self.controls.values() {
+            control.cancel_tx.send_replace(true);
         }
     }
 
     pub(crate) fn cancel_queued(&self, round: Option<u64>) {
-        for (dispatch_round, sender, active) in self.controls.values() {
-            if round.is_none_or(|r| r == *dispatch_round)
-                && active
+        for control in self.controls.values() {
+            if round.is_none_or(|r| r == control.round)
+                && control
+                    .active
                     .compare_exchange(
                         false,
                         true,
@@ -250,7 +383,7 @@ impl TaskScheduler {
                     )
                     .is_ok()
             {
-                sender.send_replace(true);
+                control.cancel_tx.send_replace(true);
             }
         }
     }
@@ -308,10 +441,8 @@ impl TaskScheduler {
         if self.jobs.is_empty() {
             return Ok(());
         }
-        if !self.jobs.is_empty() {
-            if let Some(lease) = &self.run_lease {
-                lease.request_cancel();
-            }
+        if let Some(lease) = &self.run_lease {
+            lease.request_cancel();
         }
         self.cancel_all();
         let runtime = self.runtime.clone();
@@ -456,5 +587,119 @@ mod tests {
             "同一结算不得被取两次"
         );
         assert!(!scheduler.has_jobs(), "未入队时没有在途 job");
+    }
+
+    use super::super::wait::{WaitCondition, WaitMode, WaitReason};
+
+    /// 返回的 cancel sender 必须由调用方持有：sender 一掉线，接收端的
+    /// `changed()` 立即按「通道关闭 = 取消」收口。
+    #[allow(clippy::type_complexity)]
+    fn wait_scheduler(
+        dir_name: &str,
+    ) -> (
+        crate::test_util::TempDirGuard,
+        watch::Sender<bool>,
+        TaskScheduler,
+    ) {
+        let dir = crate::test_util::TempDirGuard::new(dir_name);
+        let db = DispatcherDb::new(dir.path().join("jkbot.sqlite3")).expect("open temp db");
+        let (cancel_tx, cancel) = watch::channel(false);
+        let scheduler = TaskScheduler::new(
+            db,
+            "workspace".into(),
+            cancel,
+            crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
+            tauri::ipc::Channel::new(|_| Ok(())),
+            None,
+        );
+        (dir, cancel_tx, scheduler)
+    }
+
+    fn pending_call(task_id: &str) -> ToolCall {
+        ToolCall::from_wire(
+            format!("call-{task_id}"),
+            rig::message::ToolFunction {
+                name: "read_file".into(),
+                arguments: serde_json::json!({}),
+            },
+        )
+    }
+
+    /// 无在途任务时立即返回 NoPendingTasks（竞态兜底：工具面只在有未结算
+    /// 任务时才注入 wait_for_tools，此处守卫幻觉调用与竞态）。
+    #[tokio::test]
+    async fn wait_for_without_tasks_returns_no_pending() {
+        let (_dir, _cancel_tx, mut scheduler) = wait_scheduler("rig-wait-empty");
+        let reason = scheduler
+            .wait_for(&WaitCondition::any_pending())
+            .await
+            .expect("空等待应立即返回");
+        assert_eq!(reason, WaitReason::NoPendingTasks);
+    }
+
+    /// 目标子集全部结算即满足 join 条件——即便仍有其它在途任务也不阻塞。
+    #[tokio::test]
+    async fn wait_for_subset_returns_ready_when_targets_settled() {
+        let (_dir, _cancel_tx, mut scheduler) = wait_scheduler("rig-wait-subset");
+        for id in ["a", "b", "c"] {
+            scheduler.calls.insert(id.into(), pending_call(id));
+        }
+        scheduler.settled.insert("a".into());
+        scheduler.settled.insert("b".into());
+        let condition = WaitCondition {
+            targets: Some(["a".to_string(), "b".to_string()].into_iter().collect()),
+            mode: WaitMode::All,
+            timeout: None,
+        };
+        let reason = scheduler
+            .wait_for(&condition)
+            .await
+            .expect("目标子集已结算应满足条件");
+        assert_eq!(reason, WaitReason::Ready);
+        // any 模式：任一目标结算即满足。
+        let condition = WaitCondition {
+            targets: Some(["c".to_string(), "b".to_string()].into_iter().collect()),
+            mode: WaitMode::Any,
+            timeout: None,
+        };
+        let reason = scheduler
+            .wait_for(&condition)
+            .await
+            .expect("任一结算即满足");
+        assert_eq!(reason, WaitReason::Ready);
+    }
+
+    /// 显式幻觉 id 被过滤：全部不在已知任务中时视为无在途任务。
+    #[tokio::test]
+    async fn wait_for_unknown_targets_returns_no_pending() {
+        let (_dir, _cancel_tx, mut scheduler) = wait_scheduler("rig-wait-unknown");
+        let condition = WaitCondition {
+            targets: Some(["ghost".to_string()].into_iter().collect()),
+            mode: WaitMode::All,
+            timeout: None,
+        };
+        let reason = scheduler
+            .wait_for(&condition)
+            .await
+            .expect("幻觉 id 被过滤");
+        assert_eq!(reason, WaitReason::NoPendingTasks);
+    }
+
+    /// 声明 timeout_secs 到点返回 Timeout 并交回决策权（虚拟时间下立即推进）。
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_timeout_returns_timeout() {
+        let (_dir, _cancel_tx, mut scheduler) = wait_scheduler("rig-wait-timeout");
+        scheduler.calls.insert("a".into(), pending_call("a"));
+        // 永不结算的在途 worker：保证等待真正挂起，直到超时兜底。
+        scheduler
+            .jobs
+            .spawn(async { std::future::pending::<Result<i64>>().await });
+        let condition = WaitCondition {
+            targets: None,
+            mode: WaitMode::All,
+            timeout: Some(Duration::from_secs(1)),
+        };
+        let reason = scheduler.wait_for(&condition).await.expect("超时应返回");
+        assert_eq!(reason, WaitReason::Timeout);
     }
 }

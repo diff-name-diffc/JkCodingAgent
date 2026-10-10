@@ -121,15 +121,23 @@ where
             .preamble_for_iteration
             .as_mut()
             .and_then(|build| build(iteration));
+        // 在途任务快照：让模型对「等不等、等什么」有据可依（确定性生成，不调 LLM）。
+        let preamble = match wait::render_pending_snapshot(&coordinator.tasks.pending_tasks()) {
+            Some(snapshot) => Some(match preamble {
+                Some(base) => format!("{base}\n\n{snapshot}"),
+                None => snapshot,
+            }),
+            None => preamble,
+        };
         let request = build_completion_request(
             preamble,
             effective_messages,
             {
                 let mut definitions = surface.definitions();
-                definitions.push(rig::completion::ToolDefinition {
-                name: "wait_for_tools".into(), description: "等待正在执行的工具；没有独立工作时主动调用，必须独占一批。运行时会在工具完成后自动唤醒。".into(),
-                parameters: serde_json::json!({"type":"object","properties":{"reason":{"type":"string"}},"additionalProperties":false})
-            });
+                // 仅当存在未结算任务时才提供等待工具：结构性消除空调用。
+                if coordinator.unsettled() {
+                    definitions.push(wait::wait_tool_definition());
+                }
                 definitions
             },
             hooks.request_max_tokens,
@@ -273,7 +281,12 @@ where
                 message_ids.push(Some(reply.id.clone()));
                 // 答复已落库并发事件：等待期间被取消时直接以该答复收口，
                 // 不再经外层取消路径重复落一条「已停止」stub（幂等）。
-                if let Err(error) = coordinator.tasks.wait().await {
+                // 隐式等待：任一任务结算即唤醒（渐进响应语义 + 合并宽限）。
+                let wait = coordinator
+                    .tasks
+                    .wait_for(&wait::WaitCondition::any_pending())
+                    .await;
+                if let Err(error) = wait {
                     if error.is::<scheduler::RuntimeCancelled>() {
                         return Ok(reply);
                     }
@@ -338,7 +351,7 @@ where
 
         let has_wait = tool_calls
             .iter()
-            .any(|c| c.function.name == "wait_for_tools");
+            .any(|c| c.function.name == wait::WAIT_TOOL_NAME);
         let terminal = tool_calls
             .iter()
             .any(|c| matches!(c.function.name.as_str(), "message" | "submit_workflow"));
@@ -353,46 +366,70 @@ where
         let control_error = if mixed_protocol {
             Some("协议工具不能与业务工具混批")
         } else if (has_wait || terminal) && tool_calls.len() != 1 {
-            Some("控制工具必须独占一批")
+            Some(wait::EXCLUSIVE_BATCH_VIOLATION)
         } else if terminal && coordinator.unsettled() {
             Some("pending_tasks_require_wait")
         } else {
             None
         };
         if has_wait || control_error.is_some() {
-            let wait_error = if control_error.is_none() {
-                coordinator.tasks.wait().await.err()
+            // 纯 wait 批执行条件等待（wait_for_tools 独占一批已由 control_error
+            // 保证）；混批/独占/协议屏障违规不等待，直接以违规文案立即应答。
+            let waited = if control_error.is_none() {
+                Some(
+                    coordinator
+                        .tasks
+                        .wait_for(&wait::parse_wait_args(&tool_calls[0].function.arguments))
+                        .await,
+                )
             } else {
                 None
             };
-            let reason = if wait_error.is_some() {
-                "cancelled_or_failed"
-            } else {
-                control_error.unwrap_or(if coordinator.tasks.ready.is_empty() {
-                    "no_pending_tasks"
-                } else {
-                    "tools_ready"
-                })
-            };
-            let text = serde_json::json!({
-                "reason": reason,
-                "task_ids": coordinator
+            // 与 DB 重载侧 `strip_delivered_wait_pairs` 同口径：结果 JSON 的
+            // ready 数组非空 = 等待交付了进展（原因不限 tools_ready——timeout
+            // 但部分就绪同样交付了进展，事实由循环顶部 deliver 的 runtime
+            // 消息承载），控制对不进入模型上下文，只留 DB 与前端事件。
+            let ready = match &waited {
+                Some(Ok(_)) => coordinator
                     .tasks
                     .ready
                     .values()
-                    .map(|r| &r.tool_run_id)
+                    .filter(|c| c.delivery_message_id.is_none())
                     .collect::<Vec<_>>(),
-            })
-            .to_string();
+                _ => Vec::new(),
+            };
+            let text = match &waited {
+                Some(Ok(reason)) => wait::render_wait_result(
+                    reason.as_str(),
+                    &ready,
+                    coordinator.tasks.unsettled_count(),
+                ),
+                Some(Err(_)) => wait::render_wait_result("cancelled_or_failed", &[], 0),
+                None => wait::render_wait_result(
+                    control_error.unwrap_or("control_rejected"),
+                    &[],
+                    coordinator.tasks.unsettled_count(),
+                ),
+            };
             // 与 coordinator::dispatch 的拒绝路径同一收口：落库 + ToolFinished
             // 事件（控制类调用不发 ToolStarted，与立即应答语义一致），保证
             // 已发的 ToolPlanned 必有终态，前端不悬挂幽灵卡片。
             let (results, last_result_id) = coordinator
                 .settle_unexecuted_batch(&tool_calls, &text, on_event)
                 .await?;
-            messages.push(Message::User { content: results });
-            message_ids.push(last_result_id);
-            if let Some(error) = wait_error {
+            // 无进展（no_pending/timeout 空/违规拒绝）照常推入，作为模型的
+            // 纠错反馈，防止上下文不变导致退化式重复调用。
+            let made_progress = !ready.is_empty();
+            if made_progress {
+                // 成对回退此前推入的 assistant wait 调用消息，保持配对不变量
+                //（DB 侧两行均保留；重载装配由 strip_delivered_wait_pairs 同口径剔除）。
+                messages.pop();
+                message_ids.pop();
+            } else {
+                messages.push(Message::User { content: results });
+                message_ids.push(last_result_id);
+            }
+            if let Some(Err(error)) = waited {
                 return Err(error);
             }
             continue;

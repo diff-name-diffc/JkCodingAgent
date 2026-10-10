@@ -244,22 +244,25 @@ async fn child_tools_cross_decision_rounds_without_writing_parent_messages() {
     };
     invocation
         .scope(async {
-            let mut coordinator = Coordinator::new(TaskScheduler::new(
-                deps.db.clone(),
-                session.id.clone(),
-                rx,
-                crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
-                runtime.loop_events.clone(),
-                None,
-            ));
-            coordinator.host = LoopHost::Memory;
+            let mut coordinator = Coordinator::new(
+                TaskScheduler::new(
+                    deps.db.clone(),
+                    session.id.clone(),
+                    rx,
+                    crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
+                    runtime.loop_events.clone(),
+                    None,
+                ),
+                LoopHost::Memory,
+            );
             let mut messages = vec![Message::system("test"), Message::user("run A and B")];
             let mut usage = SubAgentUsage::default();
             let mut forced = false;
             let mut iteration = 0;
             let start = Instant::now();
+            // 只读派发窗口放宽到秒级：首轮 read_file 受阻时占满窗口再转 accepted。
             let result = tokio::time::timeout(
-                Duration::from_secs(5),
+                Duration::from_secs(10),
                 runtime.run_loop(
                     &model,
                     &mut messages,
@@ -285,6 +288,158 @@ async fn child_tools_cross_decision_rounds_without_writing_parent_messages() {
                 .pending_tool_completions("root", &coordinator.tasks.scope_id, i64::MAX)
                 .unwrap()
                 .is_empty());
+            coordinator.tasks.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+/// 子智能体的 wait_for_tools 与主循环同口径：条件等待事件驱动唤醒（零轮询），
+/// 有进展的 wait 控制对不进入上下文，完成观察经 deliver 送达。
+#[tokio::test]
+async fn child_wait_wakes_on_completion_and_strips_control_pair() {
+    use crate::agent::db::NewToolRun;
+    use crate::agent::rig_ext::r#loop::{
+        coordinator::Coordinator, host::LoopHost, invocation::ToolInvocationContext,
+        scheduler::TaskScheduler,
+    };
+    use rig::{
+        message::UserContent,
+        test_utils::{MockCompletionModel, MockStreamEvent},
+        tool::ToolOutput,
+    };
+    let temp = crate::test_util::TempDirGuard::new("rig-child-wait");
+    let mut deps = test_deps(temp.path());
+    let session = deps.db.create_chat_session("child wait", None).unwrap();
+    deps.workspace_id = session.id.clone();
+    let parent = deps
+        .db
+        .create_tool_run(NewToolRun {
+            workspace_id: session.id.clone(),
+            tool_call_id: "parent-call".into(),
+            tool_name: "call_sub_agent".into(),
+            provider: "builtin".into(),
+            category: "agent".into(),
+            arguments_json: "{}".into(),
+            effective_arguments_json: "{}".into(),
+            metadata_json: "{}".into(),
+        })
+        .unwrap();
+    let spec = PurposeModelSpec {
+        api_key: "test".into(),
+        api_base: "http://127.0.0.1:1/v1".into(),
+        model: "mock".into(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: false,
+    };
+    // 允许列表只填构建期可用的工具；实际工具面在构建后直接覆写（与
+    // child_tools_cross_decision_rounds 测试同一做法——build 会校验执行环境）。
+    let mut cfg = config(vec!["notify_user_progress"]);
+    cfg.max_iterations = 6;
+    let mut runtime = RigSubAgentRuntime::build(&RigSubAgentRequest {
+        config: &cfg,
+        parent_spec: &spec,
+        deps: &deps,
+        task: "读文件并等待",
+        parent_tool_call_id: "parent-call",
+        app_handle: None,
+        session_id: &session.id,
+        cancel_rx: None,
+    })
+    .unwrap();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let worker_gate = gate.clone();
+    runtime.surface = vec![PortableDynamicTool::new(
+        "read_file",
+        "blocked read",
+        serde_json::json!({"type":"object"}),
+        move |_| {
+            let gate = worker_gate.clone();
+            Box::pin(async move {
+                gate.notified().await;
+                Ok(ToolOutput::text("迟到结果"))
+            })
+        },
+    )];
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
+            MockStreamEvent::tool_call("a", "read_file", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::tool_call("w", "wait_for_tools", serde_json::json!({})),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+        vec![
+            MockStreamEvent::text("完成"),
+            MockStreamEvent::final_response_with_total_tokens(1),
+        ],
+    ]);
+    // 闸门定时放行（越过只读派发窗口），保证走 accepted + 等待唤醒路径。
+    // 3s ≫ 1s 派发窗口：慢 CI 上首轮请求/派发启动的累计延迟也吃不完余量，
+    // 避免窗口内直接交付让 wait 退化为 no_pending（时序余量不足的 flaky 先例
+    // 见 scheduler.rs 的 LEAF_CONCURRENCY 注释）。
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+        gate.notify_one();
+    });
+    let (_cancel, rx) = watch::channel(false);
+    let invocation = ToolInvocationContext {
+        workspace_id: session.id.clone(),
+        agent_run_id: "root".into(),
+        task_id: parent.id,
+        tool_call_id: "parent-call".into(),
+        root_request_message_id: "anchor".into(),
+        cancel_rx: rx.clone(),
+        prepared_arguments: None,
+    };
+    invocation
+        .scope(async {
+            let mut coordinator = Coordinator::new(
+                TaskScheduler::new(
+                    deps.db.clone(),
+                    session.id.clone(),
+                    rx,
+                    crate::agent::rig_ext::tool_result::prepare::raw_preparer(),
+                    runtime.loop_events.clone(),
+                    None,
+                ),
+                LoopHost::Memory,
+            );
+            let mut messages = vec![Message::system("test"), Message::user("读文件并等待")];
+            let mut usage = SubAgentUsage::default();
+            let mut forced = false;
+            let mut iteration = 0;
+            let start = Instant::now();
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                runtime.run_loop(
+                    &model,
+                    &mut messages,
+                    &mut usage,
+                    start,
+                    start + Duration::from_secs(10),
+                    &mut forced,
+                    &mut iteration,
+                    &mut coordinator,
+                ),
+            )
+            .await
+            .expect("完成事件应唤醒等待")
+            .unwrap();
+            assert_eq!(result, "完成");
+            assert_eq!(model.request_count(), 3, "等待期间不得轮询模型");
+            // 有进展的 wait 控制对不留在上下文；完成观察经 deliver 送达。
+            let has_wait_result = messages.iter().any(|message| {
+                matches!(message, Message::User { content } if content.iter().any(|part| {
+                    matches!(part, UserContent::ToolResult(result) if result.name == "wait_for_tools")
+                }))
+            });
+            assert!(!has_wait_result, "有进展的 wait 控制对不应留在上下文");
+            let encoded = serde_json::to_string(&messages).unwrap();
+            assert!(encoded.contains("tool_completion"), "缺完成观察：{encoded}");
+            assert_eq!(deps.db.count_visible_messages(&session.id).unwrap(), 0);
             coordinator.tasks.shutdown().await.unwrap();
         })
         .await;

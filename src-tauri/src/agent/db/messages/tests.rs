@@ -512,3 +512,131 @@ async fn load_llm_history_repairs_unanswered_tool_calls() {
     );
     assert_eq!(history[3].name.as_deref(), Some("ssh_exec"));
 }
+
+/// wait_for_tools 控制对的装配过滤：交付过进展的纯 wait 对（assistant 调用 +
+/// 配对结果）不进入 LLM 上下文——事实由 runtime 观察消息承载；无进展的等待
+/// 结果（timeout 空 ready / no_pending）保留，作为模型的纠错反馈。判定口径
+/// = 结果 JSON 的 ready 数组非空（原因不限 tools_ready，timeout+部分就绪
+/// 同样算交付了进展），与运行中内存侧严格同构。
+#[tokio::test]
+async fn load_llm_history_strips_delivered_wait_pairs() {
+    use crate::agent::db::{FunctionCall, OutboundToolCall};
+
+    fn wait_call(id: &str) -> OutboundToolCall {
+        OutboundToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "wait_for_tools".into(),
+                arguments: "{}".into(),
+            },
+        }
+    }
+
+    let (db, _dir) = test_db();
+    let session = db
+        .create_chat_session("wait 过滤", None)
+        .expect("create session");
+    let session_id = session.id;
+
+    add_text_message(&db, &session_id, "user", "跑两个任务");
+    // 交付过进展的 wait 对：应被成对剔除。
+    crate::agent::common::persist_tool_calls_message(
+        &db,
+        &session_id,
+        "",
+        &[wait_call("w1")],
+        "",
+        None,
+    )
+    .await
+    .expect("persist wait call w1");
+    db.add_visible_tool_result_async(
+        &session_id,
+        r#"{"reason":"tools_ready","ready":[{"task_id":"t1","tool":"read_file","status":"succeeded"}],"pending_count":0}"#,
+        r#"{"reason":"tools_ready","ready":[{"task_id":"t1","tool":"read_file","status":"succeeded"}],"pending_count":0}"#,
+        Some("w1"),
+        Some("wait_for_tools"),
+        Some("raw"),
+        &[],
+    )
+    .await
+    .expect("persist wait result w1");
+    add_text_message(
+        &db,
+        &session_id,
+        "runtime",
+        r#"{"kind":"tool_completion","task_id":"t1"}"#,
+    );
+    // 无进展的 wait 对（timeout 且 ready 为空）：保留作反馈。
+    crate::agent::common::persist_tool_calls_message(
+        &db,
+        &session_id,
+        "",
+        &[wait_call("w2")],
+        "",
+        None,
+    )
+    .await
+    .expect("persist wait call w2");
+    db.add_visible_tool_result_async(
+        &session_id,
+        r#"{"reason":"timeout","ready":[],"pending_count":1}"#,
+        r#"{"reason":"timeout","ready":[],"pending_count":1}"#,
+        Some("w2"),
+        Some("wait_for_tools"),
+        Some("raw"),
+        &[],
+    )
+    .await
+    .expect("persist wait result w2");
+    // timeout 但 ready 非空（等待期间恰有其它任务就绪）：ready 非空 = 交付了
+    // 进展，仍应成对剔除。该口径与主循环/子智能体内存侧的 made_progress
+    // 判定三方一致（原因不限 tools_ready），本用例锁定之，防止未来某侧
+    // 保守化（要求 reason == tools_ready）后静默分叉。
+    crate::agent::common::persist_tool_calls_message(
+        &db,
+        &session_id,
+        "",
+        &[wait_call("w3")],
+        "",
+        None,
+    )
+    .await
+    .expect("persist wait call w3");
+    db.add_visible_tool_result_async(
+        &session_id,
+        r#"{"reason":"timeout","ready":[{"task_id":"t2","tool":"read_file","status":"succeeded"}],"pending_count":1}"#,
+        r#"{"reason":"timeout","ready":[{"task_id":"t2","tool":"read_file","status":"succeeded"}],"pending_count":1}"#,
+        Some("w3"),
+        Some("wait_for_tools"),
+        Some("raw"),
+        &[],
+    )
+    .await
+    .expect("persist wait result w3");
+    add_text_message(&db, &session_id, "assistant", "结论");
+
+    let history = db.load_llm_history(&session_id).expect("load llm history");
+    let shape = history
+        .iter()
+        .map(|message| {
+            (
+                message.role.as_str(),
+                message.tool_call_id.as_deref().unwrap_or("-"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shape,
+        vec![
+            ("user", "-"),
+            ("runtime", "-"),
+            ("assistant", "-"),
+            ("tool", "w2"),
+            ("assistant", "-"),
+        ],
+        "有进展的 wait 对（w1 与 timeout+ready 非空的 w3）应成对剔除，\
+        无进展的（w2）保留"
+    );
+}

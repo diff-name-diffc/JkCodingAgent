@@ -128,6 +128,8 @@ impl DispatcherDb {
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("load dispatcher llm history")?;
         messages.retain(should_keep_llm_message);
+        // 已交付进展的 wait 控制对成对剔除（事实由 runtime 观察消息承载）。
+        strip_delivered_wait_pairs(&mut messages);
         // 配对修复要在可见性/上下文过滤之后：过滤可能丢下孤儿工具结果或未应答的
         // tool_calls（见 `repair_tool_call_pairing`），两者都会被服务端以 400 拒绝。
         repair_tool_call_pairing(&mut messages);

@@ -242,8 +242,8 @@ impl RigSubAgentRuntime {
                 self.loop_events.clone(),
                 None,
             ),
+            crate::agent::rig_ext::r#loop::host::LoopHost::Memory,
         );
-        coordinator.host = crate::agent::rig_ext::r#loop::host::LoopHost::Memory;
         let outcome = self
             .run_loop(
                 &model,

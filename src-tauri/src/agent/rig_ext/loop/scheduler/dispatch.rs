@@ -130,7 +130,12 @@ impl TaskScheduler {
             let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
             self.controls.insert(
                 context.task_id.clone(),
-                (round, task_cancel.clone(), active.clone()),
+                super::TaskControl {
+                    round,
+                    cancel_tx: task_cancel.clone(),
+                    active: active.clone(),
+                    enqueued_at: tokio::time::Instant::now(),
+                },
             );
             let mut root_cancel = context.cancel_rx.clone();
             tokio::spawn(async move {
@@ -200,8 +205,8 @@ impl TaskScheduler {
                         None
                     } else {
                         let semaphore = LEAF_LIMIT
-                                .get_or_init(|| Arc::new(Semaphore::new(4)))
-                                .clone();
+                            .get_or_init(|| Arc::new(Semaphore::new(LEAF_CONCURRENCY)))
+                            .clone();
                         Some(tokio::select! {
                             permit = semaphore.acquire_owned() => permit
                                 .map_err(|e| ToolExecutionError::other(e.to_string()))?,

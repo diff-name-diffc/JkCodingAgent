@@ -18,26 +18,31 @@ use tauri::ipc::Channel;
 pub(crate) struct Coordinator {
     pub tasks: TaskScheduler,
     snapshot: Vec<i64>,
-    pub host: super::host::LoopHost,
+    host: super::host::LoopHost,
 }
 
-/// 派发后等待结果就绪的窗口：窗口内就绪的调用随本批直接交付（发 ToolFinished），
-/// 未就绪的发 ToolAccepted 占位，正文留给后续 `deliver` 轮次装配。
-///
-/// 取值权衡：200ms 足以容纳本轮内的快工具，又不至于让每批派发长时间阻塞；
-/// 调大让更多调用直接交付（占位事件更少），代价是每批派发变慢。
-const INLINE_DISPATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
+/// 单批派发窗口的上限：批窗口取成员工具策略窗口的最大值（只读快工具放宽到
+/// 秒级，见 `spec::dispatch_window`），封顶防止混批被长窗口成员拖住。
+const MAX_BATCH_DISPATCH_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Coordinator {
-    pub fn new(tasks: TaskScheduler) -> Self {
+    pub fn new(tasks: TaskScheduler, host: super::host::LoopHost) -> Self {
         Self {
             tasks,
             snapshot: Vec::new(),
-            host: super::host::LoopHost::Conversation,
+            host,
         }
     }
+    /// 是否存在未结算或未交付的工作：已交付但未经 `observed()` 清出的
+    /// `ready` 条目不算——事实已进入本轮请求上下文，把 wait 工具注入这样的
+    /// 轮次只会让空调用拿到 NoPendingTasks（结构性消除空调用的意图）。
     pub fn unsettled(&self) -> bool {
-        self.tasks.pending() || !self.tasks.ready.is_empty()
+        self.tasks.pending()
+            || self
+                .tasks
+                .ready
+                .values()
+                .any(|completion| completion.delivery_message_id.is_none())
     }
 
     pub async fn deliver(
@@ -184,7 +189,17 @@ impl Coordinator {
             .iter()
             .map(|call| surface.policy_for(&call.function.name))
             .collect::<Vec<_>>();
-        let deadline = tokio::time::Instant::now() + INLINE_DISPATCH_WINDOW;
+        // 批窗口 = 成员工具策略窗口的最大值（封顶）：只读快工具的扇出批次
+        // 在窗口内整体内联交付，慢工具批次仍快速转后台（accepted 回执）。
+        // 空批是防御分支（决策层已保证非空）：兜底取零等待，按最长窗口
+        // 空等只会把决策循环凭空拖住。
+        let window = calls
+            .iter()
+            .map(|call| crate::agent::rig_ext::tools::spec::dispatch_window(&call.function.name))
+            .max()
+            .unwrap_or(std::time::Duration::ZERO)
+            .min(MAX_BATCH_DISPATCH_WINDOW);
+        let deadline = tokio::time::Instant::now() + window;
         let ids = match self
             .tasks
             .enqueue(calls, &tools, policy, &policies, round, anchor)

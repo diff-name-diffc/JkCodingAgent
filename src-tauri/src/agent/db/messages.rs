@@ -11,7 +11,9 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::agent::common::{repair_tool_call_pairing, should_keep_llm_message};
+use crate::agent::common::{
+    repair_tool_call_pairing, should_keep_llm_message, strip_delivered_wait_pairs,
+};
 use crate::agent::db::{
     ChatMessage, ChatMessageContentPart, ChatMessageImageSource, OutboundToolCall,
 };

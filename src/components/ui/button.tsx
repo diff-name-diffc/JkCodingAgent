@@ -13,7 +13,7 @@ const buttonVariants = cva(
         outline: "border border-border bg-card hover:bg-secondary hover:text-secondary-foreground",
         secondary: "bg-secondary text-secondary-foreground hover:opacity-90",
         ghost: "hover:bg-secondary hover:text-secondary-foreground",
-        link: "text-primary underline-offset-4 hover:underline",
+        link: "text-[var(--text-link)] underline-offset-4 hover:text-[var(--text-link-hover)] hover:underline",
       },
       size: {
         // 密度定稿（design/tokens.md）：文本按钮 32px 行高对齐工具行，

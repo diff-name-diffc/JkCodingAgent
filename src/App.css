@@ -1,100 +1,92 @@
 /* ── Design Tokens ─────────────────────────────────────────────── */
 :root {
   color-scheme: light;
-  --background: #f7f8f7;
-  --foreground: #202722;
-  --card: #fffefa;
-  --muted: #edf0ec;
-  --muted-foreground: #5f6670;
-  --border: #ccd3cc;
-  --accent: #297c70;
-  --accent-soft: #dcece8;
+  /* 中性表面承担层级；品牌操作、导航焦点与语义状态各用自己的令牌。 */
+  --background: #fafafa;
+  --foreground: #262626;
+  --card: #ffffff;
+  --muted: #f2f2f2;
+  --muted-foreground: #666666;
+  --border: #d4d4d4;
   --destructive: #dc2626;
   --accent-foreground: #ffffff;
   --destructive-foreground: #ffffff;
-  --composer-shadow: 0 4px 16px rgb(0 0 0 / 0.06);
+  --composer-shadow: 0 2px 8px rgb(0 0 0 / 0.04);
 
-  --brand-graphite: #202522;
-  --brand-graphite-2: #2e3531;
-  --brand-mist: #f4f6f1;
-  --brand-paper: #fffef8;
+  --brand-graphite: #262626;
+  --brand-graphite-2: #404040;
+  --brand-mist: #f5f5f5;
+  --brand-paper: #ffffff;
   --brand-ember: #f97316;
   --brand-cobalt: #2563eb;
   --brand-violet: #7c3aed;
-  --brand-teal: #0d9488;
-  --brand-teal-soft: #ccfbf1;
 
-  --bg-root: #d0d4cd;
+  --bg-root: #ededed;
   --bg-shell: var(--background);
-  --bg-titlebar: #e4e6e0;
+  --bg-titlebar: #f5f5f5;
   /* 窗口顶部拖拽区高度：与 macOS 红绿灯安全区配合，页面内容用它做顶部留白。 */
   --titlebar-h: 38px;
-  --bg-sidebar: #eff1ef;
-  --bg-sidebar-elevated: #e0e3dd;
+  --bg-sidebar: #f5f5f5;
+  --bg-sidebar-elevated: #ebebeb;
   --bg-panel: #ffffff;
   --bg-card: var(--card);
-  --bg-hover: #dee4de;
-  --bg-selected: #d0e4dd;
-  --bg-subtle: #e9ece6;
-  --bg-input: #fbfaf6;
+  --bg-hover: #ebebeb;
+  --bg-selected: #e5e5e5;
+  --bg-subtle: #f5f5f5;
+  --bg-input: #ffffff;
   --bg-elevated: #ffffff;
-  --bg-overlay: rgba(15, 26, 30, 0.28);
-  --bg-gradient-surface: linear-gradient(180deg, #fffef9 0%, #f6f5f0 100%);
-  --bg-gradient-sidebar: linear-gradient(180deg, #eff1ec 0%, #e7e9e4 100%);
+  --bg-overlay: rgb(0 0 0 / 0.28);
 
-  --border-dim: #dce2dd;
+  --border-dim: #e5e5e5;
   --border-medium: var(--border);
-  --border-strong: rgba(30, 39, 36, 0.28);
-  --border-focus: #297c70;
-  --border-accent: rgba(41, 124, 112, 0.4);
+  --border-strong: #a3a3a3;
+  --border-focus: #2563eb;
+  --border-accent: rgb(38 38 38 / 0.32);
 
   --text-primary: var(--foreground);
-  --text-secondary: #536159;
+  --text-secondary: #525252;
   --text-muted: var(--muted-foreground);
-  --text-hint: #89928e;
-  --text-on-accent: #ffffff;
-  --text-link: #1f665d;
+  --text-hint: #666666;
+  --text-link: #1d4ed8;
+  --text-link-hover: #1e40af;
   --text-error: var(--danger);
 
-  --accent: #297c70;
-  --accent-strong: #1f665d;
-  --accent-soft: #dcece8;
-  --accent-hover: #18554e;
-  --accent-subtle: rgba(41, 124, 112, 0.09);
-  --accent-pressed: #134843;
-  --accent-gradient: linear-gradient(135deg, #2f8a7d 0%, #1f665d 100%);
+  --accent: #262626;
+  --accent-strong: #171717;
+  --accent-soft: #ededed;
+  --accent-hover: #404040;
+  --accent-subtle: rgb(38 38 38 / 0.06);
+  --accent-pressed: #171717;
 
   /* RGB 伴随令牌：用于 alpha 合成，格式 `rgb(var(--accent-rgb) / 0.5)` */
-  --accent-rgb: 41 124 112;
-  --accent-strong-rgb: 31 102 93;
+  --accent-rgb: 38 38 38;
+  --accent-strong-rgb: 23 23 23;
   --danger-rgb: 220 38 38;
-  --warning-rgb: 249 115 22;
-  --success-rgb: 22 163 74;
+  --warning-rgb: 180 83 9;
+  --success-rgb: 21 128 61;
   --info-rgb: 37 99 235;
-  /* RGB 三元组（与上方 hex 令牌保持一致）——供手写 CSS 以
-     `rgb(var(--x-rgb) / 0.NN)` 形式取令牌色的半透明变体；
-     Tailwind 工具类的 /NN 透明度由 v4 color-mix 直接处理，不经此处。 */
-  --bg-card-rgb: 255 254 250;
-  --bg-subtle-rgb: 237 240 236;
-  --bg-input-rgb: 251 250 246;
-  --bg-sidebar-rgb: 239 241 239;
-  --bg-sidebar-elevated-rgb: 224 227 221;
-  --bg-selected-rgb: 208 228 221;
-  --bg-hover-rgb: 222 228 222;
-  --text-primary-rgb: 32 39 34;
-  --text-secondary-rgb: 83 97 89;
-  --text-muted-rgb: 95 102 112;
-  --border-medium-rgb: 30 39 36;
-  --accent-hover-rgb: 24 85 78;
+  /* RGB 三元组与上方 hex 令牌保持一致；Tailwind /NN 透明度由 color-mix 处理。 */
+  --bg-card-rgb: 255 255 255;
+  --bg-subtle-rgb: 245 245 245;
+  --bg-input-rgb: 255 255 255;
+  --bg-sidebar-rgb: 245 245 245;
+  --bg-sidebar-elevated-rgb: 235 235 235;
+  --bg-selected-rgb: 229 229 229;
+  --bg-hover-rgb: 235 235 235;
+  --text-primary-rgb: 38 38 38;
+  --text-secondary-rgb: 82 82 82;
+  --text-muted-rgb: 102 102 102;
+  --border-medium-rgb: 212 212 212;
+  --accent-hover-rgb: 64 64 64;
 
-  --chat-main-rail: #f5f4ef;
-  --chat-surface: #f8f7f3;
-  --chat-surface-strong: #fcfbf8;
+  --chat-main-rail: var(--bg-sidebar);
+  --chat-surface: var(--background);
+  --chat-surface-strong: var(--bg-card);
   --chat-glass-border: var(--border-dim);
-  --chat-focus-ring: 0 0 0 3px rgba(41, 124, 112, 0.16);
-  --chat-shadow: 0 18px 44px rgba(31, 42, 38, 0.1);
-  --chat-shadow-soft: 0 6px 18px rgba(31, 42, 38, 0.07);
-  --chat-user-bubble-bg: #dcebe7;
+  --chat-focus-ring: var(--shadow-focus);
+  --chat-shadow: var(--shadow-md);
+  --chat-shadow-soft: var(--shadow-sm);
+  --chat-user-bubble-bg: #f0f0f0;
   --chat-user-bubble-text: var(--text-primary);
   --chat-composer-shadow: var(--composer-shadow);
   --motion-fast: 120ms;
@@ -102,41 +94,41 @@
   --motion-slow: 280ms;
   --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-  --markdown-inline-bg: #e6f7f5;
-  --markdown-inline-border: rgba(13, 148, 136, 0.24);
-  --markdown-inline-text: #134e4a;
-  --markdown-code-shell-bg: #f2f8f7;
-  --markdown-code-toolbar-bg: #e6f0ef;
-  --markdown-code-bg: #f9fdfc;
-  --markdown-code-border: rgba(13, 148, 136, 0.24);
-  --markdown-code-border-strong: rgba(13, 148, 136, 0.56);
-  --markdown-code-text: #0f1e1c;
-  --markdown-code-muted: #4a605c;
-  --markdown-code-shadow: 0 14px 28px rgba(13, 148, 136, 0.1);
-  --streamdown-code-bg: #f4f7f4;
-  --streamdown-code-toolbar-bg: #e6efec;
-  --streamdown-code-hover-bg: #e0ebe8;
-  --streamdown-code-border: rgba(13, 148, 136, 0.28);
-  --streamdown-code-text: #17201d;
-  --streamdown-code-muted: #4a605c;
-  --streamdown-code-shadow: 0 12px 28px rgba(13, 148, 136, 0.12);
-  --markdown-math-bg: #f0f9f7;
-  --markdown-math-border: rgba(13, 148, 136, 0.28);
-  --markdown-math-text: #0c2a27;
-  --markdown-math-shadow: 0 12px 28px rgba(13, 148, 136, 0.12);
+  --markdown-inline-bg: var(--bg-subtle);
+  --markdown-inline-border: var(--border-dim);
+  --markdown-inline-text: var(--text-primary);
+  --markdown-code-shell-bg: var(--markdown-code-bg);
+  --markdown-code-toolbar-bg: #f0f0f0;
+  --markdown-code-bg: #f7f7f7;
+  --markdown-code-border: var(--border-dim);
+  --markdown-code-border-strong: var(--border-strong);
+  --markdown-code-text: var(--text-primary);
+  --markdown-code-muted: var(--text-muted);
+  --markdown-code-shadow: none;
+  --streamdown-code-bg: var(--markdown-code-bg);
+  --streamdown-code-toolbar-bg: var(--markdown-code-toolbar-bg);
+  --streamdown-code-hover-bg: var(--bg-hover);
+  --streamdown-code-border: var(--markdown-code-border);
+  --streamdown-code-text: var(--markdown-code-text);
+  --streamdown-code-muted: var(--markdown-code-muted);
+  --streamdown-code-shadow: none;
+  --markdown-math-bg: var(--markdown-code-bg);
+  --markdown-math-border: var(--border-dim);
+  --markdown-math-text: var(--text-primary);
+  --markdown-math-shadow: none;
 
-  --success: #16a34a;
-  --warning: var(--brand-ember);
+  --success: #15803d;
+  --warning: #b45309;
   --danger: var(--destructive);
   --info: var(--brand-cobalt);
-  --info-soft: rgba(37, 99, 235, 0.1);
+  --info-soft: rgb(var(--info-rgb) / 0.1);
 
-  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.1), 0 4px 12px rgba(15, 23, 42, 0.06);
-  --shadow-focus: 0 0 0 3px rgba(41, 124, 112, 0.18);
-  --shadow-accent-glow: 0 4px 14px rgba(41, 124, 112, 0.22);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.06);
+  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.08);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.12);
+  --shadow-focus: 0 0 0 2px var(--border-focus);
+  --shadow-accent-glow: none;
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -154,100 +146,72 @@
 
 .dark {
   color-scheme: dark;
-  --background: #151817;
-  --foreground: #e6ebe8;
-  --card: #171c19;
-  --muted: #202621;
-  --muted-foreground: #a2aaa5;
-  --border: #323a35;
-  --accent: #55c7ad;
-  --accent-soft: #183c34;
+  --background: #161616;
+  --foreground: #e5e5e5;
+  --card: #202020;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;
+  --border: #404040;
   --destructive: #f87171;
-  --accent-foreground: #0d1f1a;
+  --accent-foreground: #171717;
   --destructive-foreground: #260b0b;
-  --composer-shadow: 0 4px 16px rgb(0 0 0 / 0.28);
-  --bg-root: #0d100f;
-  --bg-shell: var(--background);
-  --bg-titlebar: #141916;
-  --bg-sidebar: #111413;
-  --bg-sidebar-elevated: var(--muted);
-  --bg-panel: #191d1b;
-  --bg-card: var(--card);
-  --bg-hover: #252c28;
-  --bg-selected: var(--accent-soft);
-  --bg-subtle: var(--muted);
-  --bg-input: #121714;
-  --bg-elevated: #222824;
+  --composer-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
+  --bg-root: #101010;
+  --bg-titlebar: #1b1b1b;
+  --bg-sidebar: #141414;
+  --bg-sidebar-elevated: #262626;
+  --bg-panel: #1b1b1b;
+  --bg-hover: #2d2d2d;
+  --bg-selected: #333333;
+  --bg-subtle: #242424;
+  --bg-input: #202020;
+  --bg-elevated: #292929;
   --bg-overlay: rgb(0 0 0 / 0.58);
-  --bg-gradient-surface: linear-gradient(180deg, #1b211d 0%, #151a17 100%);
-  --bg-gradient-sidebar: linear-gradient(180deg, #171c19 0%, #121714 100%);
-  --border-dim: #323c35;
-  --border-medium: var(--border);
-  --border-strong: #48534c;
-  --border-focus: var(--accent);
-  --border-accent: rgb(85 199 173 / 0.44);
-  --text-primary: var(--foreground);
-  --text-secondary: #acb8b0;
-  --text-muted: var(--muted-foreground);
-  --text-hint: #7f8983;
-  --text-on-accent: var(--accent-foreground);
-  --text-link: #70d6be;
-  --accent-strong: #70d6be;
-  --accent-hover: #65d0b7;
-  --accent-subtle: rgb(85 199 173 / 0.1);
-  --accent-pressed: #43ad95;
-  --accent-gradient: linear-gradient(135deg, #65d0b7 0%, #43ad95 100%);
-  --accent-rgb: 85 199 173;
-  --accent-strong-rgb: 112 214 190;
+  --border-dim: #333333;
+  --border-strong: #737373;
+  --border-focus: #93c5fd;
+  --border-accent: rgb(229 229 229 / 0.32);
+  --text-secondary: #bdbdbd;
+  --text-hint: #a3a3a3;
+  --text-link: #93c5fd;
+  --text-link-hover: #bfdbfe;
+  --accent: #e5e5e5;
+  --accent-strong: #f5f5f5;
+  --accent-soft: #303030;
+  --accent-hover: #ffffff;
+  --accent-subtle: rgb(229 229 229 / 0.08);
+  --accent-pressed: #d4d4d4;
+  --accent-rgb: 229 229 229;
+  --accent-strong-rgb: 245 245 245;
   --danger-rgb: 248 113 113;
-  --bg-card-rgb: 23 28 25;
-  --bg-subtle-rgb: 32 38 33;
-  --bg-input-rgb: 18 23 20;
-  --bg-sidebar-rgb: 17 20 19;
-  --bg-sidebar-elevated-rgb: 32 38 33;
-  --bg-selected-rgb: 24 60 52;
-  --bg-hover-rgb: 37 44 40;
-  --text-primary-rgb: 230 235 232;
-  --text-secondary-rgb: 172 184 176;
-  --text-muted-rgb: 162 170 165;
-  --border-medium-rgb: 50 58 53;
-  --accent-hover-rgb: 101 208 183;
-  --chat-main-rail: #121714;
-  --chat-surface: #151a17;
-  --chat-surface-strong: var(--card);
-  --chat-glass-border: var(--border-dim);
-  --chat-focus-ring: 0 0 0 3px rgb(85 199 173 / 0.2);
-  --chat-shadow: 0 18px 44px rgb(0 0 0 / 0.28);
-  --chat-shadow-soft: 0 6px 18px rgb(0 0 0 / 0.22);
-  --chat-user-bubble-bg: #20342e;
-  --chat-composer-shadow: var(--composer-shadow);
+  --warning-rgb: 251 191 36;
+  --success-rgb: 74 222 128;
+  --info-rgb: 147 197 253;
+  --bg-card-rgb: 32 32 32;
+  --bg-subtle-rgb: 36 36 36;
+  --bg-input-rgb: 32 32 32;
+  --bg-sidebar-rgb: 20 20 20;
+  --bg-sidebar-elevated-rgb: 38 38 38;
+  --bg-selected-rgb: 51 51 51;
+  --bg-hover-rgb: 45 45 45;
+  --text-primary-rgb: 229 229 229;
+  --text-secondary-rgb: 189 189 189;
+  --text-muted-rgb: 163 163 163;
+  --border-medium-rgb: 64 64 64;
+  --accent-hover-rgb: 255 255 255;
+  --chat-user-bubble-bg: #262626;
 
-  /* markdown / streamdown 面在暗色下的对偶令牌 */
-  --markdown-inline-bg: rgb(85 199 173 / 0.14);
-  --markdown-inline-border: rgb(85 199 173 / 0.32);
-  --markdown-inline-text: #9fdccb;
-  --markdown-code-shell-bg: #1a201d;
-  --markdown-code-toolbar-bg: #171c19;
-  --markdown-code-bg: #101412;
-  --markdown-code-border: rgb(85 199 173 / 0.22);
-  --markdown-code-border-strong: rgb(85 199 173 / 0.5);
-  --markdown-code-text: #e7ece9;
-  --markdown-code-muted: #9ba7b4;
-  --markdown-code-shadow: 0 14px 28px rgb(0 0 0 / 0.4);
-  --streamdown-code-bg: #101412;
-  --streamdown-code-toolbar-bg: #171c19;
-  --streamdown-code-hover-bg: #1a201d;
-  --streamdown-code-border: rgb(85 199 173 / 0.22);
-  --streamdown-code-text: #e7ece9;
-  --streamdown-code-muted: #9ba7b4;
-  --streamdown-code-shadow: 0 12px 28px rgb(0 0 0 / 0.4);
-  --markdown-math-bg: #141a17;
-  --markdown-math-border: rgb(85 199 173 / 0.3);
-  --markdown-math-text: #cfe6de;
-  --markdown-math-shadow: 0 12px 28px rgb(0 0 0 / 0.35);
+  /* Markdown 与代码工具栏共用中性表面，语法色由代码主题负责。 */
+  --markdown-code-toolbar-bg: #242424;
+  --markdown-code-bg: #1b1b1b;
 
   --success: #4ade80;
-  --success-rgb: 74 222 128;
+  --warning: #fbbf24;
+  --info: #93c5fd;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.16);
+  --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.2);
+  --shadow-md: 0 4px 16px rgb(0 0 0 / 0.28);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.36);
 }
 
 /* ── Reset ─────────────────────────────────────────────────────── */
@@ -376,28 +340,11 @@
   background: var(--chat-surface);
   border: 1px solid var(--chat-glass-border);
   box-shadow: var(--chat-shadow-soft);
-  backdrop-filter: blur(22px) saturate(1.16);
-  -webkit-backdrop-filter: blur(22px) saturate(1.16);
 }
 
 .nezha-chat-home {
   position: relative;
   isolation: isolate;
-}
-
-.nezha-chat-home::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 34px 34px;
-  -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.86), transparent 72%);
-  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.86), transparent 72%);
-  opacity: 0.42;
-  z-index: -1;
 }
 
 /* ── Radix Select ───────────────────────────────────────────────── */
@@ -421,7 +368,7 @@
 }
 .radix-select-trigger:focus {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
+  box-shadow: var(--shadow-focus);
 }
 .radix-select-content {
   background: var(--bg-card);
@@ -661,18 +608,10 @@
 .file-explorer-context-menu {
   min-width: 280px;
   padding: 6px;
-  border-radius: 18px;
-  border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border-medium));
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg-card) 92%, transparent),
-    color-mix(in srgb, var(--bg-sidebar) 96%, transparent)
-  );
-  box-shadow:
-    0 24px 64px rgba(15, 23, 42, 0.18),
-    0 8px 18px rgba(15, 23, 42, 0.1);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-medium);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
   transform-origin: var(--radix-context-menu-content-transform-origin);
   animation: context-menu-in 0.14s ease;
   z-index: 2200;
@@ -753,11 +692,7 @@
 }
 
 .file-explorer-context-menu-item[data-highlighted] {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 14%, transparent),
-    color-mix(in srgb, var(--bg-hover) 94%, transparent)
-  );
+  background: var(--bg-hover);
 }
 
 .file-explorer-context-menu-item-danger {
@@ -894,9 +829,7 @@
   padding: 18px 20px;
   border: 1px solid var(--markdown-math-border);
   border-radius: 8px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
-    var(--markdown-math-bg);
+  background: var(--markdown-math-bg);
   box-shadow: var(--markdown-math-shadow);
   overflow-x: auto;
   overflow-y: hidden;
@@ -927,26 +860,24 @@
 .markdown-surface blockquote {
   margin: 16px 0;
   padding: 14px 16px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, var(--border-strong));
-  border-radius: 0 16px 16px 0;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
-    var(--bg-subtle);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--bg-subtle);
   color: var(--text-muted);
 }
 .markdown-surface hr {
   border: none;
   height: 1px;
   margin: 22px 0;
-  background: linear-gradient(90deg, transparent, var(--border-medium), transparent);
+  background: var(--border-dim);
 }
 .markdown-surface a {
-  color: var(--accent);
+  color: var(--text-link);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--text-link) 35%, transparent);
 }
 .markdown-surface a:hover {
-  color: var(--accent-hover);
+  color: var(--text-link-hover);
 }
 .markdown-surface img {
   display: block;
@@ -1124,18 +1055,6 @@
   border: 1px solid var(--markdown-code-border);
   background: var(--markdown-code-shell-bg);
   box-shadow: var(--markdown-code-shadow);
-}
-.markdown-code-block::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: linear-gradient(
-    180deg,
-    var(--markdown-code-border-strong),
-    color-mix(in srgb, var(--success) 55%, var(--markdown-code-border-strong))
-  );
-  pointer-events: none;
 }
 .markdown-code-block--compact {
   margin: 12px 0;
@@ -1365,7 +1284,7 @@
 }
 .cm-editor .cm-panel.cm-search .cm-textfield:focus {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 2px var(--accent-subtle);
+  box-shadow: var(--shadow-focus);
 }
 .cm-editor .cm-panel.cm-search .cm-button {
   background: var(--bg-subtle);
@@ -1405,7 +1324,7 @@
 }
 .cm-editor .cm-searchMatch-selected {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-foreground);
   border-radius: 2px;
 }
 

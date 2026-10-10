@@ -2,20 +2,20 @@ import type { CodeHighlighterPlugin } from "streamdown";
 import {
   isSupportedHighlightLanguage,
   SUPPORTED_HIGHLIGHT_LANGUAGES,
-  TEAL_DARK_THEME,
-  TEAL_LIGHT_THEME,
+  NEUTRAL_DARK_THEME,
+  NEUTRAL_LIGHT_THEME,
   tokenizeCodeDualTheme,
 } from "../../utils/shiki";
 
 /**
  * streamdown 代码高亮插件（自研），替代 @streamdown/code：
  * 复用 utils/shiki.ts 的 shiki core 单 highlighter + 13 语言按需 import +
- * 双 teal 主题，避免 @streamdown/code 拖入的 shiki 全量语言/主题注册表
+ * 双中性主题，避免 @streamdown/code 拖入的 shiki 全量语言/主题注册表
  * （300+ 动态 chunk）与第二份 shiki 运行时。
  *
  * 调用约定与 @streamdown/code 一致：命中缓存同步返回 TokensResult，未命中
  * 返回 null 并异步回填（streamdown 先渲纯文本骨架，callback 触发后替换）。
- * 主题固定双 teal（预载于 highlighter），不参与缓存键。
+ * 主题固定为亮暗两套（预载于 highlighter），不参与缓存键。
  */
 
 type TokenResult = NonNullable<ReturnType<CodeHighlighterPlugin["highlight"]>>;
@@ -62,7 +62,7 @@ export function createChatCodePlugin(): CodeHighlighterPlugin {
       return [...SUPPORTED_HIGHLIGHT_LANGUAGES] as SupportedLanguages;
     },
     getThemes() {
-      return [TEAL_LIGHT_THEME, TEAL_DARK_THEME];
+      return [NEUTRAL_LIGHT_THEME, NEUTRAL_DARK_THEME];
     },
     highlight({ code, language }, callback) {
       const lang = (language ?? "").trim().toLowerCase();

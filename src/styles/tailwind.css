@@ -38,7 +38,7 @@
   --color-popover-foreground: var(--text-primary);
   --color-border: var(--border-medium);
   --color-input: var(--bg-input);
-  --color-ring: var(--accent);
+  --color-ring: var(--border-focus);
   --color-primary: var(--accent);
   --color-primary-foreground: var(--accent-foreground);
   --color-primary-hover: var(--accent-hover);
@@ -121,7 +121,7 @@
     align-items: center;
     justify-content: center;
     padding: 18px;
-    background: rgb(23 32 29 / 0.32);
+    background: var(--bg-overlay);
     backdrop-filter: blur(6px);
     animation: ai-fade-in 120ms ease-out;
   }
@@ -177,7 +177,7 @@
     padding-right: 30px;
     color: var(--text-primary);
     font-size: 14px;
-    font-weight: 800;
+    font-weight: 600;
     line-height: 1.25;
   }
 
@@ -216,7 +216,7 @@
     border-radius: 8px;
     padding: 0 14px;
     font-size: 12.5px;
-    font-weight: 750;
+    font-weight: 600;
     cursor: pointer;
     transition:
       border-color 0.16s ease,
@@ -229,8 +229,7 @@
   .ai-primary-button {
     border: 1px solid var(--accent);
     background: var(--accent);
-    color: var(--text-on-accent);
-    box-shadow: var(--shadow-xs);
+    color: var(--accent-foreground);
   }
 
   .ai-primary-button:hover:not(:disabled) {
@@ -370,11 +369,11 @@
   .ai-context-menu {
     z-index: 120;
     min-width: 136px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.18);
+    border: 1px solid var(--border-dim);
     border-radius: 8px;
     padding: 5px;
-    background: var(--bg-sidebar);
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
     outline: none;
   }
 
@@ -416,19 +415,16 @@
   }
 
   .ai-field {
-    border: 1px solid rgb(var(--accent-rgb) / 0.18);
+    border: 1px solid var(--border-medium);
     border-radius: 8px;
-    background: var(--bg-sidebar);
+    background: var(--bg-input);
     color: var(--text-primary);
-    box-shadow:
-      inset 0 0 0 1px rgba(255, 255, 255, 0.03),
-      inset 0 0 28px rgb(var(--accent-rgb) / 0.045);
   }
 
   .ai-field:focus-within,
   .ai-field:focus {
-    border-color: rgb(var(--accent-rgb) / 0.55);
-    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.12);
+    border-color: var(--border-focus);
+    box-shadow: var(--shadow-focus);
     outline: none;
   }
 
@@ -450,7 +446,7 @@
     border-radius: 8px;
     padding: 0 12px;
     font-size: 12px;
-    font-weight: 800;
+    font-weight: 600;
     cursor: pointer;
     transition:
       border-color 0.16s ease,
@@ -477,18 +473,14 @@
   }
 
   .ai-button-primary {
-    border-color: rgb(var(--accent-rgb) / 0.42);
-    background:
-      linear-gradient(135deg, rgb(var(--accent-rgb) / 0.22), rgb(var(--warning-rgb) / 0.12)),
-      var(--bg-sidebar);
-    color: var(--text-primary);
-    box-shadow: 0 0 26px rgb(var(--accent-rgb) / 0.12);
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-foreground);
   }
 
   .ai-button-primary:hover:not(:disabled) {
-    border-color: rgb(var(--accent-rgb) / 0.68);
-    transform: translateY(-1px);
-    box-shadow: 0 12px 34px rgb(var(--accent-rgb) / 0.16);
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
   }
 
   .ai-section-header {
@@ -502,7 +494,7 @@
   .ai-section-title {
     color: var(--text-primary);
     font-size: 18px;
-    font-weight: 850;
+    font-weight: 600;
     line-height: 1.1;
     letter-spacing: 0;
   }
@@ -543,7 +535,7 @@
   .ai-empty-title {
     color: var(--text-secondary);
     font-size: 14px;
-    font-weight: 750;
+    font-weight: 600;
   }
 
   .ai-empty-description {
@@ -561,7 +553,7 @@
   .ai-splitter {
     flex: 0 0 5px;
     cursor: col-resize;
-    background: linear-gradient(180deg, transparent, rgb(var(--accent-rgb) / 0.16), transparent);
+    background: var(--border-dim);
   }
 
   .ai-home-shell {
@@ -944,7 +936,7 @@
   }
 
   .ai-arch-chat-input:focus {
-    border-color: rgb(var(--accent-rgb) / 0.55);
+    border-color: var(--border-focus);
   }
 
   .ai-arch-chat-input::placeholder {
@@ -960,7 +952,7 @@
     flex-shrink: 0;
     border-radius: var(--radius-md);
     background: var(--accent);
-    color: var(--text-on-accent);
+    color: var(--accent-foreground);
     transition: opacity 0.15s var(--motion-ease);
   }
 
@@ -1045,34 +1037,29 @@
     justify-content: center;
     gap: 8px;
     min-height: 38px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.32);
+    border: 1px solid var(--accent);
     border-radius: 8px;
     padding: 0 14px;
-    background:
-      linear-gradient(135deg, rgb(var(--accent-rgb) / 0.22), rgb(var(--warning-rgb) / 0.12)),
-      var(--bg-sidebar);
-    color: var(--text-primary);
+    background: var(--accent);
+    color: var(--accent-foreground);
     font-size: 13px;
-    font-weight: 800;
+    font-weight: 600;
     cursor: pointer;
-    box-shadow: 0 0 26px rgb(var(--accent-rgb) / 0.12);
     transition:
       border-color 0.16s ease,
-      transform 0.16s ease,
-      box-shadow 0.16s ease;
+      background 0.16s ease;
   }
 
   .ai-home-primary-btn:hover {
-    border-color: rgb(var(--accent-rgb) / 0.62);
-    transform: translateY(-1px);
-    box-shadow: 0 12px 34px rgb(var(--accent-rgb) / 0.16);
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
   }
 
   .ai-project-name {
     overflow: hidden;
     color: var(--text-primary);
     font-size: 13.5px;
-    font-weight: 800;
+    font-weight: 600;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1121,24 +1108,10 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    border: 1px solid rgb(var(--accent-rgb) / 0.22);
-    background:
-      linear-gradient(135deg, var(--project-avatar-from), var(--project-avatar-to)),
-      rgb(var(--accent-rgb) / 0.12);
-    color: var(--text-primary);
-    font-weight: 850;
-    box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.06),
-      0 10px 24px color-mix(in srgb, var(--project-avatar-from) 32%, transparent);
-  }
-
-  .ai-project-avatar::after {
-    content: "";
-    position: absolute;
-    inset: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: inherit;
-    opacity: 0.7;
+    border: 1px solid var(--border-dim);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-weight: 600;
   }
 
   .ai-project-shell {
@@ -1294,7 +1267,7 @@
     margin-top: 4px;
     color: var(--text-hint);
     font-size: 11px;
-    font-weight: 850;
+    font-weight: 600;
   }
 
   .ai-file-explorer-chevron {
@@ -1377,7 +1350,7 @@
   .ai-file-rename-preview-label {
     color: var(--text-hint);
     font-size: 10px;
-    font-weight: 850;
+    font-weight: 600;
   }
 
   .ai-file-rename-preview-path {
@@ -1388,12 +1361,10 @@
   }
 
   .file-explorer-context-menu {
-    border-color: rgb(var(--accent-rgb) / 0.2) !important;
+    border-color: var(--border-dim) !important;
     border-radius: 8px !important;
-    background: var(--bg-sidebar);
-    box-shadow:
-      0 26px 80px rgba(0, 0, 0, 0.42),
-      0 0 0 1px rgba(255, 255, 255, 0.035) !important;
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg) !important;
   }
 
   .file-explorer-context-menu-header,
@@ -1560,12 +1531,10 @@
   }
 
   .file-viewer-tab-menu {
-    border-color: rgb(var(--accent-rgb) / 0.2) !important;
+    border-color: var(--border-dim) !important;
     border-radius: 8px !important;
-    background: var(--bg-sidebar);
-    box-shadow:
-      0 26px 80px rgba(0, 0, 0, 0.42),
-      0 0 0 1px rgba(255, 255, 255, 0.035) !important;
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg) !important;
   }
 
   .file-viewer-tab-menu-item {
@@ -1881,7 +1850,7 @@
     flex: 1;
     color: var(--text-primary);
     font-size: 13px;
-    font-weight: 850;
+    font-weight: 600;
   }
 
   .ai-git-icon-button {
@@ -1997,7 +1966,7 @@
     flex: 1;
     color: var(--text-primary);
     font-size: 12px;
-    font-weight: 800;
+    font-weight: 600;
   }
 
   .ai-git-count-pill {
@@ -2008,7 +1977,7 @@
     background: var(--bg-sidebar);
     color: var(--text-hint);
     font-size: 11px;
-    font-weight: 750;
+    font-weight: 500;
     text-align: center;
   }
 
@@ -2018,7 +1987,7 @@
     padding: 7px 8px 3px 10px;
     color: var(--text-hint);
     font-size: 10px;
-    font-weight: 850;
+    font-weight: 600;
   }
 
   .ai-git-section-label {
@@ -2029,7 +1998,7 @@
     margin-right: 4px;
     color: var(--text-hint);
     font-size: 11px;
-    font-weight: 750;
+    font-weight: 500;
   }
 
   .ai-git-section-action {
@@ -2040,7 +2009,7 @@
     color: var(--text-muted);
     cursor: pointer;
     font-size: 14px;
-    font-weight: 800;
+    font-weight: 600;
     line-height: 1;
   }
 
@@ -2085,7 +2054,7 @@
     width: 12px;
     flex-shrink: 0;
     font-size: 11px;
-    font-weight: 850;
+    font-weight: 600;
     text-align: center;
   }
 
@@ -2098,7 +2067,7 @@
   .ai-git-file-name {
     color: var(--text-primary);
     font-size: 12px;
-    font-weight: 750;
+    font-weight: 500;
   }
 
   .ai-git-file-dir {
@@ -2116,7 +2085,7 @@
     color: var(--text-muted);
     cursor: pointer;
     font-size: 11px;
-    font-weight: 850;
+    font-weight: 600;
     opacity: 0.42;
     transition:
       opacity 0.14s ease,
@@ -2165,8 +2134,8 @@
   }
 
   .ai-git-commit-textarea:focus {
-    border-color: rgb(var(--accent-rgb) / 0.58);
-    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.12);
+    border-color: var(--border-focus);
+    box-shadow: var(--shadow-focus);
   }
 
   .ai-git-commit-textarea.is-error {
@@ -2401,7 +2370,7 @@
     flex: 1;
     overflow: hidden;
     color: currentColor;
-    font-weight: 800;
+    font-weight: 600;
     text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2420,13 +2389,11 @@
   .ai-branch-popover.branch-popover-content {
     width: min(320px, calc(100vw - 32px));
     overflow: hidden;
-    border: 1px solid rgb(var(--accent-rgb) / 0.18);
+    border: 1px solid var(--border-dim);
     border-radius: 10px;
     padding: 0;
-    background: var(--bg-sidebar);
-    box-shadow:
-      0 18px 42px rgba(0, 0, 0, 0.38),
-      0 0 32px rgb(var(--accent-rgb) / 0.08);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
   }
 
   .ai-branch-popover .branch-popover-search {
@@ -2488,7 +2455,7 @@
     padding: 7px 8px 4px;
     color: var(--text-hint);
     font-size: 10px;
-    font-weight: 900;
+    font-weight: 600;
   }
 
   .ai-branch-popover .branch-popover-item {
@@ -2546,7 +2513,7 @@
   .ai-branch-popover .branch-popover-separator {
     height: 1px;
     margin: 5px 0;
-    background: linear-gradient(90deg, transparent, rgb(var(--accent-rgb) / 0.16), transparent);
+    background: var(--border-dim);
   }
 
   .ai-branch-check {
@@ -2560,7 +2527,7 @@
     flex-shrink: 0;
     color: var(--text-hint);
     font-size: 11px;
-    font-weight: 900;
+    font-weight: 600;
   }
 
   .ai-branch-empty {
@@ -2638,8 +2605,8 @@
 
   .ai-branch-select-trigger:hover,
   .ai-branch-select-trigger[data-state="open"] {
-    border-color: rgb(var(--accent-rgb) / 0.42);
-    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.09);
+    border-color: var(--border-strong);
+    background: var(--bg-hover);
   }
 
   .ai-branch-select-trigger span {
@@ -3299,12 +3266,10 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.14);
+    border: 1px solid var(--border-dim);
     border-radius: 8px;
     padding: 12px 14px;
-    background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.1), transparent 62%), var(--bg-sidebar);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    background: var(--bg-card);
   }
 
   .ai-rag-runtime-info,
@@ -3330,7 +3295,6 @@
 
   .ai-rag-status-dot.is-running {
     background: var(--success);
-    box-shadow: 0 0 6px rgb(var(--success-rgb) / 0.45);
   }
 
   /* UI-22c：探活窗口内（启动中）琥珀，窗口耗尽仍未运行（未运行）红——不再吞错 */
@@ -3506,11 +3470,11 @@
     z-index: 10000;
     min-width: var(--radix-select-trigger-width);
     max-width: 420px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.18);
+    border: 1px solid var(--border-dim);
     border-radius: 8px;
     padding: 4px;
-    background: var(--bg-sidebar);
-    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
   }
 
   .ai-rag-select-item {
@@ -3689,8 +3653,9 @@
   .ai-rag-log-highlight {
     border-radius: 4px;
     padding: 0 2px;
-    background: rgba(255, 209, 102, 0.26);
+    background: var(--bg-selected);
     color: var(--text-primary);
+    font-weight: 600;
   }
 
   .ai-rag-footer {
@@ -3763,12 +3728,10 @@
   }
 
   .ai-subagent-card {
-    border: 1px solid rgb(var(--accent-rgb) / 0.12);
+    border: 1px solid var(--border-dim);
     border-radius: 8px;
     padding: 12px 14px;
-    background:
-      linear-gradient(135deg, rgb(var(--accent-rgb) / 0.06), transparent 48%), var(--bg-sidebar);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    background: var(--bg-card);
   }
 
   .ai-subagent-card-head,
@@ -3794,7 +3757,6 @@
 
   .ai-subagent-dot.is-enabled {
     background: var(--success);
-    box-shadow: 0 0 6px rgb(var(--success-rgb) / 0.45);
   }
 
   .ai-subagent-name {
@@ -4585,8 +4547,8 @@
   }
 
   .ai-browser-address.is-editing {
-    border-color: rgb(var(--accent-rgb) / 0.5);
-    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.1);
+    border-color: var(--border-focus);
+    box-shadow: var(--shadow-focus);
   }
 
   .ai-browser-lock {
@@ -4637,10 +4599,7 @@
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-    background:
-      linear-gradient(rgba(79, 228, 221, 0.045) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(79, 228, 221, 0.045) 1px, transparent 1px), var(--bg-sidebar);
-    background-size: 36px 36px;
+    background: var(--bg-subtle);
   }
 
   .ai-browser-canvas {
@@ -4705,7 +4664,7 @@
   .ai-shell-terminal-resize {
     height: 4px;
     flex-shrink: 0;
-    background: linear-gradient(90deg, transparent, rgb(var(--accent-rgb) / 0.32), transparent);
+    background: var(--border-dim);
     cursor: row-resize;
   }
 
@@ -4951,8 +4910,7 @@
 
   .ai-mcp-server-card {
     overflow: hidden;
-    background:
-      linear-gradient(135deg, rgb(var(--accent-rgb) / 0.06), transparent 46%), var(--bg-sidebar);
+    background: var(--bg-card);
   }
 
   .ai-mcp-server-top {
@@ -5028,10 +4986,10 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    border: 1px solid rgba(148, 163, 184, 0.2);
+    border: 1px solid var(--border-medium);
     border-radius: 999px;
     padding: 0 8px;
-    background: rgba(148, 163, 184, 0.12);
+    background: var(--bg-subtle);
     color: var(--text-muted);
     cursor: pointer;
     transition:
@@ -5041,9 +4999,9 @@
   }
 
   .ai-mcp-switch.is-on {
-    border-color: rgb(var(--success-rgb) / 0.4);
-    background: rgb(var(--success-rgb) / 0.9);
-    color: var(--success);
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-foreground);
   }
 
   .ai-mcp-switch-label {
@@ -5058,12 +5016,12 @@
     width: 18px;
     height: 18px;
     border-radius: 999px;
-    background: #fff;
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.22);
+    background: var(--text-muted);
     transition: transform 120ms ease;
   }
 
   .ai-mcp-switch.is-on .ai-mcp-switch-thumb {
+    background: var(--accent-foreground);
     transform: translateX(18px);
   }
 
@@ -5161,26 +5119,28 @@
     align-items: flex-start;
     gap: 10px;
     pointer-events: auto;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--border-medium);
+    border-left-width: 3px;
     border-radius: 8px;
     padding: 10px 12px 10px 14px;
+    background: var(--bg-elevated);
     color: var(--text-primary);
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1.5;
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+    box-shadow: var(--shadow-lg);
   }
 
   .ai-toast-item.is-error {
-    background: linear-gradient(135deg, rgb(var(--danger-rgb) / 0.96), rgba(146, 30, 54, 0.96));
+    border-left-color: var(--danger);
   }
 
   .ai-toast-item.is-warning {
-    background: linear-gradient(135deg, rgb(var(--warning-rgb) / 0.96), rgba(155, 91, 24, 0.96));
+    border-left-color: var(--warning);
   }
 
   .ai-toast-item.is-success {
-    background: linear-gradient(135deg, rgb(var(--success-rgb) / 0.96), rgba(18, 98, 48, 0.96));
+    border-left-color: var(--success);
   }
 
   .ai-toast-message {
@@ -5192,7 +5152,7 @@
     border: 0;
     padding: 0 0 0 4px;
     background: transparent;
-    color: rgba(255, 255, 255, 0.78);
+    color: var(--text-muted);
     cursor: pointer;
     font-family: inherit;
     font-size: 18px;
@@ -5239,11 +5199,10 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.12);
+    border: 1px solid var(--border-dim);
     border-radius: 9px;
     padding: 10px 12px 12px;
-    background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.055), transparent 70%), var(--bg-sidebar);
+    background: var(--bg-card);
   }
 
   .ai-ssh-audit-header {
@@ -5474,7 +5433,7 @@
     flex: 1;
     color: var(--text-primary);
     font-size: 13px;
-    font-weight: 850;
+    font-weight: 600;
   }
 
   .ai-git-sync-button {
@@ -5489,7 +5448,7 @@
     color: var(--text-muted);
     cursor: pointer;
     font-size: 11px;
-    font-weight: 750;
+    font-weight: 600;
     white-space: nowrap;
     transition:
       border-color 0.15s ease,
@@ -5504,10 +5463,8 @@
   }
 
   .ai-git-sync-button.is-active {
-    border-color: rgb(var(--accent-rgb) / 0.5);
-    background:
-      linear-gradient(135deg, rgb(var(--accent-rgb) / 0.28), rgb(var(--warning-rgb) / 0.12)),
-      var(--bg-sidebar);
+    border-color: var(--border-strong);
+    background: var(--bg-selected);
     color: var(--text-primary);
   }
 
@@ -5549,7 +5506,7 @@
     min-width: 0;
     flex: 1;
     overflow: hidden;
-    font-weight: 750;
+    font-weight: 600;
     text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -5578,12 +5535,10 @@
     left: 10px;
     max-height: 220px;
     overflow-y: auto;
-    border: 1px solid rgb(var(--accent-rgb) / 0.18);
+    border: 1px solid var(--border-dim);
     border-radius: 9px;
-    background: var(--bg-sidebar);
-    box-shadow:
-      0 16px 38px rgba(0, 0, 0, 0.34),
-      0 0 28px rgb(var(--accent-rgb) / 0.08);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
   }
 
   .ai-git-branch-option {
@@ -5626,7 +5581,7 @@
     padding: 1px 6px;
     color: var(--text-hint);
     font-size: 10px;
-    font-weight: 750;
+    font-weight: 500;
   }
 
   .ai-git-history-search {
@@ -5646,8 +5601,8 @@
   }
 
   .ai-git-history-search-box:focus-within {
-    border-color: rgb(var(--accent-rgb) / 0.42);
-    box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.09);
+    border-color: var(--border-focus);
+    box-shadow: var(--shadow-focus);
   }
 
   .ai-git-history-search-input {
@@ -5744,19 +5699,18 @@
     height: 8px;
     border: 2px solid rgb(var(--accent-rgb) / 0.2);
     border-radius: 999px;
-    background: rgba(153, 170, 186, 0.52);
+    background: var(--text-hint);
   }
 
   .ai-git-commit-dot.has-ref {
     border-color: rgb(var(--warning-rgb) / 0.82);
     background: rgb(var(--warning-rgb) / 0.88);
-    box-shadow: 0 0 16px rgb(var(--warning-rgb) / 0.26);
   }
 
   .ai-git-commit-dot.is-selected {
     border-color: var(--accent);
     background: var(--accent);
-    box-shadow: 0 0 16px rgb(var(--accent-rgb) / 0.36);
+    box-shadow: 0 0 0 2px var(--bg-selected);
   }
 
   .ai-git-commit-main {
@@ -5776,7 +5730,7 @@
     overflow: hidden;
     color: var(--text-primary);
     font-size: 12.5px;
-    font-weight: 750;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -5791,7 +5745,7 @@
     background: rgb(var(--warning-rgb) / 0.12);
     color: var(--warning);
     font-size: 10px;
-    font-weight: 850;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -5834,10 +5788,9 @@
   }
 
   .ai-git-detail-meta {
-    border-bottom: 1px solid rgb(var(--accent-rgb) / 0.14);
+    border-bottom: 1px solid var(--border-dim);
     padding: 10px 12px 9px;
-    background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.08), transparent 62%), var(--bg-sidebar);
+    background: var(--bg-sidebar);
   }
 
   .ai-git-detail-meta-row {
@@ -5869,7 +5822,7 @@
     margin-bottom: 4px;
     color: var(--text-primary);
     font-size: 12.5px;
-    font-weight: 750;
+    font-weight: 600;
     line-height: 1.42;
   }
 
@@ -5907,7 +5860,7 @@
     width: 12px;
     flex-shrink: 0;
     font-size: 11px;
-    font-weight: 850;
+    font-weight: 600;
     text-align: center;
   }
 
@@ -5920,7 +5873,7 @@
   .ai-git-detail-file-name {
     color: var(--text-primary);
     font-size: 12px;
-    font-weight: 750;
+    font-weight: 500;
     transition: color 0.14s ease;
   }
 
@@ -5938,7 +5891,7 @@
   .ai-git-detail-del {
     flex-shrink: 0;
     font-size: 10.5px;
-    font-weight: 800;
+    font-weight: 600;
   }
 
   .ai-git-detail-add {
@@ -5986,13 +5939,13 @@
     min-height: 50px;
     padding: 0 10px 0 6px !important;
     flex-shrink: 0;
-    border-bottom: 1px solid rgb(var(--accent-rgb) / 0.12) !important;
-    background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.08), transparent) !important;
+    border-bottom: 1px solid var(--border-dim) !important;
+    background: var(--bg-sidebar) !important;
   }
 
   .ai-project-session-title {
     color: var(--text-primary);
-    font-weight: 850 !important;
+    font-weight: 600 !important;
   }
 
   .ai-project-session-icon-btn {
@@ -6049,19 +6002,19 @@
     justify-content: center;
     border: 1px solid var(--accent) !important;
     background: var(--accent) !important;
-    color: var(--text-on-accent) !important;
+    color: var(--accent-foreground) !important;
   }
 
   .ai-project-new-session-btn:hover {
     border-color: var(--accent-hover) !important;
     background: var(--accent-hover) !important;
-    color: var(--text-on-accent) !important;
+    color: var(--accent-foreground) !important;
   }
 
   .ai-project-session-divider {
     height: 1px;
     margin: 4px 10px 2px;
-    background: rgb(var(--accent-rgb) / 0.12) !important;
+    background: var(--border-dim) !important;
   }
 
   .ai-project-session-list {
@@ -6081,28 +6034,24 @@
     padding: 7px 12px;
     overflow: hidden;
     cursor: pointer;
-    border: 1px solid rgb(var(--accent-rgb) / 0.1) !important;
+    border: 1px solid transparent !important;
     border-radius: 8px !important;
-    background:
-      linear-gradient(90deg, rgba(255, 255, 255, 0.03), transparent), var(--bg-sidebar) !important;
+    background: transparent !important;
     color: var(--text-secondary);
     transition:
       border-color 0.16s ease,
-      background 0.16s ease,
-      transform 0.16s ease,
-      box-shadow 0.16s ease;
-  }
-
-  .ai-project-session-row:hover,
-  .ai-project-session-row.is-active {
-    border-color: rgb(var(--accent-rgb) / 0.36) !important;
-    background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.13), transparent 72%), var(--bg-sidebar) !important;
-    box-shadow: 0 0 24px rgb(var(--accent-rgb) / 0.1);
+      background 0.16s ease;
   }
 
   .ai-project-session-row:hover {
-    transform: translateX(2px);
+    background: var(--bg-hover) !important;
+  }
+
+  .ai-project-session-row.is-active,
+  .ai-project-session-row.is-active:hover {
+    border-color: var(--border-dim) !important;
+    background: var(--bg-selected) !important;
+    color: var(--text-primary);
   }
 
   .ai-project-session-row-title {
@@ -6110,7 +6059,7 @@
     align-items: center;
     gap: 5px;
     color: var(--text-primary);
-    font-weight: 750 !important;
+    font-weight: 500 !important;
   }
 
   .ai-project-session-row-title > span {
@@ -6151,7 +6100,7 @@
     display: flex;
     justify-content: flex-start;
     padding: 10px;
-    border-top: 1px solid rgb(var(--accent-rgb) / 0.12) !important;
+    border-top: 1px solid var(--border-dim) !important;
     background: var(--bg-sidebar) !important;
   }
 
@@ -6398,9 +6347,9 @@
     width: 38px;
     height: 38px;
     padding: 0;
-    border: 1px solid rgb(var(--accent-rgb) / 0.16);
+    border: 1px solid transparent;
     border-radius: 10px;
-    background: rgb(var(--bg-card-rgb) / 0.34);
+    background: transparent;
     color: var(--text-muted);
     cursor: pointer;
     transition:
@@ -6411,8 +6360,8 @@
 
   .ai-sidebar-footer-menu-trigger:hover,
   .ai-sidebar-footer-menu-trigger[data-state="open"] {
-    border-color: rgb(var(--accent-rgb) / 0.42);
-    background: rgb(var(--accent-rgb) / 0.13);
+    border-color: var(--border-dim);
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 
@@ -6422,10 +6371,9 @@
     padding: 12px;
     border: 1px solid var(--border-medium);
     border-radius: 12px;
-    background: color-mix(in srgb, var(--bg-elevated) 95%, transparent);
+    background: var(--bg-elevated);
     color: var(--text-primary);
     box-shadow: var(--shadow-lg);
-    backdrop-filter: blur(18px) saturate(1.15);
   }
 
   .ai-sidebar-footer-menu-title {
@@ -6458,27 +6406,21 @@
     justify-content: center !important;
     width: 38px !important;
     height: 38px !important;
-    border: 1px solid rgb(var(--accent-rgb) / 0.14) !important;
+    border: 1px solid transparent !important;
     border-radius: 8px !important;
     padding: 0 !important;
-    background:
-      linear-gradient(180deg, rgb(var(--accent-rgb) / 0.06), transparent), var(--bg-sidebar) !important;
+    background: transparent !important;
     color: var(--text-muted) !important;
-    opacity: 0.82 !important;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
     transition:
       border-color 0.16s ease,
       background 0.16s ease,
-      color 0.16s ease,
-      opacity 0.16s ease,
-      box-shadow 0.16s ease;
+      color 0.16s ease;
   }
 
   .ai-sidebar-footer-actions button:hover {
-    border-color: rgb(var(--accent-rgb) / 0.42) !important;
-    background: rgb(var(--accent-rgb) / 0.11) !important;
-    color: var(--text-primary);
-    opacity: 1 !important;
+    border-color: var(--border-dim) !important;
+    background: var(--bg-hover) !important;
+    color: var(--text-primary) !important;
   }
 
   .ai-sidebar-footer-action:has(button:hover) {
@@ -6830,7 +6772,7 @@
   .ai-streamdown blockquote {
     margin: 0.8em 0;
     padding: 2px 0 2px 12px;
-    border-left: 3px solid color-mix(in srgb, var(--accent) 45%, var(--border-medium));
+    border-left: 2px solid var(--border-medium);
     color: var(--text-secondary);
   }
 
@@ -6838,17 +6780,17 @@
     height: 1px;
     margin: 1.2em 0;
     border: 0;
-    background: linear-gradient(90deg, transparent, var(--border-medium), transparent);
+    background: var(--border-dim);
   }
 
   .ai-streamdown a {
-    color: var(--accent);
+    color: var(--text-link);
     text-decoration: none;
-    border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--text-link) 35%, transparent);
   }
 
   .ai-streamdown a:hover {
-    color: var(--accent-hover);
+    color: var(--text-link-hover);
   }
 
   .ai-streamdown strong {
@@ -6925,72 +6867,6 @@
 
   .ai-katex-menu button:hover {
     background: var(--accent-subtle);
-  }
-
-  .ai-streamdown [data-streamdown="code-block"] {
-    gap: 0;
-    margin-block: 0;
-    overflow: hidden;
-    border: 1px solid var(--streamdown-code-border);
-    border-radius: 8px;
-    padding: 0;
-    background: var(--streamdown-code-bg);
-    box-shadow: var(--streamdown-code-shadow);
-  }
-
-  .ai-streamdown [data-streamdown="code-block-header"] {
-    height: 36px;
-    padding: 0 12px;
-    border-bottom: 1px solid var(--streamdown-code-border);
-    background: var(--streamdown-code-toolbar-bg);
-    color: var(--streamdown-code-muted);
-  }
-
-  .ai-streamdown [data-streamdown="code-block-header"] > span {
-    margin-left: 0;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-  }
-
-  .ai-streamdown [data-streamdown="code-block-actions"] {
-    margin-right: 6px;
-    border-color: var(--streamdown-code-border);
-    background: var(--streamdown-code-toolbar-bg);
-    color: var(--streamdown-code-muted);
-    box-shadow: none;
-  }
-
-  .ai-streamdown [data-streamdown="code-block-actions"] button {
-    border-radius: 5px;
-    color: inherit;
-    transition:
-      color var(--motion-fast) var(--motion-ease),
-      background var(--motion-fast) var(--motion-ease);
-  }
-
-  .ai-streamdown [data-streamdown="code-block-actions"] button:hover {
-    background: var(--streamdown-code-hover-bg);
-    color: var(--streamdown-code-text);
-  }
-
-  .ai-streamdown [data-streamdown="code-block-body"] {
-    border: 0;
-    border-radius: 0;
-    padding: 14px 16px 16px;
-    background: var(--streamdown-code-bg);
-    color: var(--streamdown-code-text);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    line-height: 1.65;
-  }
-
-  .ai-streamdown [data-streamdown="code-block-body"] pre,
-  .ai-streamdown [data-streamdown="code-block-body"] code,
-  .ai-streamdown [data-streamdown="code-block-body"] span {
-    font-family: var(--font-mono);
-    font-size: 13px;
   }
 
   .ai-streamdown [data-streamdown="table-wrapper"] {
@@ -7102,18 +6978,17 @@
     background: rgb(var(--accent-rgb) / 0.55);
   }
 
-  /* 分隔条键盘化（UI-23c）：5 条工作区分隔条统一 focus-visible 高亮——
-     accent 令牌描边，不硬编码色值；细把手用负 offset 保证可见。 */
+  /* 分隔条键盘化：焦点令牌与中性选中态分离；负 offset 保证细把手轮廓可见。 */
   .ai-sidebar-resize-handle:focus-visible,
   .ai-splitter:focus-visible,
   .ai-shell-terminal-resize:focus-visible,
   .ai-home-chat-resizer:focus-visible {
-    outline: 2px solid rgb(var(--accent-rgb) / 0.65);
+    outline: 2px solid var(--border-focus);
     outline-offset: -2px;
   }
 
   .ai-sidebar-resize-handle:focus-visible::after {
-    background: rgb(var(--accent-rgb) / 0.55);
+    background: var(--border-focus);
   }
 
   /* Radix ScrollArea 会给 Viewport 子节点包一层 display:table 的 shrink-to-fit
@@ -7147,8 +7022,8 @@
     max-width: 100%;
     overflow: hidden;
     color: var(--text-muted);
-    font-size: 13.5px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
     transition:
       background var(--motion-fast) var(--motion-ease),
       color var(--motion-fast) var(--motion-ease);
@@ -7174,9 +7049,6 @@
   }
 
   .ai-category-header[data-expanded="true"] {
-    background:
-      linear-gradient(90deg, rgb(var(--accent-rgb) / 0.12), transparent),
-      rgb(var(--bg-card-rgb) / 0.3);
     color: var(--text-primary);
   }
 
@@ -7253,25 +7125,22 @@
 
   .ai-session-item-active,
   .ai-session-item-active:hover {
-    border-color: rgb(var(--accent-rgb) / 0.22);
-    background:
-      linear-gradient(100deg, rgb(var(--accent-rgb) / 0.2), rgb(var(--accent-rgb) / 0.08)),
-      rgb(var(--bg-card-rgb) / 0.3);
+    border-color: var(--border-dim);
+    background: var(--bg-selected);
     color: var(--text-primary);
-    box-shadow: inset 2.5px 0 0 var(--accent);
   }
 
   .ai-category-sessions {
     margin-left: 7px;
     padding-left: 5px;
-    border-left: 1px solid rgb(var(--accent-rgb) / 0.12);
+    border-left: 1px solid var(--border-dim);
   }
 
   .ai-session-search-results {
     padding: 4px;
-    border: 1px solid rgb(var(--accent-rgb) / 0.16);
+    border: 1px solid var(--border-dim);
     border-radius: var(--radius-lg);
-    background: rgb(var(--accent-rgb) / 0.035);
+    background: var(--bg-subtle);
   }
 
   .ai-session-search-results-header {
@@ -7281,7 +7150,7 @@
     padding: 5px 7px 9px;
     color: var(--text-secondary);
     font-size: 12px;
-    font-weight: 750;
+    font-weight: 600;
   }
 
   .ai-session-search-results-count {
@@ -7293,19 +7162,19 @@
     justify-content: center;
     padding-inline: 5px;
     border-radius: var(--radius-full);
-    background: rgb(var(--accent-rgb) / 0.15);
+    background: var(--bg-selected);
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
   }
 
   .ai-session-item.is-search-result {
-    border-color: rgb(var(--accent-rgb) / 0.12);
-    background: rgb(var(--bg-card-rgb) / 0.48);
+    border-color: var(--border-dim);
+    background: var(--bg-card);
   }
 
   .ai-session-item.is-search-result:hover {
-    border-color: rgb(var(--accent-rgb) / 0.28);
-    background: rgb(var(--accent-rgb) / 0.1);
+    border-color: var(--border-medium);
+    background: var(--bg-hover);
   }
 
   .ai-session-search-match {
@@ -7314,7 +7183,7 @@
     border-radius: 4px;
     background: rgb(var(--accent-rgb) / 0.22);
     color: var(--text-primary);
-    font-weight: 850;
+    font-weight: 700;
   }
 
   .ai-session-menu-trigger {
@@ -7374,7 +7243,7 @@
   }
 
   .ai-empty-logo {
-    box-shadow: var(--shadow-md);
+    border: 1px solid var(--border-dim);
   }
 
   .ai-empty-copy {
@@ -7405,16 +7274,12 @@
     cursor: pointer;
     transition:
       border-color var(--motion-fast) var(--motion-ease),
-      background var(--motion-fast) var(--motion-ease),
-      box-shadow var(--motion-fast) var(--motion-ease),
-      transform var(--motion-fast) var(--motion-ease);
+      background var(--motion-fast) var(--motion-ease);
   }
 
   .ai-category-picker-card:hover {
-    border-color: var(--border-accent);
-    background: var(--bg-elevated);
-    box-shadow: var(--shadow-sm);
-    transform: translateY(-1px);
+    border-color: var(--border-medium);
+    background: var(--bg-hover);
   }
 
   /* 加载骨架：与卡片同网格占位 */
@@ -7495,17 +7360,13 @@
     cursor: pointer;
     transition:
       border-color var(--motion-fast) var(--motion-ease),
-      background var(--motion-fast) var(--motion-ease),
-      box-shadow var(--motion-fast) var(--motion-ease),
-      transform var(--motion-fast) var(--motion-ease);
+      background var(--motion-fast) var(--motion-ease);
   }
 
   .ai-prompt-card:hover {
-    border-color: var(--border-accent);
-    background: var(--bg-elevated);
+    border-color: var(--border-medium);
+    background: var(--bg-hover);
     color: var(--text-primary);
-    box-shadow: var(--shadow-sm);
-    transform: translateY(-1px);
   }
 
   .ai-prompt-card-arrow {
@@ -7520,18 +7381,17 @@
   /* ── Composer ── */
 
   .ai-prompt-terminal {
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    background: var(--card);
-    box-shadow: var(--composer-shadow);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-xl);
+    background: var(--bg-input);
     transition:
       border-color var(--motion-fast) var(--motion-ease),
       box-shadow var(--motion-fast) var(--motion-ease);
   }
 
   .ai-prompt-terminal:focus-within {
-    border-color: var(--accent);
-    box-shadow: var(--composer-shadow), var(--chat-focus-ring);
+    border-color: var(--border-focus);
+    box-shadow: var(--chat-focus-ring);
   }
 
   .ai-prompt-editor {
@@ -7583,10 +7443,10 @@
 
   .ai-model-selector {
     height: 30px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-full);
-    background: var(--muted);
-    color: var(--foreground);
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
     transition:
       background var(--motion-fast) var(--motion-ease),
       color var(--motion-fast) var(--motion-ease);
@@ -7594,13 +7454,13 @@
 
   .ai-model-selector:hover:not(:disabled),
   .ai-model-selector[data-state="open"] {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--foreground);
+    border-color: var(--border-dim);
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .ai-model-selector-icon {
-    color: var(--accent);
+    color: var(--text-muted);
   }
 
   .ai-model-selector-chevron {
@@ -7637,14 +7497,12 @@
     border-radius: var(--radius-full);
     transition:
       background var(--motion-fast) var(--motion-ease),
-      transform var(--motion-fast) var(--motion-ease),
-      box-shadow var(--motion-fast) var(--motion-ease);
+      transform var(--motion-fast) var(--motion-ease);
   }
 
   .ai-composer-action.is-send {
     background: var(--accent);
-    color: var(--text-on-accent);
-    box-shadow: 0 4px 12px rgb(var(--accent-rgb) / 0.28);
+    color: var(--accent-foreground);
   }
 
   .ai-composer-action.is-send:hover:not(:disabled) {
@@ -7663,7 +7521,6 @@
 
   .ai-composer-action.is-stop {
     border-radius: var(--radius-full);
-    box-shadow: 0 4px 12px rgb(var(--danger-rgb) / 0.22);
   }
 
   /* ── Messages ── */
@@ -7672,60 +7529,35 @@
     color: var(--text-primary);
   }
 
+  .ai-agent-status {
+    display: flex;
+    min-height: 32px;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 20px;
+  }
+
   .ai-chat-avatar {
     width: 30px;
     height: 30px;
-    border: 2px solid var(--bg-elevated);
+    border: 1px solid var(--border-dim);
     background: var(--bg-card);
-    box-shadow:
-      0 0 0 1px var(--border-dim),
-      0 5px 14px rgb(31 42 38 / 0.12);
-    transition:
-      transform var(--motion-normal) var(--motion-ease),
-      box-shadow var(--motion-normal) var(--motion-ease);
+    transition: border-color var(--motion-fast) var(--motion-ease);
   }
 
   .ai-chat-avatar > img {
     object-fit: cover;
   }
 
-  .ai-chat-avatar.is-assistant {
-    box-shadow:
-      0 0 0 1px rgb(var(--accent-rgb) / 0.2),
-      0 5px 16px rgb(var(--accent-rgb) / 0.18);
-  }
-
-  .ai-chat-avatar.is-user {
-    box-shadow:
-      0 0 0 1px rgb(var(--warning-rgb) / 0.18),
-      0 5px 16px rgb(var(--warning-rgb) / 0.14);
-  }
-
-  .ai-user-message:hover .ai-chat-avatar,
-  .ai-assistant-message:hover .ai-chat-avatar {
-    transform: translateY(-1px) scale(1.035);
-  }
-
   .ai-chat-avatar.is-active {
-    animation: ai-avatar-breathe 1.8s var(--motion-ease) infinite;
-  }
-
-  @keyframes ai-avatar-breathe {
-    0%,
-    100% {
-      box-shadow:
-        0 0 0 1px rgb(var(--accent-rgb) / 0.22),
-        0 5px 16px rgb(var(--accent-rgb) / 0.16);
-    }
-    50% {
-      box-shadow:
-        0 0 0 4px rgb(var(--accent-rgb) / 0.1),
-        0 7px 20px rgb(var(--accent-rgb) / 0.24);
-    }
+    border-color: var(--border-strong);
   }
 
   .ai-user-bubble {
-    background: var(--accent-soft);
+    background: var(--chat-user-bubble-bg);
     color: var(--chat-user-bubble-text);
   }
 
@@ -7772,9 +7604,9 @@
 
   .ai-reasoning-block {
     overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--bg-subtle) 42%, transparent);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
   }
 
   .ai-reasoning-trigger {
@@ -7789,68 +7621,12 @@
   }
 
   .ai-reasoning-trigger:hover {
-    background: var(--bg-subtle);
+    background: var(--bg-hover);
   }
 
   .ai-reasoning-title {
     font-size: 12px;
     font-weight: 500;
-  }
-
-  /* 草稿块协议：折叠进思考过程的中间推理段计数徽标。 */
-  .ai-reasoning-meta {
-    flex-shrink: 0;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    padding: 1px 8px;
-    color: var(--text-muted);
-    font-size: 10.5px;
-    line-height: 1.5;
-  }
-
-  /* 草稿块协议：思考过程折叠区内的单段中间推理（置于主思考链之后）。 */
-  .ai-reasoning-draft {
-    border-left: 2px solid var(--border-subtle);
-    padding-left: 8px;
-  }
-
-  .ai-reasoning-draft-label {
-    display: block;
-    margin-bottom: 2px;
-    color: var(--text-muted);
-    font-size: 10.5px;
-    font-style: normal;
-    letter-spacing: 0.02em;
-  }
-
-  .ai-reasoning-shimmer {
-    color: transparent;
-    background: linear-gradient(
-      100deg,
-      var(--text-muted) 20%,
-      var(--text-primary) 48%,
-      var(--text-muted) 76%
-    );
-    background-size: 220% 100%;
-    background-clip: text;
-    animation: ai-reasoning-shimmer 1.45s linear infinite;
-  }
-
-  @keyframes ai-reasoning-shimmer {
-    from {
-      background-position: 100% 0;
-    }
-    to {
-      background-position: -120% 0;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .ai-reasoning-shimmer {
-      color: var(--text-secondary);
-      background: none;
-      animation: none;
-    }
   }
 
   /* ── Session keyword bar pinned to the top of the chat column ── */
@@ -7952,28 +7728,23 @@
     background: var(--accent-soft);
   }
 
-  /* ── Tool call cards ── */
+  /* ── 工具活动：动作行 + 按需展开的详情 ── */
 
   .ai-tool-call-card {
     overflow: hidden;
-    border-color: var(--border-dim);
-    background: var(--bg-card);
-    transition:
-      border-color var(--motion-fast) var(--motion-ease),
-      background var(--motion-fast) var(--motion-ease);
+    border-radius: var(--radius-md);
+    background: transparent;
+    transition: background var(--motion-fast) var(--motion-ease);
   }
 
-  .ai-tool-call-card--running {
-    animation: ai-tool-call-breathe 1.5s ease-in-out infinite;
-  }
-
-  .ai-tool-call-card:hover {
-    border-color: var(--border-medium);
+  .ai-tool-call-card:hover,
+  .ai-tool-call-card[data-state="open"] {
+    background: color-mix(in srgb, var(--bg-subtle) 48%, transparent);
   }
 
   .ai-tool-call-card--error,
   .ai-tool-call-card--error:hover {
-    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 5%, transparent);
   }
 
   .ai-tool-call-trigger {
@@ -7982,64 +7753,7 @@
   }
 
   .ai-tool-call-trigger:hover {
-    background: var(--bg-hover);
-  }
-
-  .ai-tool-call-summary {
-    transition:
-      border-color var(--motion-fast) var(--motion-ease),
-      background var(--motion-fast) var(--motion-ease);
-  }
-
-  .ai-tool-call-line {
-    position: absolute;
-    top: 17px;
-    bottom: -10px;
-    left: 11px;
-    width: 1px;
-    background: var(--border-medium);
-  }
-
-  .ai-tool-call-node {
-    position: absolute;
-    top: 9px;
-    left: 4px;
-    z-index: 1;
-    display: inline-flex;
-    width: 16px;
-    height: 16px;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-full);
-    background: var(--bg-card);
-    color: var(--text-muted);
-  }
-
-  .ai-tool-call-node--success {
-    color: var(--success);
-  }
-
-  .ai-tool-call-node--error {
-    color: var(--danger);
-  }
-
-  .ai-tool-call-node--running {
-    color: var(--accent);
-  }
-
-  /* planned（等待执行）：琥珀 pending，与「运行中」青绿区分（UI-12 双编码） */
-  .ai-tool-call-node--planned {
-    color: var(--warning);
-  }
-
-  /* 聚合收起时固定露出的失败/运行中/等待卡容器（UI-12：折叠不隐藏错误） */
-  .ai-tool-call-pinned {
-    margin-top: 2px;
-  }
-
-  .ai-tool-summary-pills {
-    max-width: 55%;
-    overflow: hidden;
+    background: var(--bg-subtle);
   }
 
   /* ── 状态双编码 pill（UI-12 建立；detail/StatusPill.tsx 唯一消费者入口）──
@@ -8099,22 +7813,6 @@
 
   .ai-tool-call-code .shiki code {
     font: inherit;
-  }
-
-  @keyframes ai-tool-call-breathe {
-    0%,
-    100% {
-      opacity: 0.6;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .ai-tool-call-card--running {
-      animation: none;
-    }
   }
 
   .ai-migrated-tool-activity {
@@ -8421,7 +8119,7 @@
     position: fixed;
     inset: 0;
     z-index: 400;
-    background: rgb(23 32 29 / 0.32);
+    background: var(--bg-overlay);
     backdrop-filter: blur(6px);
     animation: ai-fade-in 120ms ease-out;
   }
@@ -8716,6 +8414,7 @@
   }
 
   .ai-set-link-button:hover {
+    color: var(--text-link-hover);
     text-decoration: underline;
   }
 
@@ -8850,6 +8549,7 @@
   }
 
   .ai-set-switch.is-on .ai-set-switch-thumb {
+    background: var(--accent-foreground);
     transform: translateX(14px);
   }
 
@@ -9415,7 +9115,7 @@
     border: 1px solid var(--border-dim);
     border-radius: 8px;
     background: var(--bg-card);
-    box-shadow: 0 2px 10px rgb(23 32 29 / 0.08);
+    box-shadow: var(--shadow-sm);
   }
 
   .ai-workflow-minimap .react-flow__minimap-mask {
@@ -9487,7 +9187,6 @@
     border: 1px solid var(--border-medium);
     border-radius: 10px;
     background: var(--bg-card);
-    box-shadow: 0 1px 3px rgb(23 32 29 / 0.05);
     cursor: pointer;
     transition:
       border-color 120ms ease-out,
@@ -9497,14 +9196,13 @@
 
   .ai-workflow-node:hover {
     border-color: var(--border-strong);
-    box-shadow: 0 4px 14px rgb(23 32 29 / 0.1);
-    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
   }
 
   .ai-workflow-node--selected,
   .ai-workflow-node--selected:hover {
-    border-color: var(--border-focus);
-    box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / 0.22);
+    border-color: var(--border-strong);
+    box-shadow: 0 0 0 1px var(--border-strong);
   }
 
   .ai-workflow-node-status-ring {
@@ -9658,7 +9356,7 @@
     border-radius: 8px;
     background: var(--bg-card);
     padding: 3px;
-    box-shadow: 0 2px 10px rgb(23 32 29 / 0.08);
+    box-shadow: var(--shadow-sm);
   }
 
   .ai-workflow-control-btn {
@@ -9825,7 +9523,7 @@
     width: min(420px, 92%);
     border-left: 1px solid var(--border-medium);
     background: var(--bg-elevated);
-    box-shadow: -12px 0 32px rgb(23 32 29 / 0.14);
+    box-shadow: var(--shadow-lg);
   }
 
   .ai-workflow-drawer-header {
@@ -10137,7 +9835,7 @@
 
   .ai-workflow-expected-files:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--border-focus);
   }
 
   .ai-workflow-catalog-diagnostics {
@@ -10182,7 +9880,7 @@
   .ai-workflow-view-switch-tab.is-active {
     background: var(--bg-card);
     color: var(--text-primary);
-    box-shadow: 0 1px 2px rgb(23 32 29 / 0.08);
+    box-shadow: var(--shadow-xs);
   }
 
   /* 已产出执行结果的「执行结果」页签：非活动态以 accent 点亮，
@@ -10962,7 +10660,7 @@
 
 /* ── Streamdown 渲染引擎兼容修复 ──
    这些规则必须声明在 utilities 层并放在文件末尾：它们覆盖的是 streamdown
-   组件内联携带的 Tailwind 工具类（`-mt-10`、`[&_svg]:w-auto`）。CSS 层叠中
+   组件内联携带的 Tailwind 工具类（`p-2`、`rounded-md`、`[&_svg]:w-auto`）。CSS 层叠中
    utilities 层永远压过 components 层（层优先级高于层内特异度比较），因此
    不能放进上面的 @layer components 块。 */
 
@@ -10983,22 +10681,85 @@
     width: 100%;
   }
 
-  /* 2) 代码块操作栏（复制按钮）错位：
-     streamdown 用 `sticky top-2 z-10 -mt-10` 把操作栏叠到 header 上——40px
-     偏移是其默认形态（h-8 header + gap-2）的假设。应用侧把 header 收敛为
-     36px、root gap 清零后假设失效；且 code-block 的 overflow:hidden 使其
-     成为 sticky 的滚动容器，`top:8px` 的 sticky 锚点把工具条往下压 8px、
-     h-8(32px) 的流内占位又把代码正文推得与 header 底边重叠。这里一并
-     修正：sticky 锚点归零、高度自适应工具条实际高度、负 margin 让工具条
-     精确覆盖 36px header 且不留流内占位（正文紧贴 header 底）。 */
-  .ai-streamdown [data-streamdown="code-block"] > .sticky {
-    top: 0;
-    height: auto;
-    margin-top: -40px;
-    margin-bottom: 0;
+  /* 2) 代码块只有一个外框：库默认给外框 p-2/gap-2、正文 rounded-md/border，
+     若这些规则放在 components 层，工具类会把内部重新绘制成嵌套卡片。
+     覆盖集中放在同一个 utilities 层，保留正文滚动与库自身代码高亮。 */
+  .ai-streamdown [data-streamdown="code-block"] {
+    position: relative;
+    gap: 0;
+    margin-block: 1em;
+    overflow: hidden;
+    border: 1px solid var(--streamdown-code-border);
+    border-radius: 8px;
+    padding: 0;
+    background: var(--streamdown-code-bg);
+    box-shadow: var(--streamdown-code-shadow);
   }
 
-  .ai-streamdown [data-streamdown="code-block"] > .sticky > [data-streamdown="code-block-actions"] {
-    margin-top: -4px;
+  .ai-streamdown [data-streamdown="code-block-header"] {
+    height: 36px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--streamdown-code-border);
+    background: var(--streamdown-code-toolbar-bg);
+    color: var(--streamdown-code-muted);
+  }
+
+  .ai-streamdown [data-streamdown="code-block-header"] > span {
+    margin-left: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  /* 操作栏在固定高度的 header 内定位，不再依赖库的负 margin 与 gap 假设。 */
+  .ai-streamdown [data-streamdown="code-block"] > .sticky {
+    position: absolute;
+    top: 0;
+    right: 8px;
+    height: 36px;
+    margin: 0;
+  }
+
+  .ai-streamdown [data-streamdown="code-block-actions"] {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--streamdown-code-muted);
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .ai-streamdown [data-streamdown="code-block-actions"] button {
+    border-radius: 5px;
+    color: inherit;
+    transition:
+      color var(--motion-fast) var(--motion-ease),
+      background var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-streamdown [data-streamdown="code-block-actions"] button:hover {
+    background: var(--streamdown-code-hover-bg);
+    color: var(--streamdown-code-text);
+  }
+
+  .ai-streamdown [data-streamdown="code-block-body"] {
+    border: 0;
+    border-radius: 0;
+    padding: 14px 16px 16px;
+    background: var(--streamdown-code-bg);
+    color: var(--streamdown-code-text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.65;
+  }
+
+  .ai-streamdown [data-streamdown="code-block-body"] pre,
+  .ai-streamdown [data-streamdown="code-block-body"] code,
+  .ai-streamdown [data-streamdown="code-block-body"] span {
+    font-family: var(--font-mono);
+    font-size: 13px;
   }
 }

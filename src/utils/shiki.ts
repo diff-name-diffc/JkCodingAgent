@@ -52,43 +52,42 @@ let highlighterPromise: Promise<ShikiHighlighter> | null = null;
 const attemptedLanguages = new Set<string>(["plaintext"]);
 
 /**
- * 自定义青绿调亮色主题，配色与应用 `--accent` (#297c70) 体系一致，
- * 避免 github-light 的蓝紫高亮与整体令牌冲突。
- * 注意：`bg` 与 App.css `:root` 的 `--markdown-code-bg` (#f9fdfc) 是分别
+ * 中性代码阅读主题：灰阶底色与正文，语法高亮仅用克制的蓝、紫、橙区分。
+ * 注意：`bg` 与 App.css `:root` 的 `--markdown-code-bg` (#f7f7f7) 是分别
  * 维护的两份取值，调整亮色面板色板时需同步两处。
  * 显式 ThemeRegistration 标注：tokenColors 字段名/结构错误可在编译期发现。
  */
-export const TEAL_LIGHT_THEME: ThemeRegistration = {
-  name: "teal-light",
+export const NEUTRAL_LIGHT_THEME: ThemeRegistration = {
+  name: "neutral-light",
   type: "light" as const,
-  fg: "#17201D",
-  bg: "#f9fdfc",
+  fg: "#262626",
+  bg: "#f7f7f7",
   colors: {
-    "editor.foreground": "#17201D",
-    "editor.background": "#f9fdfc",
+    "editor.foreground": "#262626",
+    "editor.background": "#f7f7f7",
   },
   tokenColors: [
-    { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#89928E" } },
-    { scope: ["string", "punctuation.definition.string"], settings: { foreground: "#1B7A4B" } },
-    { scope: ["constant", "entity.name.constant"], settings: { foreground: "#0F766E" } },
-    { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#B45309" } },
-    { scope: ["keyword.control"], settings: { foreground: "#9A3412" } },
+    { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#6b6b6b" } },
+    { scope: ["string", "punctuation.definition.string"], settings: { foreground: "#315f8c" } },
+    { scope: ["constant", "entity.name.constant"], settings: { foreground: "#9a551f" } },
+    { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#7353a6" } },
+    { scope: ["keyword.control"], settings: { foreground: "#7353a6" } },
     {
       scope: ["entity", "entity.name.function", "support.function"],
-      settings: { foreground: "#1F665D" },
+      settings: { foreground: "#365f9b" },
     },
     {
       scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"],
-      settings: { foreground: "#155E54" },
+      settings: { foreground: "#7b5a32" },
     },
-    { scope: ["entity.name.tag"], settings: { foreground: "#0F766E" } },
-    { scope: ["entity.other.attribute-name"], settings: { foreground: "#B45309" } },
-    { scope: ["variable", "variable.parameter"], settings: { foreground: "#17201D" } },
-    { scope: ["variable.language"], settings: { foreground: "#9A3412" } },
-    { scope: ["support"], settings: { foreground: "#0F766E" } },
-    { scope: ["meta.property-name", "meta.property-value"], settings: { foreground: "#0F766E" } },
-    { scope: ["punctuation"], settings: { foreground: "#4A605C" } },
-    { scope: ["markup.heading"], settings: { foreground: "#1F665D", fontStyle: "bold" } },
+    { scope: ["entity.name.tag"], settings: { foreground: "#365f9b" } },
+    { scope: ["entity.other.attribute-name"], settings: { foreground: "#7353a6" } },
+    { scope: ["variable", "variable.parameter"], settings: { foreground: "#262626" } },
+    { scope: ["variable.language"], settings: { foreground: "#7353a6" } },
+    { scope: ["support"], settings: { foreground: "#365f9b" } },
+    { scope: ["meta.property-name", "meta.property-value"], settings: { foreground: "#315f8c" } },
+    { scope: ["punctuation"], settings: { foreground: "#666666" } },
+    { scope: ["markup.heading"], settings: { foreground: "#262626", fontStyle: "bold" } },
     { scope: ["markup.bold"], settings: { fontStyle: "bold" } },
     { scope: ["markup.italic"], settings: { fontStyle: "italic" } },
     { scope: ["markup.inserted"], settings: { foreground: "#1B7A4B" } },
@@ -98,42 +97,40 @@ export const TEAL_LIGHT_THEME: ThemeRegistration = {
 };
 
 /**
- * teal-light 的暗色对偶，与 `.dark` 面板色板一致。
- * 注意：`bg` (#101412) 对应 App.css `.dark` 的 `--markdown-code-bg`，
- * entity/tag 主色 (#55c7ad) 对应 `.dark` 的 `--accent`——两者在此为硬编码，
- * 调整暗色面板色板时需同步 App.css 对应 CSS 变量。
+ * 亮色主题的暗色对偶，语法色提高亮度以适配深灰底色。
+ * `bg` (#1b1b1b) 需与 App.css `.dark` 的 `--markdown-code-bg` 同步。
  */
-export const TEAL_DARK_THEME: ThemeRegistration = {
-  name: "teal-dark",
+export const NEUTRAL_DARK_THEME: ThemeRegistration = {
+  name: "neutral-dark",
   type: "dark" as const,
-  fg: "#e7ece9",
-  bg: "#101412",
+  fg: "#e5e5e5",
+  bg: "#1b1b1b",
   colors: {
-    "editor.foreground": "#e7ece9",
-    "editor.background": "#101412",
+    "editor.foreground": "#e5e5e5",
+    "editor.background": "#1b1b1b",
   },
   tokenColors: [
-    { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#7d8a85" } },
-    { scope: ["string", "punctuation.definition.string"], settings: { foreground: "#7ee0a8" } },
-    { scope: ["constant", "entity.name.constant"], settings: { foreground: "#5eead4" } },
-    { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#f5a97f" } },
-    { scope: ["keyword.control"], settings: { foreground: "#fda883" } },
+    { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#a3a3a3" } },
+    { scope: ["string", "punctuation.definition.string"], settings: { foreground: "#a1bfdd" } },
+    { scope: ["constant", "entity.name.constant"], settings: { foreground: "#d8a373" } },
+    { scope: ["keyword", "storage.type", "storage.modifier"], settings: { foreground: "#b6a0d8" } },
+    { scope: ["keyword.control"], settings: { foreground: "#b6a0d8" } },
     {
       scope: ["entity", "entity.name.function", "support.function"],
-      settings: { foreground: "#70d6be" },
+      settings: { foreground: "#91b4df" },
     },
     {
       scope: ["entity.name.type", "entity.name.class", "support.type", "support.class"],
-      settings: { foreground: "#55c7ad" },
+      settings: { foreground: "#d4b58d" },
     },
-    { scope: ["entity.name.tag"], settings: { foreground: "#55c7ad" } },
-    { scope: ["entity.other.attribute-name"], settings: { foreground: "#f5a97f" } },
-    { scope: ["variable", "variable.parameter"], settings: { foreground: "#e7ece9" } },
-    { scope: ["variable.language"], settings: { foreground: "#fda883" } },
-    { scope: ["support"], settings: { foreground: "#55c7ad" } },
-    { scope: ["meta.property-name", "meta.property-value"], settings: { foreground: "#55c7ad" } },
-    { scope: ["punctuation"], settings: { foreground: "#9ba7a2" } },
-    { scope: ["markup.heading"], settings: { foreground: "#70d6be", fontStyle: "bold" } },
+    { scope: ["entity.name.tag"], settings: { foreground: "#91b4df" } },
+    { scope: ["entity.other.attribute-name"], settings: { foreground: "#b6a0d8" } },
+    { scope: ["variable", "variable.parameter"], settings: { foreground: "#e5e5e5" } },
+    { scope: ["variable.language"], settings: { foreground: "#b6a0d8" } },
+    { scope: ["support"], settings: { foreground: "#91b4df" } },
+    { scope: ["meta.property-name", "meta.property-value"], settings: { foreground: "#a1bfdd" } },
+    { scope: ["punctuation"], settings: { foreground: "#a3a3a3" } },
+    { scope: ["markup.heading"], settings: { foreground: "#e5e5e5", fontStyle: "bold" } },
     { scope: ["markup.bold"], settings: { fontStyle: "bold" } },
     { scope: ["markup.italic"], settings: { fontStyle: "italic" } },
     { scope: ["markup.inserted"], settings: { foreground: "#7ee0a8" } },
@@ -150,7 +147,7 @@ async function getHighlighter() {
     ]).then(async ([{ createHighlighterCore }, { createJavaScriptRegexEngine }]) => {
       const highlighter = (await createHighlighterCore({
         engine: createJavaScriptRegexEngine(),
-        themes: [TEAL_LIGHT_THEME, TEAL_DARK_THEME],
+        themes: [NEUTRAL_LIGHT_THEME, NEUTRAL_DARK_THEME],
       })) as unknown as ShikiHighlighter;
       return highlighter;
     });
@@ -219,7 +216,7 @@ export async function highlightCodeToHtml(
 
   const html = highlighter.codeToHtml(code, {
     lang: resolvedLanguage,
-    theme: dark ? "teal-dark" : "teal-light",
+    theme: dark ? "neutral-dark" : "neutral-light",
   });
   shikiHighlightCache.set(cacheKey, html, code.length);
   return html;
@@ -229,7 +226,7 @@ export async function highlightCodeToHtml(
  * 双主题 token 化（供 streamdown 高亮插件）：一次产出 light/dark 两套配色
  * 的 TokensResult，由 streamdown 经 `--shiki-dark` CSS 变量随 `html.dark`
  * 纯 CSS 切换。语言走与 `highlightCodeToHtml` 相同的按需加载与回退逻辑；
- * 主题固定为预载的双 teal 主题，不参与缓存键。
+ * 主题固定为预载的双中性主题，不参与缓存键。
  */
 export async function tokenizeCodeDualTheme(
   code: string,
@@ -239,6 +236,6 @@ export async function tokenizeCodeDualTheme(
   const resolvedLanguage = await ensureLanguage(language);
   return highlighter.codeToTokens(code, {
     lang: resolvedLanguage,
-    themes: { light: "teal-light", dark: "teal-dark" },
+    themes: { light: "neutral-light", dark: "neutral-dark" },
   });
 }

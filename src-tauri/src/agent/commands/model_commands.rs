@@ -118,7 +118,7 @@ async fn test_chat_compatible_model(
 /// embeds a small inline PNG so the multimodal `image_url` path is actually
 /// exercised — a text-only model misconfigured as the vision model will then
 /// fail here (HTTP 400 / `unknown variant image_url`) instead of silently
-/// passing and crashing `browser_visual_analyze` at runtime.
+/// passing and crashing vision tools at runtime.
 fn build_test_messages(enable_multimodal: bool) -> (Option<String>, Vec<rig::completion::Message>) {
     if !enable_multimodal {
         return (

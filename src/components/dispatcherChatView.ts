@@ -31,6 +31,7 @@ interface OutboundToolCall {
 interface DispatcherAssistantTurn {
   id: string;
   messageIds: string[];
+  thinkingMessageIds: string[];
   tools: ToolActivityItem[];
   segments: AssistantTurnSegment[];
   thinking: AssistantThinkingBlock | null;
@@ -62,6 +63,7 @@ export function buildDispatcherDisplayItems(
     currentTurn = {
       id: `assistant-turn-${sourceUserId ?? seedId}`,
       messageIds: [],
+      thinkingMessageIds: [],
       tools: [],
       segments: [],
       thinking: null,
@@ -91,6 +93,7 @@ export function buildDispatcherDisplayItems(
       turn.messageIds.push(message.id);
       mergeTurnUsageStats(turn, message.usageStats);
       mergeTurnThinking(turn, message.thinkingContent, message.thinkingElapsedMs);
+      if (message.thinkingContent?.trim()) turn.thinkingMessageIds.push(message.id);
 
       const toolCalls = parseToolCalls(message.toolCallsJson);
       for (const toolCall of toolCalls) {

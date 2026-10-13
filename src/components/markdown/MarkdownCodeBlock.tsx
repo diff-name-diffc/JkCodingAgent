@@ -13,7 +13,7 @@ function escapeHtml(value: string) {
 }
 
 function renderPlainCodeHtml(code: string) {
-  return `<pre class="markdown-code-plain"><code>${escapeHtml(code)}</code></pre>`;
+  return `<pre><code>${escapeHtml(code)}</code></pre>`;
 }
 
 /**

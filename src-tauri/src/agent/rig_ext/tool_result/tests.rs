@@ -98,3 +98,61 @@ fn paged_read_tool_gets_larger_inline_budget() {
     assert!(prepared.context_payload.contains("编排器读不到工具产物"));
     assert!(!prepared.context_payload.contains("完整原始结果见工具产物"));
 }
+
+#[test]
+fn exec_output_long_lines_are_line_shaped_before_truncation() {
+    // 回归场景：ssh_exec 递归 grep 命中单行 base64 blob，砍头式整体截断会
+    // 把后续证据行全部吞掉；行级截断削掉超长行后证据行得以全量保留。
+    let policy = RigToolResultPolicy::new(false);
+    let blob = "A".repeat(60_000);
+    let output = format!(
+        "=== header ===\n/data/a.xml:3:{blob}\n/data/b.yaml:12:embedding_model: bge-m3\n/data/c.yaml:9:embedding: gte-large"
+    );
+    let prepared = prepare_rig_tool_result("ssh_exec", &serde_json::json!({}), &output, &policy);
+    assert_eq!(prepared.result_mode, "truncated");
+    assert!(prepared.context_payload.contains("行级截断"));
+    assert!(prepared.context_payload.contains("embedding_model: bge-m3"));
+    assert!(prepared.context_payload.contains("embedding: gte-large"));
+    // 超长行被削成头部 + 省略标记；整体落回内联预算，不再触发整体截断。
+    assert!(!prepared.context_payload.contains(&"A".repeat(600)));
+    assert!(!prepared.context_payload.contains("结果已截断"));
+    // 完整原文仍进 raw_output（工具产物）。
+    assert!(prepared.raw_output.chars().count() > 60_000);
+}
+
+#[test]
+fn exec_output_still_truncated_when_line_shaping_is_not_enough() {
+    let policy = RigToolResultPolicy::new(false);
+    let blob = "B".repeat(60_000);
+    let filler = "log line\n".repeat(2_000);
+    let output = format!("{blob}\n{filler}");
+    let prepared = prepare_rig_tool_result("ssh_exec", &serde_json::json!({}), &output, &policy);
+    assert_eq!(prepared.result_mode, "truncated");
+    // 行级截断与整体截断的标记同时出现，且提示语给出重取路径。
+    assert!(prepared.context_payload.contains("行级截断"));
+    assert!(prepared.context_payload.contains("结果已截断"));
+    assert!(prepared
+        .context_payload
+        .contains("被截掉的部分不会回到上下文"));
+}
+
+#[test]
+fn read_tool_output_is_not_line_shaped() {
+    // 读取类工具的正文行需要逐字精读：不做行级截断，维持原有整体截断。
+    let policy = RigToolResultPolicy::new(false);
+    let long_line = "x".repeat(15_000);
+    let prepared =
+        prepare_rig_tool_result("read_file", &serde_json::json!({}), &long_line, &policy);
+    assert_eq!(prepared.result_mode, "truncated");
+    assert!(!prepared.context_payload.contains("行级截断"));
+    assert!(prepared.context_payload.starts_with(&"x".repeat(10_000)));
+}
+
+#[test]
+fn exec_output_without_long_lines_stays_untouched() {
+    let policy = RigToolResultPolicy::new(false);
+    let output = "short line\n".repeat(20);
+    let prepared = prepare_rig_tool_result("ssh_exec", &serde_json::json!({}), &output, &policy);
+    assert_eq!(prepared.result_mode, "raw");
+    assert_eq!(prepared.context_payload, output.trim());
+}

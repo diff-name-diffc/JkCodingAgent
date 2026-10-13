@@ -28,12 +28,13 @@
  * 也能与 border-border/60 正确相乘）。
  */
 @theme inline {
+  /* 语义注意：--color-background 有意指向卡片表面（--bg-card）而非页面背景
+     （--bg-shell）——`bg-background` 在本应用渲染为卡片色。 */
   --color-background: var(--bg-card);
   --color-foreground: var(--text-primary);
   --color-muted: var(--bg-subtle);
   --color-muted-foreground: var(--text-muted);
   --color-card: var(--bg-card);
-  --color-card-foreground: var(--text-primary);
   --color-popover: var(--bg-card);
   --color-popover-foreground: var(--text-primary);
   --color-border: var(--border-medium);
@@ -46,42 +47,26 @@
   --color-secondary-foreground: var(--text-secondary);
   --color-destructive: var(--danger);
   --color-destructive-foreground: var(--destructive-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent-soft: var(--accent-soft);
   --color-sidebar: var(--bg-sidebar);
-  --color-sidebar-foreground: var(--text-primary);
   --color-sidebar-border: var(--border-dim);
-  --color-sidebar-accent: var(--bg-selected);
-  --color-sidebar-accent-foreground: var(--text-primary);
   --color-sidebar-hover: var(--bg-hover);
   --color-success: var(--success);
   --color-warning: var(--warning);
-  --color-danger: var(--danger);
-  --color-info: var(--info);
 
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
-  --radius-xl: var(--radius-xl);
   --radius-full: var(--radius-full);
 
-  --font-sans: var(--font-ui);
   --font-mono: var(--font-mono);
 
   --shadow-soft: var(--shadow-sm);
   --shadow-medium: var(--shadow-md);
-  --shadow-large: var(--shadow-lg);
-  --shadow-chat: var(--chat-shadow);
-  --shadow-chat-soft: var(--chat-shadow-soft);
-  --shadow-focus: var(--shadow-focus);
-  --shadow-accent-glow: var(--shadow-accent-glow);
 
   --ease-motion: var(--motion-ease);
 
   --transition-duration-fast: var(--motion-fast);
   --transition-duration-normal: var(--motion-normal);
-  --transition-duration-slow: var(--motion-slow);
 
   --animate-fade-in: fade-in var(--motion-normal) var(--motion-ease);
 
@@ -721,7 +706,7 @@
   }
 
   .ai-arch-canvas-blocked-retry:hover {
-    color: var(--text-primary, var(--text-secondary));
+    color: var(--text-primary);
     border-color: var(--accent);
   }
 
@@ -1362,44 +1347,156 @@
     word-break: break-all;
   }
 
+  /* 文件浏览器右键菜单：唯一定义出处（自 App.css 迁入；历史上双份定义靠
+     !important 与未分层规则打架，合并值 = 迁移前实际生效值）。 */
   .file-explorer-context-menu {
-    border-color: var(--border-dim) !important;
-    border-radius: 8px !important;
+    min-width: 280px;
+    padding: 6px;
+    border: 1px solid var(--border-dim);
+    border-radius: 8px;
     background: var(--bg-elevated);
-    box-shadow: var(--shadow-lg) !important;
+    box-shadow: var(--shadow-lg);
+    transform-origin: var(--radix-context-menu-content-transform-origin);
+    animation: context-menu-in 0.14s ease;
+    z-index: 2200;
   }
 
-  .file-explorer-context-menu-header,
-  .file-explorer-context-menu-icon,
-  .file-explorer-context-menu-item-icon {
-    border-color: rgb(var(--accent-rgb) / 0.14) !important;
-    background: var(--bg-sidebar) !important;
+  @keyframes context-menu-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
   }
 
-  .file-explorer-context-menu-title,
-  .file-explorer-context-menu-item-label {
+  .file-explorer-context-menu-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 11px 11px;
+    margin-bottom: 4px;
+    border-radius: 14px;
+    background: var(--bg-sidebar);
+    border: 1px solid rgb(var(--accent-rgb) / 0.14);
+  }
+
+  .file-explorer-context-menu-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 12px;
+    background: var(--bg-sidebar);
+    border: 1px solid rgb(var(--accent-rgb) / 0.14);
+    flex-shrink: 0;
+  }
+
+  .file-explorer-context-menu-meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .file-explorer-context-menu-title {
+    font-size: 13px;
+    line-height: 1.25;
+    font-weight: 650;
     color: var(--text-primary);
+    word-break: break-word;
   }
 
-  .file-explorer-context-menu-path,
-  .file-explorer-context-menu-item-caption {
-    color: var(--text-muted) !important;
+  .file-explorer-context-menu-path {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    word-break: break-all;
   }
 
   .file-explorer-context-menu-separator {
-    background: rgb(var(--accent-rgb) / 0.12) !important;
+    height: 1px;
+    margin: 6px 4px;
+    background: rgb(var(--accent-rgb) / 0.12);
   }
 
   .file-explorer-context-menu-group-label {
-    color: var(--text-hint) !important;
+    display: block;
+    padding: 4px 10px 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-hint);
+    user-select: none;
+  }
+
+  .file-explorer-context-menu-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 12px;
+    outline: none;
+    cursor: pointer;
+    user-select: none;
   }
 
   .file-explorer-context-menu-item[data-highlighted] {
-    background: rgb(var(--accent-rgb) / 0.12) !important;
+    background: rgb(var(--accent-rgb) / 0.12);
+  }
+
+  .file-explorer-context-menu-item-danger {
+    color: var(--text-primary);
   }
 
   .file-explorer-context-menu-item-danger[data-highlighted] {
-    background: rgb(var(--danger-rgb) / 0.12) !important;
+    background: rgb(var(--danger-rgb) / 0.12);
+  }
+
+  .file-explorer-context-menu-item-danger[data-highlighted] .file-explorer-context-menu-item-label,
+  .file-explorer-context-menu-item-danger[data-highlighted] .file-explorer-context-menu-item-icon {
+    color: var(--danger);
+  }
+
+  .file-explorer-context-menu-item-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 10px;
+    background: var(--bg-sidebar);
+    border: 1px solid rgb(var(--accent-rgb) / 0.14);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  .file-explorer-context-menu-item-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .file-explorer-context-menu-item-label {
+    font-size: 13px;
+    line-height: 1.2;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+  }
+
+  .file-explorer-context-menu-item-caption {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    font-family: var(--font-ui);
+    word-break: break-word;
   }
 
   .ai-file-viewer {
@@ -1532,19 +1629,48 @@
     min-height: 0;
   }
 
+  /* 文件查看器标签页菜单：唯一定义出处（自 App.css 迁入，合并值 = 迁移前实际生效值）。 */
   .file-viewer-tab-menu {
-    border-color: var(--border-dim) !important;
-    border-radius: 8px !important;
-    background: var(--bg-elevated);
-    box-shadow: var(--shadow-lg) !important;
+    min-width: 168px;
+    padding: 3px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg);
+    z-index: 2000;
   }
 
   .file-viewer-tab-menu-item {
-    border-radius: 7px !important;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: var(--font-ui);
+    text-align: left;
+    cursor: pointer;
+    line-height: 1.25;
   }
 
   .file-viewer-tab-menu-item:hover:not(:disabled) {
-    background: rgb(var(--accent-rgb) / 0.12) !important;
+    background: rgb(var(--accent-rgb) / 0.12);
+  }
+
+  .file-viewer-tab-menu-item:focus-visible {
+    background: var(--bg-hover);
+  }
+
+  .file-viewer-tab-menu-item:disabled {
+    color: var(--text-hint);
+    cursor: default;
+  }
+
+  .file-viewer-tab-menu-item:disabled:hover {
+    background: transparent;
   }
 
   .ai-file-pane {
@@ -2724,9 +2850,6 @@
     width: 15px;
     height: 15px;
     flex-shrink: 0;
-  }
-
-  .ai-settings-nav-item svg {
     color: currentColor;
   }
 
@@ -3033,7 +3156,7 @@
   }
 
   .ai-aha-hint.is-danger {
-    color: var(--danger, var(--danger));
+    color: var(--danger);
   }
 
   /* ── Provider 卡片 ── */
@@ -4509,16 +4632,13 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: 28px;
+    height: 28px;
     border: 1px solid rgb(var(--accent-rgb) / 0.16);
     border-radius: 8px;
     background: var(--bg-sidebar);
     color: var(--text-secondary);
     cursor: pointer;
-  }
-
-  .ai-browser-icon-button {
-    width: 28px;
-    height: 28px;
   }
 
   .ai-browser-icon-button:hover:not(:disabled) {
@@ -6144,9 +6264,12 @@
   .ai-python-run-body {
     display: flex;
     flex-direction: column;
+    flex: 1;
     height: 100%;
     min-width: 0;
-    overflow: hidden;
+    min-height: 0;
+    overflow: auto;
+    padding: 14px;
     color: var(--text-primary);
   }
 
@@ -6241,13 +6364,6 @@
   .ai-python-run-action:disabled {
     opacity: 0.55;
     cursor: not-allowed;
-  }
-
-  .ai-python-run-body {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    padding: 14px;
   }
 
   /* 内容容器：分区（DetailSection）间距由 gap 承担 */
@@ -7589,6 +7705,63 @@
     color: var(--text-primary);
   }
 
+  .ai-assistant-process {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-lg);
+    background: var(--bg-subtle);
+  }
+
+  .ai-process-trigger:focus-visible,
+  .ai-process-content button:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: -2px;
+  }
+
+  .ai-process-section {
+    border-top: 1px solid var(--border-dim);
+  }
+
+  .ai-process-section.ai-reasoning-block {
+    border: 0;
+    border-top: 1px solid var(--border-dim);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .ai-process-tools {
+    padding: 4px;
+  }
+
+  .ai-process-markdown :where(h1, h2, h3, h4, h5, h6) {
+    color: inherit;
+    font-size: 1em;
+    font-weight: 600;
+  }
+
+  .ai-process-markdown > :first-child > :first-child,
+  .ai-assistant-reply > div > .ai-streamdown:first-child > :first-child > :first-child {
+    margin-top: 0;
+  }
+
+  .ai-reply-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 20px;
+  }
+
+  .ai-reply-heading::after {
+    height: 1px;
+    flex: 1;
+    background: var(--border-dim);
+    content: "";
+  }
+
   .ai-agent-status {
     display: flex;
     min-height: 32px;
@@ -8251,7 +8424,7 @@
     border: 1px solid var(--border-dim);
     border-radius: var(--radius-md);
     padding: 8px 10px;
-    background: var(--bg-base);
+    background: var(--bg-input);
     color: var(--text-primary);
     font-family: var(--font-mono, monospace);
     font-size: 12px;
@@ -9580,6 +9753,9 @@
   }
 
   .ai-workflow-drawer-duration {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 11px;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
@@ -9789,12 +9965,6 @@
     gap: 12px;
   }
 
-  .ai-workflow-drawer-duration {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
-
   /* 头部上下文占用 chip：与耗时 chip 同形，突出可读性 */
   .ai-workflow-drawer-usage {
     display: inline-flex;
@@ -9858,7 +10028,7 @@
     padding: 6px 8px;
     border: 1px solid var(--border-accent);
     border-radius: 8px;
-    background: var(--bg-base);
+    background: var(--bg-input);
     color: var(--text-primary);
     font-size: 12px;
     line-height: 1.4;

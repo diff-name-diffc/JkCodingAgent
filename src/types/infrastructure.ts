@@ -144,6 +144,8 @@ export interface BrowserStatus {
     | "launching"
     | "ready"
     | "busy"
+    | "automating"
+    | "stopping"
     | "page_closed"
     | "closed"
     | string;
@@ -153,9 +155,22 @@ export interface BrowserStatus {
 
 export interface BrowserFrameEvent {
   sessionId: string;
+  streamId: string;
+  runId: string | null;
+  toolCallId: string | null;
+  sequence: number;
+  capturedAt: number;
+  url: string | null;
   data: string;
   width: number;
   height: number;
+}
+
+export interface BrowserPreviewErrorEvent {
+  sessionId: string;
+  streamId: string;
+  toolCallId: string | null;
+  message: string;
 }
 
 export interface BrowserLogEvent {

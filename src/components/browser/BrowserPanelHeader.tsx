@@ -13,6 +13,8 @@ export interface BrowserPanelHeaderProps {
   statusText: string;
   connected: boolean;
   busy: boolean;
+  automating: boolean;
+  stopping: boolean;
   hasSession: boolean;
   canOpenCurrentUrl: boolean;
   onGoBack: () => void;
@@ -35,6 +37,8 @@ export function BrowserPanelHeader({
   statusText,
   connected,
   busy,
+  automating,
+  stopping,
   hasSession,
   canOpenCurrentUrl,
   onGoBack,
@@ -59,7 +63,7 @@ export function BrowserPanelHeader({
           type="button"
           title="返回上一页"
           onClick={onGoBack}
-          disabled={!hasSession || !connected || busy}
+          disabled={!hasSession || !connected || busy || automating || stopping}
           className="ai-browser-icon-button"
         >
           <ArrowLeft size={14} />
@@ -68,16 +72,16 @@ export function BrowserPanelHeader({
           type="button"
           title="启动浏览器"
           onClick={onStart}
-          disabled={!hasSession || busy}
+          disabled={!hasSession || busy || automating || stopping}
           className="ai-browser-icon-button"
         >
           <Power size={14} />
         </button>
         <button
           type="button"
-          title="关闭浏览器"
+          title={automating ? "停止自动化并关闭浏览器" : "关闭浏览器"}
           onClick={onStop}
-          disabled={!hasSession || busy}
+          disabled={!hasSession || busy || stopping}
           className="ai-browser-icon-button"
         >
           <Square size={14} />
@@ -86,7 +90,7 @@ export function BrowserPanelHeader({
           type="button"
           title="导入 Chrome 登录态"
           onClick={onImportProfile}
-          disabled={!hasSession || busy}
+          disabled={!hasSession || busy || automating || stopping}
           className="ai-browser-icon-button"
         >
           <KeyRound size={14} />

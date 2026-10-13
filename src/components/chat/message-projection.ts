@@ -18,6 +18,7 @@ export interface AssistantMessageDisplayItem {
   messageId?: string;
   sourceUserMessage?: DispatcherMessage;
   persistedMessageIds: string[];
+  persistedThinkingMessageIds: string[];
   isStreaming?: boolean;
   isThinking?: boolean;
   placeholder?: string | null;
@@ -56,6 +57,7 @@ export function buildItems(messages: DispatcherMessage[]): MessageDisplayItem[] 
       // 供 MarkdownRenderer 的 python 运行记录定位回退。
       messageId: item.turn.messageIds[item.turn.messageIds.length - 1],
       persistedMessageIds: item.turn.messageIds,
+      persistedThinkingMessageIds: item.turn.thinkingMessageIds,
       showAvatar,
       sourceUserMessage,
     };
@@ -91,6 +93,7 @@ export function projectLiveMessageItems(
     showAvatar: persisted?.showAvatar ?? true,
     sourceUserMessage,
     persistedMessageIds: persisted?.persistedMessageIds ?? [],
+    persistedThinkingMessageIds: persisted?.persistedThinkingMessageIds ?? [],
     usageStats: persisted?.usageStats,
     messageId: persisted?.messageId,
     segments: mergeTurnSegments(persisted?.segments ?? [], live.streamingSegments),
@@ -144,7 +147,8 @@ function mergeTurnSegments(
       ...saved,
       // 历史查询可能只取得流式前缀；只接受同一消息的后续增量，不重复拼接。
       text: segment.text.startsWith(saved.text) ? segment.text : saved.text,
-      superseded: saved.superseded || segment.superseded,
+      // 阶段身份由落库消息的 toolCallsJson 判定，不能让旧 live 标记覆盖权威历史。
+      superseded: saved.superseded,
     };
   }
   return segments;
@@ -176,7 +180,10 @@ function mergeTurnThinking(
   live: AssistantThinkingBlock | null,
 ): AssistantThinkingBlock | null {
   const saved = persisted?.thinking;
-  if (!live || (live.messageId && persisted?.persistedMessageIds.includes(live.messageId))) {
+  if (
+    !live ||
+    (live.messageId && persisted?.persistedThinkingMessageIds.includes(live.messageId))
+  ) {
     return saved ?? null;
   }
   if (!saved) return live;

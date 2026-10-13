@@ -9,13 +9,52 @@ use super::{
     BrowserProfileImportResult,
 };
 
-fn unique_browser_profile_dir(base_dir: &Path, session_id: &str) -> Result<PathBuf, String> {
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("生成浏览器 profile 目录失败：系统时间异常：{error}"))?
-        .as_millis();
-    let run_id = format!("{}-{timestamp_ms}", sanitize_profile_segment(session_id));
-    Ok(base_dir.join("runs").join(run_id))
+pub(super) fn workspace_for_session(
+    db: &crate::agent::db::DispatcherDb,
+    session_id: &str,
+) -> Result<PathBuf, String> {
+    let session = db
+        .get_dispatcher_session(session_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("浏览器所属会话不存在：{session_id}"))?;
+    match session.kind {
+        crate::agent::db::DispatcherSessionKind::Chat => {
+            super::paths::plain_chat_browser_workspace()
+        }
+        crate::agent::db::DispatcherSessionKind::Project => db
+            .find_project(&session.project_id)
+            .map_err(|error| error.to_string())?
+            .map(|project| PathBuf::from(project.path))
+            .ok_or_else(|| format!("浏览器所属项目不存在：{}", session.project_id)),
+    }
+}
+
+pub(super) fn remove_session_profile(project_path: &Path, session_id: &str) -> Result<(), String> {
+    let root = session_profile_root(
+        &project_path.join(".jkcodingagent/browser-profile"),
+        session_id,
+    )?;
+    match fs::remove_dir_all(&root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "清理会话浏览器数据失败（{}）：{error}",
+            root.display()
+        )),
+    }
+}
+
+fn session_profile_root(base_dir: &Path, session_id: &str) -> Result<PathBuf, String> {
+    if session_id.is_empty() || session_id.len() > 120 {
+        return Err("浏览器会话标识必须为 1–120 字节".into());
+    }
+    // 可逆编码避免路径遍历，也避免不同标识清洗成相同目录。
+    let segment = session_id
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(base_dir.join("sessions").join(segment))
 }
 
 fn imported_chrome_profile_root(base_dir: &Path) -> PathBuf {
@@ -34,8 +73,9 @@ fn resolve_browser_profile_dir(
     base_dir: &Path,
     session_id: &str,
 ) -> Result<(PathBuf, Option<String>), String> {
-    let imported_root = imported_chrome_profile_root(base_dir);
-    let marker = imported_chrome_profile_marker(base_dir);
+    let session_root = session_profile_root(base_dir, session_id)?;
+    let imported_root = imported_chrome_profile_root(&session_root);
+    let marker = imported_chrome_profile_marker(&session_root);
     if imported_root.exists() && marker.exists() {
         let profile_name = fs::read_to_string(&marker)
             .map_err(|error| format!("读取导入的 Chrome profile 标记失败：{error}"))?
@@ -47,36 +87,20 @@ fn resolve_browser_profile_dir(
         return Ok((imported_root, Some(profile_name)));
     }
 
-    Ok((unique_browser_profile_dir(base_dir, session_id)?, None))
-}
-
-fn sanitize_profile_segment(value: &str) -> String {
-    let mut sanitized = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-
-    if sanitized.is_empty() {
-        sanitized = "session".to_string();
-    }
-    sanitized.truncate(80);
-    sanitized
+    Ok((session_root.join("profile"), None))
 }
 
 pub(super) fn load_launch_options(
     app: &AppHandle,
-    project_path: &Path,
+    _project_path: &Path,
     session_id: &str,
 ) -> Result<BrowserLaunchOptions, String> {
-    let config = {
+    let (config, project_path) = {
         let dispatcher = app.state::<crate::agent::DispatcherState>();
-        read_global_browser_config(dispatcher.db())?
+        (
+            read_global_browser_config(dispatcher.db())?,
+            workspace_for_session(dispatcher.db(), session_id)?,
+        )
     };
     let base_profile_dir = project_path.join(".jkcodingagent").join("browser-profile");
     let (user_data_dir, profile_directory) =
@@ -176,6 +200,7 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
 pub(super) fn import_chrome_profile_blocking(
     project_path: PathBuf,
     chrome_profile_path: PathBuf,
+    session_id: &str,
 ) -> Result<BrowserProfileImportResult, String> {
     let (source_profile, profile_name) = selected_chrome_profile_dir(&chrome_profile_path)?;
     let source_root = source_profile
@@ -194,7 +219,10 @@ pub(super) fn import_chrome_profile_blocking(
         ));
     }
 
-    let base_profile_dir = project_path.join(".jkcodingagent").join("browser-profile");
+    let base_profile_dir = session_profile_root(
+        &project_path.join(".jkcodingagent").join("browser-profile"),
+        session_id,
+    )?;
     let target_root = imported_chrome_profile_root(&base_profile_dir);
     if source_root == target_root || source_profile == target_root.join(&profile_name) {
         return Err("不能把导入目标目录作为 Chrome profile 来源".to_string());
@@ -351,4 +379,45 @@ pub(super) fn scan_chrome_profile_candidates_blocking() -> Vec<BrowserProfileCan
 
     candidates.sort_by_key(chrome_profile_sort_key);
     candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_profiles_are_stable_and_collision_free_for_path_characters() {
+        let temp = crate::test_util::TempDirGuard::new("browser-session-profiles");
+        let a = resolve_browser_profile_dir(temp.path(), "a/b").unwrap().0;
+        let b = resolve_browser_profile_dir(temp.path(), "a-b").unwrap().0;
+        assert_ne!(a, b);
+        assert_eq!(
+            a,
+            resolve_browser_profile_dir(temp.path(), "a/b").unwrap().0
+        );
+        assert!(a.starts_with(temp.path()));
+    }
+
+    #[test]
+    fn imported_login_profiles_are_not_shared_between_sessions() {
+        let temp = crate::test_util::TempDirGuard::new("browser-profile-import");
+        let chrome = temp.path().join("chrome");
+        fs::create_dir_all(chrome.join("Default")).unwrap();
+        fs::write(chrome.join("Local State"), "{}").unwrap();
+        fs::write(chrome.join("Default/Preferences"), "{}").unwrap();
+        let project = temp.path().join("project");
+        let a =
+            import_chrome_profile_blocking(project.clone(), chrome.clone(), "session-a").unwrap();
+        let b = import_chrome_profile_blocking(project.clone(), chrome, "session-b").unwrap();
+        assert_ne!(a.target_path, b.target_path);
+        let base = project.join(".jkcodingagent/browser-profile");
+        assert_eq!(
+            resolve_browser_profile_dir(&base, "session-a").unwrap().0,
+            PathBuf::from(a.target_path)
+        );
+        assert_eq!(
+            resolve_browser_profile_dir(&base, "session-b").unwrap().0,
+            PathBuf::from(b.target_path)
+        );
+    }
 }

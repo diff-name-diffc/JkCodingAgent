@@ -40,6 +40,7 @@ fn config(allowed_tools: Vec<&str>) -> crate::agent::sub_agent::config::SubAgent
         system_prompt: "你是测试子智能体。".to_string(),
         user_prompt_template: "任务：{{task}}".to_string(),
         allowed_tools: allowed_tools.into_iter().map(str::to_string).collect(),
+        browser_use_vision: false,
         model_config: Default::default(),
         max_iterations: 2,
         max_output_tokens: 128,
@@ -443,4 +444,49 @@ async fn child_wait_wakes_on_completion_and_strips_control_pair() {
             coordinator.tasks.shutdown().await.unwrap();
         })
         .await;
+}
+
+#[tokio::test]
+async fn browser_engine_accepts_empty_tools_and_traces_initialization_failure() {
+    use super::super::runtime::SubAgentRuntime;
+    let dir = crate::test_util::TempDirGuard::new("browser-engine-dispatch");
+    let deps = test_deps(dir.path());
+    let cfg = crate::agent::sub_agent::config::SubAgentConfig::browser_agent_default();
+    assert!(cfg.allowed_tools.is_empty());
+    let parent = PurposeModelSpec {
+        api_key: "secret".into(),
+        api_base: "https://example.com/v1".into(),
+        model: "parent-model".into(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: false,
+    };
+    let runtime = SubAgentRuntime::build(&RigSubAgentRequest {
+        config: &cfg,
+        parent_spec: &parent,
+        deps: &deps,
+        task: "探索页面",
+        parent_tool_call_id: "parent-call",
+        app_handle: None,
+        session_id: "session",
+        cancel_rx: None,
+    })
+    .unwrap();
+    assert!(runtime.is_browser());
+    assert_eq!(runtime.model(), "parent-model");
+    let manager = Arc::new(crate::agent::sub_agent::manager::SubAgentManager::new(
+        deps.db.pool(),
+    ));
+    assert!(runtime
+        .execute("探索页面", manager)
+        .await
+        .unwrap_err()
+        .contains("桌面应用"));
+    assert_eq!(runtime.status(false), "failed");
+    let events: Value = serde_json::from_str(&runtime.trace_events_json().unwrap()).unwrap();
+    assert_eq!(events[0]["event"], "Started");
+    assert_eq!(events[0]["data"]["model"], "parent-model");
+    assert_eq!(events[1]["event"], "Failed");
+    assert!(!runtime.trace_events_json().unwrap().contains("secret"));
 }

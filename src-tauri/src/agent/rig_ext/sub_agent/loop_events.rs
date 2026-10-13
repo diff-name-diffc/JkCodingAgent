@@ -43,14 +43,19 @@ pub(super) fn channel(
                     .unwrap_or_else(|| serde_json::json!({})),
             },
             Some("toolFinished") => {
-                let result_preview =
-                    tool_result_preview(&name, data["displayText"].as_str().unwrap_or_default());
+                let display_text = data["displayText"].as_str().unwrap_or_default();
+                let result_preview = tool_result_preview(&name, display_text);
+                // AgentEvent 线格式没有独立错误通道；全仓约定工具错误文本以
+                // 「错误：」开头，据此投影失败语义，避免失败工具被 UI 判为成功。
                 SubAgentEvent::ToolFinished {
                     task_id,
                     agent_id: agent_id.clone(),
                     agent_name: agent_name.clone(),
                     tool_name: name,
                     result_preview,
+                    error: display_text
+                        .starts_with("错误：")
+                        .then(|| display_text.chars().take(2_000).collect::<String>()),
                 }
             }
             _ => return Ok(()),

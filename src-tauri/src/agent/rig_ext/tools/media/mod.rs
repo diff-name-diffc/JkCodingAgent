@@ -1,5 +1,5 @@
 //! 多媒体工具组（T2.3a）：generate_image / edit_image / analyze_image /
-//! fetch_image / browser_*。
+//! fetch_image / browser_open_url。
 //!
 //! 迁移自旧自实现工具层（已随迁移删除）的 image_generation / image_edit /
 //! fetch_image / analyze_image / browser（+browser/ 子模块）。差异点：
@@ -25,9 +25,6 @@ use rig::tool::PortableDynamicTool;
 use super::super::model::{build_completion_request, completions_model, PurposeModelSpec};
 use super::RigToolDeps;
 use crate::agent::common::cancellation_requested;
-use crate::agent::rig_ext::message::{
-    data_url_to_image as data_url_to_image_with_allowlist, ImageMimeAllowlist,
-};
 
 pub(crate) fn media_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     let mut tools = vec![
@@ -40,19 +37,7 @@ pub(crate) fn media_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     tools
 }
 
-/// `data:image/...;base64,...` → rig `Image`：委托 `rig_ext::message` 的唯一
-/// 实现，图片工具固定视觉输入档（位图 4 类，拒 svg/heic/heif）。本层不再
-/// 维护 mime 表/data URL 解析副本（子模块的 mime 映射同样直接用 message
-/// 导出的 `image_media_type_for_mime` + `ImageMimeAllowlist::VisionInputs`）。
-fn data_url_to_image(data_url: &str) -> Result<Image, String> {
-    data_url_to_image_with_allowlist(data_url, ImageMimeAllowlist::VisionInputs)
-}
-
-/// 视觉槽位一次性图片问答：系统提示词 + 用户指令 + 单张图片 → 文本结果。
-/// analyze_image 与 browser_visual_analyze 共用；错误消息带「错误：」前缀，
-/// `failure_label` 区分两个调用方的旧文案（"视觉模型分析" /
-/// "视觉模型分析网页截图"）。返回内容为 trim 后的拼接文本（可能为空，
-/// 空结果的报错文案由调用方按旧语义自定）。
+/// 视觉槽位一次性图片问答：供 analyze_image 调用，返回纯文本或明确错误。
 async fn vision_complete_image(
     spec: &PurposeModelSpec,
     system_prompt: &str,

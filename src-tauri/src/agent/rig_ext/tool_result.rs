@@ -43,8 +43,13 @@ pub const TOOL_RESULT_INLINE_MAX_CHARS_PAGED: usize = 20_000;
 /// 工具产物。8000 字符会把多段证据截断，模型只能再发一轮程序重取。
 pub const TOOL_RESULT_INLINE_MAX_CHARS_PROGRAM: usize = 32_000;
 
-const ARTIFACT_REMAINDER_NOTE: &str = "完整原始结果见工具产物。";
+const ARTIFACT_REMAINDER_NOTE: &str =
+    "被截掉的部分不会回到上下文；完整原始结果见工具产物（仅供界面查看，无法经工具再读）。";
 const PROGRAM_REMAINDER_NOTE: &str = "编排器读不到工具产物，被截掉的部分不会回到上下文。请把 return 收成更短的摘录，或分成下一次程序。";
+/// 读取类工具的截断恢复指引：分页 / 缩范围参数是它们的重取通道。
+const READ_REMAINDER_NOTE: &str = "被截掉的部分不会回到上下文；完整原始结果见工具产物（仅供界面查看，无法经工具再读）。请缩小范围后重读：read_file 用 path:start-end 或 offset/limit；grep 降低 max_files / max_matches_per_file；glob 降低 max_results；list_dir 指定更小的目录。";
+/// 命令执行类工具的截断恢复指引：重取通道是「更窄的命令」与声明式压缩。
+const EXEC_REMAINDER_NOTE: &str = "被截掉的部分不会回到上下文；完整原始结果见工具产物（仅供界面查看，无法经工具再读）。请缩小输出后重试：head/-n 限制行数、grep 加 -I/--include/-m 收敛匹配、cut -c1-300 限制行宽、缩小扫描目录；只关心特定信息时设 compress=true 并用 compress_intent 写明要提取什么。";
 
 /// 内容读取类工具：结果主体是供模型精读的文本。这些工具享有两档内联预算——
 /// 默认 READ（10000），显式传入 offset/limit 分页读取时 PAGED（20000）；
@@ -55,13 +60,20 @@ const PROGRAM_REMAINDER_NOTE: &str = "编排器读不到工具产物，被截掉
 /// 加头部后恰落在 READ 档内），恒走默认 READ 档。
 const INLINE_READ_TOOLS: &[&str] = &[
     "read_file",
-    "browser_read_text",
     "grep",
     "glob",
     "list_dir",
     "workflow_plan_report",
     "ssh_memo_read",
 ];
+
+/// 命令执行类工具：输出常混有超长的无信息行（base64 数据行、minified 产物、
+/// 单行压缩内容），整体截断前先按行截断，保住行级证据密度。
+const EXEC_LINE_SHAPE_TOOLS: &[&str] = &["ssh_exec", "local_zsh"];
+
+/// 行级截断的单行字符上限：足以容纳配置行 / 日志行 / 报错原文，
+/// 又能把 base64 数据行等超长行削成可定位的一行摘要。
+const EXEC_LINE_MAX_CHARS: usize = 500;
 
 /// 按工具与入参决定本次调用的内联字符上限。
 fn inline_max_chars(tool_name: &str, args: &serde_json::Value) -> usize {
@@ -195,12 +207,7 @@ pub fn prepare_rig_tool_result(
             compress_intent,
         }
     } else if char_count > max_inline {
-        let remainder = if tool_name == "run_tool_program" {
-            PROGRAM_REMAINDER_NOTE
-        } else {
-            ARTIFACT_REMAINDER_NOTE
-        };
-        let truncated = truncate_tool_result(trimmed, char_count, max_inline, remainder);
+        let truncated = truncate_for_inline(tool_name, trimmed, max_inline);
         PreparedRigToolResult {
             display_content: truncated.clone(),
             context_payload: truncated,
@@ -237,6 +244,77 @@ fn truncate_tool_result(
     format!(
         "{prefix}\n\n[结果已截断：仅返回前 {max_chars} / {char_count} 字符；截断发生在原始结果第 {truncated_at_output_line} 个输出行{source_line_marker}，原始结果共 {total_lines} 行。{remainder_note}]"
     )
+}
+
+/// 整体截断的统一入口：提示语按工具给出可执行的恢复路径；命令执行类工具
+/// 先做行级截断——削掉超长无信息行后常能整体落回内联预算（证据行全量
+/// 保留），仍超限时在整形结果上再做整体截断。
+fn truncate_for_inline(tool_name: &str, trimmed: &str, max_inline: usize) -> String {
+    if tool_name == "run_tool_program" {
+        return truncate_tool_result(
+            trimmed,
+            trimmed.chars().count(),
+            max_inline,
+            PROGRAM_REMAINDER_NOTE,
+        );
+    }
+    if EXEC_LINE_SHAPE_TOOLS.contains(&tool_name) {
+        if let Some((shaped, capped_lines)) = shape_long_lines(trimmed, EXEC_LINE_MAX_CHARS) {
+            let shape_note = format!(
+                "{capped_lines} 行超过单行上限 {EXEC_LINE_MAX_CHARS} 字符，已仅保留各行前 {EXEC_LINE_MAX_CHARS} 字符；原始结果共 {} 字符。",
+                trimmed.chars().count()
+            );
+            let shaped_chars = shaped.chars().count();
+            if shaped_chars <= max_inline {
+                return format!("{shaped}\n\n[行级截断：{shape_note}{EXEC_REMAINDER_NOTE}]");
+            }
+            return truncate_tool_result(
+                &shaped,
+                shaped_chars,
+                max_inline,
+                &format!("行级截断：{shape_note}{EXEC_REMAINDER_NOTE}"),
+            );
+        }
+    }
+    truncate_tool_result(
+        trimmed,
+        trimmed.chars().count(),
+        max_inline,
+        remainder_note_for(tool_name),
+    )
+}
+
+/// 截断提示语按工具给出可执行的恢复路径——「见工具产物」只对界面成立，
+/// 模型需要的是下一步动作。
+fn remainder_note_for(tool_name: &str) -> &'static str {
+    if EXEC_LINE_SHAPE_TOOLS.contains(&tool_name) {
+        EXEC_REMAINDER_NOTE
+    } else if INLINE_READ_TOOLS.contains(&tool_name) {
+        READ_REMAINDER_NOTE
+    } else {
+        ARTIFACT_REMAINDER_NOTE
+    }
+}
+
+/// 行级截断：超过单行上限的行仅保留头部并追加省略标记，行数与行序不变。
+/// 没有任何行超限时返回 None（调用方走原逻辑，避免无谓拷贝）。
+fn shape_long_lines(raw: &str, max_line_chars: usize) -> Option<(String, usize)> {
+    let mut capped_lines = 0usize;
+    let mut text = String::with_capacity(raw.len());
+    for (index, line) in raw.split('\n').enumerate() {
+        if index > 0 {
+            text.push('\n');
+        }
+        let line_chars = line.chars().count();
+        if line_chars > max_line_chars {
+            capped_lines += 1;
+            text.extend(line.chars().take(max_line_chars));
+            text.push_str(&format!("…[本行已截断：原始共 {line_chars} 字符]"));
+        } else {
+            text.push_str(line);
+        }
+    }
+    (capped_lines > 0).then_some((text, capped_lines))
 }
 
 fn source_line_number_at_cut(prefix: &str) -> Option<usize> {
@@ -406,12 +484,10 @@ pub async fn persist_rig_tool_result<M: CompletionModel>(
 
     // 摘要模型缺省：跳过压缩，直接截断（完整原文保留在工具产物中）。
     let Some(summary) = summary else {
-        let char_count = prepared.raw_output.chars().count();
-        let truncated = truncate_tool_result(
+        let truncated = truncate_for_inline(
+            tool_name,
             &prepared.raw_output,
-            char_count,
             inline_max_chars(tool_name, &tool_call.function.arguments),
-            ARTIFACT_REMAINDER_NOTE,
         );
         return persist_with_presentation(
             db,

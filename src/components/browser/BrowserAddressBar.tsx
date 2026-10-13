@@ -37,6 +37,7 @@ export function BrowserAddressBar({
 
   const submit = () => {
     setIsEditingUrl(false);
+    if (!hasSession || busy) return;
     const value = urlInput.trim();
     if (!value || value === "about:blank") return;
     onNavigate(value);
@@ -72,6 +73,7 @@ export function BrowserAddressBar({
           <input
             ref={urlInputRef}
             type="text"
+            disabled={!hasSession || busy}
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
             onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
@@ -91,6 +93,7 @@ export function BrowserAddressBar({
         ) : (
           <span
             onClick={() => {
+              if (!hasSession || busy) return;
               setIsEditingUrl(true);
               setUrlInput(url || "");
               setTimeout(() => urlInputRef.current?.select(), 0);

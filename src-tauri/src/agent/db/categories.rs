@@ -627,7 +627,7 @@ mod tests {
                 "自定义",
                 "Folder",
                 "#111111",
-                Some(vec!["browser_read_text".to_string()]),
+                Some(vec!["browser_open_url".to_string()]),
                 Some("custom prompt"),
             )
             .expect("create category");
@@ -641,7 +641,7 @@ mod tests {
             .expect("new category config");
 
         assert_eq!(config.system_prompt, "custom prompt");
-        assert_eq!(config.allowed_tools, vec!["browser_read_text".to_string()]);
+        assert_eq!(config.allowed_tools, vec!["browser_open_url".to_string()]);
     }
 
     #[test]
@@ -651,7 +651,7 @@ mod tests {
             .save_chat_category_agent_configs(&[ChatCategoryAgentConfig {
                 category_id: "tech".to_string(),
                 category_name: "技术".to_string(),
-                allowed_tools: vec!["browser_read_text".to_string()],
+                allowed_tools: vec!["browser_open_url".to_string()],
                 system_prompt: "tech prompt".to_string(),
                 sub_agent_ids: vec!["browser-agent".to_string()],
                 created_at: String::new(),
@@ -670,7 +670,7 @@ mod tests {
 
         assert_eq!(config.category_id, "tech");
         assert_eq!(config.system_prompt, "tech prompt");
-        assert_eq!(config.allowed_tools, vec!["browser_read_text".to_string()]);
+        assert_eq!(config.allowed_tools, vec!["browser_open_url".to_string()]);
         assert_eq!(config.sub_agent_ids, vec!["browser-agent".to_string()]);
     }
 }

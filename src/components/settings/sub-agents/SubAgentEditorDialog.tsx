@@ -1,22 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
-import type { ModelCategory, SubAgentConfig, SubAgentToolInfo } from "../../../types";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select";
-import { useAhaSettings } from "../use-aha-settings";
-import { entryLabel } from "../providers/model-library";
-import {
-  findMatchedLibraryEntry,
-  pickableCategoryOptions,
-  pickableEntries,
-} from "./sub-agent-model-picker";
-import {
-  validateSubAgentDraft,
-  MAX_ITERATIONS,
-  MIN_OUTPUT_TOKENS,
-  MAX_OUTPUT_TOKENS,
-  type EditorTab,
-} from "./sub-agent-validation";
+import type { SubAgentConfig, SubAgentToolInfo } from "../../../types";
+import { BROWSER_AGENT_ID } from "../../../lib/sub-agent-runtime";
+import { SubAgentRuntimeEditor } from "./SubAgentRuntimeEditor";
+import { validateSubAgentDraft, type EditorTab } from "./sub-agent-validation";
 
 const TABS: Array<{ key: EditorTab; label: string }> = [
   { key: "basic", label: "基本信息" },
@@ -38,6 +26,7 @@ const DEFAULT_CONFIG: SubAgentConfig = {
   systemPrompt: "",
   userPromptTemplate: "{{task}}",
   allowedTools: [],
+  browserUseVision: false,
   modelConfig: { inheritFromParent: true },
   maxIterations: 60,
   maxOutputTokens: 4096,
@@ -53,46 +42,16 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
   const [activeTab, setActiveTab] = useState<EditorTab>("basic");
   const [availableTools, setAvailableTools] = useState<SubAgentToolInfo[]>([]);
   const [error, setError] = useState("");
-  const { settings } = useAhaSettings();
-  const modelLibrary = settings?.modelLibrary ?? [];
-  // 模型选择器第一步（分类）：初值取当前配置命中的库条目分类，无命中则「对话模型」。
-  const [pickerCategory, setPickerCategory] = useState<ModelCategory>(
-    () =>
-      findMatchedLibraryEntry(modelLibrary, (config ?? DEFAULT_CONFIG).modelConfig)?.category ??
-      "text",
-  );
+  const isBrowserAgent = draft.agentId === BROWSER_AGENT_ID;
 
   useEffect(() => {
+    if (isBrowserAgent) return;
     invoke<SubAgentToolInfo[]>("sub_agent_list_tools")
       .then(setAvailableTools)
       .catch((e) => console.error("list_tools failed:", e));
-  }, []);
+  }, [isBrowserAgent]);
 
   const selectedTools = new Set(draft.allowedTools);
-
-  const categoryEntries = pickableEntries(modelLibrary, pickerCategory);
-  const matchedEntry = findMatchedLibraryEntry(modelLibrary, draft.modelConfig);
-  const modelSelectValue =
-    matchedEntry && matchedEntry.category === pickerCategory ? matchedEntry.id : "";
-
-  function handlePickCategory(value: string) {
-    setPickerCategory(value as ModelCategory);
-  }
-
-  function handlePickModel(entryId: string) {
-    const picked = categoryEntries.find((entry) => entry.id === entryId);
-    if (!picked) return;
-    setDraft((d) => ({
-      ...d,
-      modelConfig: {
-        ...d.modelConfig,
-        inheritFromParent: false,
-        apiBase: picked.url,
-        apiKey: picked.apiKey,
-        modelName: picked.model,
-      },
-    }));
-  }
 
   function toggleTool(name: string) {
     setDraft((d) => ({
@@ -111,7 +70,7 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
       return;
     }
     setError("");
-    onSave(draft);
+    onSave(isBrowserAgent ? { ...draft, allowedTools: [] } : draft);
   }
 
   const selectedToolList = availableTools.filter((t) => selectedTools.has(t.name));
@@ -202,7 +161,16 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
               </>
             )}
 
-            {activeTab === "tools" && (
+            {activeTab === "tools" && isBrowserAgent && (
+              <div className="ai-settings-field-stack">
+                <label className="ai-settings-field-label">browser-use 浏览器引擎</label>
+                <p className="ai-settings-hint">
+                  网页读取、导航、点击和输入由 browser-use 管理，无需选择通用工具。
+                  可在运行时参数中配置模型、最大执行步数与超时时间。
+                </p>
+              </div>
+            )}
+            {activeTab === "tools" && !isBrowserAgent && (
               <>
                 <div className="ai-settings-field-stack">
                   <label className="ai-settings-field-label">
@@ -247,196 +215,7 @@ export function SubAgentEditorDialog({ config, isNew, onSave, onClose }: Props) 
               </>
             )}
 
-            {activeTab === "runtime" && (
-              <>
-                <div className="ai-aha-section">
-                  <div className="ai-aha-section-title">模型配置</div>
-                  <label className="ai-subagent-choice-row">
-                    <input
-                      type="radio"
-                      name="modelMode"
-                      checked={draft.modelConfig.inheritFromParent}
-                      onChange={() =>
-                        setDraft((d) => ({
-                          ...d,
-                          modelConfig: { ...d.modelConfig, inheritFromParent: true },
-                        }))
-                      }
-                    />
-                    <span>继承主 Agent 配置</span>
-                  </label>
-                  <label className="ai-subagent-choice-row">
-                    <input
-                      type="radio"
-                      name="modelMode"
-                      checked={!draft.modelConfig.inheritFromParent}
-                      onChange={() =>
-                        setDraft((d) => ({
-                          ...d,
-                          modelConfig: { ...d.modelConfig, inheritFromParent: false },
-                        }))
-                      }
-                    />
-                    <span>自定义配置</span>
-                  </label>
-                  {!draft.modelConfig.inheritFromParent && (
-                    <>
-                      <div className="ai-settings-field-stack">
-                        <label className="ai-settings-field-label">选择已配置的模型</label>
-                        <div className="ai-subagent-model-picker">
-                          <Select value={pickerCategory} onValueChange={handlePickCategory}>
-                            <SelectTrigger aria-label="模型分类">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {pickableCategoryOptions().map((option) => (
-                                <SelectItem key={option.category} value={option.category}>
-                                  {option.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          {categoryEntries.length === 0 ? (
-                            <span className="ai-settings-hint">
-                              该分类暂无已配置的启用模型，请前往「模型服务」添加，或在下方手动填写。
-                            </span>
-                          ) : (
-                            <Select value={modelSelectValue} onValueChange={handlePickModel}>
-                              <SelectTrigger aria-label="模型">
-                                <SelectValue placeholder="选择模型…" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {categoryEntries.map((entry) => (
-                                  <SelectItem key={entry.id} value={entry.id}>
-                                    <span className="ai-subagent-model-option">
-                                      <span className="ai-subagent-model-option-name">
-                                        {entryLabel(entry)}
-                                      </span>
-                                      {entry.alias?.trim() &&
-                                      entry.model.trim() &&
-                                      entry.alias.trim() !== entry.model.trim() ? (
-                                        <span className="ai-subagent-model-option-model">
-                                          {entry.model}
-                                        </span>
-                                      ) : null}
-                                    </span>
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          )}
-                        </div>
-                        <span className="ai-settings-hint">
-                          选中后自动回填下方 API Base / API Key / 模型名称，可再手动微调。
-                        </span>
-                      </div>
-                      <div className="ai-settings-field-stack">
-                        <label className="ai-settings-field-label">API Base</label>
-                        <input
-                          className="ai-settings-input"
-                          value={draft.modelConfig.apiBase ?? ""}
-                          placeholder="https://api.openai.com/v1"
-                          onChange={(e) =>
-                            setDraft((d) => ({
-                              ...d,
-                              modelConfig: { ...d.modelConfig, apiBase: e.target.value },
-                            }))
-                          }
-                        />
-                      </div>
-                      <div className="ai-settings-field-stack">
-                        <label className="ai-settings-field-label">API Key</label>
-                        <input
-                          className="ai-settings-input"
-                          type="password"
-                          value={draft.modelConfig.apiKey ?? ""}
-                          onChange={(e) =>
-                            setDraft((d) => ({
-                              ...d,
-                              modelConfig: { ...d.modelConfig, apiKey: e.target.value },
-                            }))
-                          }
-                        />
-                      </div>
-                      <div className="ai-settings-field-stack">
-                        <label className="ai-settings-field-label">模型名称</label>
-                        <input
-                          className="ai-settings-input"
-                          value={draft.modelConfig.modelName ?? ""}
-                          placeholder="为空时使用主 Agent 同类型模型"
-                          onChange={(e) =>
-                            setDraft((d) => ({
-                              ...d,
-                              modelConfig: { ...d.modelConfig, modelName: e.target.value },
-                            }))
-                          }
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <div className="ai-subagent-runtime-grid">
-                  <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">
-                      最大迭代轮次 (1-{MAX_ITERATIONS})
-                    </label>
-                    <input
-                      className="ai-settings-input"
-                      type="number"
-                      min={1}
-                      max={MAX_ITERATIONS}
-                      value={draft.maxIterations}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, maxIterations: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                  <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">
-                      最大输出 Token ({MIN_OUTPUT_TOKENS}-{MAX_OUTPUT_TOKENS})
-                    </label>
-                    <input
-                      className="ai-settings-input"
-                      type="number"
-                      min={MIN_OUTPUT_TOKENS}
-                      max={MAX_OUTPUT_TOKENS}
-                      value={draft.maxOutputTokens}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, maxOutputTokens: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                  <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">Temperature (0-2)</label>
-                    <input
-                      className="ai-settings-input"
-                      type="number"
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      value={draft.temperature}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, temperature: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                  <div className="ai-settings-field-stack">
-                    <label className="ai-settings-field-label">超时时间 (1-3600 秒)</label>
-                    <input
-                      className="ai-settings-input"
-                      type="number"
-                      min={1}
-                      max={3600}
-                      value={draft.timeoutSecs}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, timeoutSecs: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                </div>
-              </>
-            )}
+            {activeTab === "runtime" && <SubAgentRuntimeEditor draft={draft} setDraft={setDraft} />}
           </div>
         </div>
 

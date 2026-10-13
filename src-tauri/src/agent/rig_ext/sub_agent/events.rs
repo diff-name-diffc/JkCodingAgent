@@ -102,9 +102,13 @@ fn trim_trace_events_to_limit(events: &mut Vec<Value>, timestamp_ms: i64) {
 
 /// 子智能体累计用量（前端事件载荷形状，与旧一致）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SubAgentUsage {
+    #[serde(alias = "prompt_tokens")]
     pub prompt_tokens: u64,
+    #[serde(alias = "completion_tokens")]
     pub completion_tokens: u64,
+    #[serde(alias = "total_tokens")]
     pub total_tokens: u64,
 }
 
@@ -155,6 +159,8 @@ pub enum SubAgentEvent {
         tool_name: String,
         #[serde(rename = "resultPreview")]
         result_preview: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     Progress {
         #[serde(rename = "agentId")]
@@ -200,6 +206,8 @@ pub enum SubAgentEvent {
         #[serde(rename = "agentName")]
         agent_name: String,
         error: String,
+        #[serde(rename = "terminationReason", skip_serializing_if = "Option::is_none")]
+        termination_reason: Option<String>,
     },
 }
 

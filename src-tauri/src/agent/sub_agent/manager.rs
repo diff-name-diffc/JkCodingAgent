@@ -40,8 +40,9 @@ impl SubAgentManager {
         Ok(configs)
     }
 
-    pub fn get(&self, agent_id: &str) -> Option<SubAgentConfig> {
-        self.cache.read().get(agent_id).cloned()
+    /// 初始化时调用一次；不能在运行中的配置刷新路径执行。
+    pub fn recover_interrupted_runs(&self) -> Result<()> {
+        self.db.recover_interrupted_runs()
     }
 
     pub fn create(&self, config: SubAgentConfig) -> Result<SubAgentRecord> {

@@ -3,10 +3,13 @@
 //! 与主 Agent 的区别（与旧实现一致）：无工作流编排、无协议动作，是纯粹的
 //! 「LLM ↔ 工具」循环；结果截断后返回父循环；轨迹事件单独下发。
 
+mod browser_agent;
+mod browser_events;
 mod events;
 mod failure;
 mod loop_events;
 mod runner;
+mod runtime;
 mod tools;
 
 // 子智能体内部（runner/tools/events）相互直接引用；对外只导出父 Agent 装配

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { BrowserAddressBar } from "./BrowserAddressBar";
 import { BrowserLogPane } from "./BrowserLogPane";
 import { BrowserPanelHeader } from "./BrowserPanelHeader";
@@ -31,28 +32,37 @@ export function BrowserPanel({
   onToggleExpanded,
   onClose,
 }: BrowserPanelProps) {
-  const session = useBrowserPanelSession(sessionId, active);
+  const containerRef = useRef<HTMLElement>(null);
+  const session = useBrowserPanelSession(sessionId, active, containerRef);
   const commands = useBrowserPanelCommands({ sessionId, projectPath, session });
 
   const { status, logs, error, canvasRef } = session;
-  const { busy } = commands;
+  const { busy, stopping } = commands;
 
   const state = status?.state ?? "closed";
   const connected = state !== "closed" && state !== "page_closed";
   const pageClosed = state === "page_closed";
+  const automating = state === "automating";
+  const stateLabel = stopping ? "正在停止" : automating ? "自动化运行中（仅观察）" : state;
   const statusText = sessionId
     ? status?.message
-      ? `${state} · ${status.message}`
-      : state
+      ? `${stateLabel} · ${status.message}`
+      : stateLabel
     : "未选择会话";
   const canOpenCurrentUrl = Boolean(status?.url && status.url !== "about:blank");
 
   return (
-    <aside className="ai-browser-panel" style={width != null ? { width } : undefined}>
+    <aside
+      ref={containerRef}
+      className="ai-browser-panel"
+      style={width != null ? { width } : undefined}
+    >
       <BrowserPanelHeader
         statusText={statusText}
         connected={connected}
         busy={busy}
+        automating={automating}
+        stopping={stopping}
         hasSession={Boolean(sessionId)}
         canOpenCurrentUrl={canOpenCurrentUrl}
         onGoBack={() => void commands.goBack()}
@@ -67,14 +77,15 @@ export function BrowserPanel({
       <BrowserAddressBar
         url={status?.url ?? ""}
         connected={connected}
-        busy={busy}
+        busy={busy || automating || stopping}
         hasSession={Boolean(sessionId)}
         onReload={() => void commands.reloadPage()}
         onNavigate={(url) => void commands.navigateTo(url)}
       />
       <BrowserStage
         canvasRef={canvasRef}
-        busy={busy}
+        busy={busy || stopping}
+        readOnly={automating}
         hasSession={Boolean(sessionId)}
         connected={connected}
         pageClosed={pageClosed}

@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, MessageCircle } from "lucide-react";
 import type {
   DispatcherMessageUsageStats,
   DispatcherToolArtifactRef,
@@ -9,16 +9,16 @@ import type {
   AssistantThinkingBlock,
   AssistantTurnSegment,
 } from "../dispatcher-chat/assistant-segments";
+import { partitionAssistantSegments } from "../dispatcher-chat/assistant-segments";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
 import { ChatAvatar } from "./chat-avatar";
 import { MarkdownRenderer } from "./markdown-renderer";
 import { MessageActions } from "./message-actions";
-import { ReasoningBlock } from "./reasoning-block";
-import { ToolCallList } from "./tool-call-card";
+import { AssistantProcess } from "./assistant-process";
 import { formatTokenCountK } from "../dispatcher-chat/dispatcherChatUtils";
 
-/** 同一轮次从流式到完成共用此组件；阶段说明保留原位，不因后续输出而消失。 */
+/** 同一轮次从流式到完成共用此组件；执行过程与面向用户的回复各自成区。 */
 export interface AssistantMessageProps {
   segments: AssistantTurnSegment[];
   tools?: ToolActivityItem[];
@@ -49,9 +49,11 @@ export interface AssistantMessageProps {
   className?: string;
 }
 
+const EMPTY_TOOLS: ToolActivityItem[] = [];
+
 export const AssistantMessage = memo(function AssistantMessage({
   segments,
-  tools,
+  tools = EMPTY_TOOLS,
   thinking,
   usageStats,
   messageId,
@@ -69,10 +71,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   onConfigureModel,
   className,
 }: AssistantMessageProps) {
-  const textSegments = segments.filter(
-    (segment) => segment.kind === "assistant-text" && segment.text.trim(),
-  );
-  const toolIds = new Set(tools?.map((tool) => tool.id));
+  const { progressSegments, answerSegments } = partitionAssistantSegments(segments);
+  const toolIds = new Set(tools.map((tool) => tool.id));
   // 工具卡已经持有结果时，不再把同一份压缩输出冒充为助手答复。
   const standaloneSummaries = segments.filter(
     (segment) =>
@@ -80,10 +80,11 @@ export const AssistantMessage = memo(function AssistantMessage({
       segment.text.trim() &&
       (!segment.toolCallId || !toolIds.has(segment.toolCallId)),
   );
-  const showReasoning = Boolean(thinking?.text?.trim());
-  const runningTools = tools?.filter((tool) => tool.status === "running") ?? [];
-  const hasActiveText = textSegments.some((segment) => !segment.superseded);
-  const isWriting = isStreaming && hasActiveText && !placeholder;
+  const hasProcess = Boolean(
+    thinking?.text.trim() || tools.length || progressSegments.length || standaloneSummaries.length,
+  );
+  const runningTools = tools.filter((tool) => tool.status === "running");
+  const isWriting = isStreaming && answerSegments.length > 0 && !placeholder;
   const statusText =
     placeholder ||
     (runningTools.length > 0
@@ -93,8 +94,9 @@ export const AssistantMessage = memo(function AssistantMessage({
         : "正在整理回复");
 
   const handleCopy = () => {
-    const answer = textSegments.filter((segment) => !segment.superseded);
-    const text = (answer.length ? answer : textSegments).map((s) => s.text).join("\n\n");
+    const text = (answerSegments.length ? answerSegments : progressSegments)
+      .map((segment) => segment.text)
+      .join("\n\n");
     if (onCopy) onCopy(text);
     else void navigator.clipboard.writeText(text);
   };
@@ -109,60 +111,50 @@ export const AssistantMessage = memo(function AssistantMessage({
       />
 
       <div className="min-w-0 pl-[60px]">
-        {showReasoning && (
-          <ReasoningBlock
-            className="mb-2"
-            text={thinking?.text ?? ""}
-            elapsedMs={thinking?.elapsedMs ?? 0}
-            isStreaming={isThinking}
-            autoOpen={isStreaming}
-            persistKey={rowId === undefined ? undefined : `reasoning:${rowId}`}
-          />
-        )}
-
-        {/* Tool calls */}
-        {tools && tools.length > 0 && (
-          <ToolCallList
-            items={tools}
-            className="mb-2"
+        {hasProcess && (
+          <AssistantProcess
             rowId={rowId}
+            thinking={thinking}
+            tools={tools}
+            progressSegments={progressSegments}
+            summaries={standaloneSummaries}
+            isStreaming={isStreaming}
+            isThinking={isThinking}
+            hasReply={answerSegments.length > 0}
+            statusText={isStreaming && !isWriting ? statusText : undefined}
+            messageId={messageId}
+            pythonRunRecords={pythonRunRecords}
+            onRunPython={isStreaming ? undefined : onRunPython}
             onOpenArtifact={onOpenArtifact}
             onOpenSubAgent={onOpenSubAgent}
             onConfigureModel={onConfigureModel}
           />
         )}
 
-        {standaloneSummaries.map((segment, index) => (
-          <section
-            key={segment.toolCallId ?? segment.messageId ?? index}
-            aria-label="工具摘要"
-            className="mb-3 rounded-md border border-border/60 bg-muted/30 p-3"
-          >
-            <div className="mb-1 text-xs text-muted-foreground">工具摘要</div>
-            <MarkdownRenderer
-              content={segment.text}
-              messageId={segment.messageId ?? messageId}
-              pythonRunRecords={pythonRunRecords}
-              onRunPython={isStreaming ? undefined : onRunPython}
-            />
+        {answerSegments.length > 0 && (
+          <section aria-label="回复" className={cn("ai-assistant-reply", hasProcess && "mt-6")}>
+            {hasProcess && (
+              <div className="ai-reply-heading">
+                <MessageCircle aria-hidden className="h-3.5 w-3.5" />
+                <span>{isWriting ? "正在回复" : "回复"}</span>
+              </div>
+            )}
+            <div className="space-y-4">
+              {answerSegments.map((segment, index) => (
+                <MarkdownRenderer
+                  key={segment.messageId ?? `text-${index}`}
+                  content={segment.text}
+                  streaming={isWriting && index === answerSegments.length - 1}
+                  messageId={segment.messageId ?? messageId}
+                  onRunPython={isStreaming ? undefined : onRunPython}
+                  pythonRunRecords={pythonRunRecords}
+                />
+              ))}
+            </div>
           </section>
-        ))}
+        )}
 
-        <div className="space-y-4">
-          {textSegments.map((segment, index) => (
-            <MarkdownRenderer
-              key={segment.messageId ?? `text-${index}`}
-              content={segment.text}
-              className={cn(segment.superseded && "text-[var(--text-secondary)]")}
-              streaming={isWriting && !segment.superseded && index === textSegments.length - 1}
-              messageId={segment.messageId ?? messageId}
-              onRunPython={isStreaming ? undefined : onRunPython}
-              pythonRunRecords={pythonRunRecords}
-            />
-          ))}
-        </div>
-
-        {isStreaming && !isWriting && (
+        {isStreaming && !isWriting && !hasProcess && (
           <div className="ai-agent-status" role="status" aria-live="polite">
             <Loader2
               aria-hidden

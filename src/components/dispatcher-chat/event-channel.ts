@@ -10,8 +10,9 @@ import { Channel } from "@tauri-apps/api/core";
 import type { DispatcherAgentEvent } from "../../types";
 import {
   appendAssistantTextSegment,
+  appendSegmentText,
   appendToolSummarySegment,
-  demoteActiveTextSegments,
+  markAssistantTextAsProgress,
 } from "./assistant-segments";
 import {
   planLiveToolActivity,
@@ -40,6 +41,9 @@ export function createDispatcherEventChannel({
   refreshSessionTokenUsage,
 }: DispatcherEventChannelDeps): Channel<DispatcherAgentEvent> {
   const onEvent = new Channel<DispatcherAgentEvent>();
+  // 同一 Channel 的模型调用串行：AssistantStarted → 增量 → ToolPlanned。
+  // 工具事件没有消息 ID，只使用明确接收到的当前调用身份，绝不回溯猜最后一段。
+  let currentAssistantMessageId: string | undefined;
   onEvent.onmessage = (event) => {
     const isActiveRun = getDispatcherActiveRunId(targetSessionId) === runId;
     switch (event.event) {
@@ -49,12 +53,11 @@ export function createDispatcherEventChannel({
         break;
       case "assistantStarted":
         if (!isActiveRun) return;
+        currentAssistantMessageId = event.data.messageId;
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
           assistantPlaceholder: "正在分析问题...",
           liveThinking: null,
-          // 前一条说明留在正文流里，下一次调用只改变阶段标记。
-          streamingSegments: demoteActiveTextSegments(state.streamingSegments),
         }));
         break;
       case "modelSwitched":
@@ -62,10 +65,11 @@ export function createDispatcherEventChannel({
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
           assistantPlaceholder: `已检测到图片，自动切换到视觉模型 ${event.data.toModel}。`,
-          streamingSegments: appendAssistantTextSegment(
-            state.streamingSegments,
-            `> ${event.data.reason}，已从 ${event.data.fromModel} 自动切换到视觉模型 ${event.data.toModel}。\n\n`,
-          ),
+          streamingSegments: appendSegmentText(state.streamingSegments, {
+            kind: "assistant-text",
+            text: `> ${event.data.reason}，已从 ${event.data.fromModel} 自动切换到视觉模型 ${event.data.toModel}。\n\n`,
+            superseded: true,
+          }),
         }));
         break;
       case "userMessage":
@@ -99,15 +103,34 @@ export function createDispatcherEventChannel({
           },
         }));
         break;
-      case "assistantMessage":
+      case "assistantMessage": {
         if (!isActiveRun || event.data.message.workspaceId !== targetSessionId) return;
-        // 历史快照与 live 在投影层按 messageId 合并，正文不会重挂载或折叠消失。
-        notifyDispatcherMessages(targetSessionId, [event.data.message]);
+        // 流式 ID 与落库 ID 当前独立生成。lastSeq 非空才证明该快照对应
+        // 当前模型流；合成收尾（lastSeq=null）不能冒领先前回复或思考。
+        const streamedMessageId =
+          event.data.lastSeq !== null ? currentAssistantMessageId : undefined;
+        const savedMessageId = event.data.message.id;
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
           assistantPlaceholder: null,
+          streamingSegments:
+            streamedMessageId && streamedMessageId !== savedMessageId
+              ? state.streamingSegments.map((segment) =>
+                  segment.kind === "assistant-text" && segment.messageId === streamedMessageId
+                    ? { ...segment, messageId: savedMessageId }
+                    : segment,
+                )
+              : state.streamingSegments,
+          liveThinking:
+            streamedMessageId && state.liveThinking?.messageId === streamedMessageId
+              ? { ...state.liveThinking, messageId: savedMessageId }
+              : state.liveThinking,
         }));
+        // 先交接 live 身份再发布权威快照，避免中间帧把同一条回复投影两次。
+        notifyDispatcherMessages(targetSessionId, [event.data.message]);
+        if (streamedMessageId) currentAssistantMessageId = undefined;
         break;
+      }
       case "runUsageUpdated":
         if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
         // 仅刷新用量查询缓存（assistant-message 的历史用量投影来源）；
@@ -119,6 +142,11 @@ export function createDispatcherEventChannel({
         updateLiveSessionState(targetSessionId, (state) => ({
           ...state,
           assistantPlaceholder: "正在规划工具调用...",
+          // 只有明确发起工具的这条消息属于阶段说明；下一次模型调用本身
+          // 不能降级已输出的无工具回复（后台任务等待期间可有多条渐进回复）。
+          streamingSegments: currentAssistantMessageId
+            ? markAssistantTextAsProgress(state.streamingSegments, currentAssistantMessageId)
+            : state.streamingSegments,
           liveToolCalls: planLiveToolActivity(state.liveToolCalls, {
             ...event.data,
             workspaceId: targetSessionId,

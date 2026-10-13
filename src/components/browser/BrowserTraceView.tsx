@@ -9,17 +9,18 @@ interface BrowserTraceViewProps {
 /**
  * 执行轨迹内嵌的浏览器实时视图（无头化改造）：
  * Agent 执行浏览器的细节不再弹出面板/窗口，点开工具卡（执行轨迹）时
- * 经 screencast 帧流回放当前画面 + 最近状态。复用 useBrowserPanelSession
+ * 经共享截图帧流显示当前画面 + 最近状态。复用 useBrowserPanelSession
  * 的会话态（状态/帧绘制/日志监听均按 sessionId 过滤）。
  */
 export function BrowserTraceView({ sessionId }: BrowserTraceViewProps) {
-  const session = useBrowserPanelSession(sessionId, true);
+  const containerRef = useRef<HTMLElement>(null);
+  const session = useBrowserPanelSession(sessionId, true, containerRef);
   const { status, canvasRef } = session;
   const state = status?.state ?? "closed";
   const connected = state !== "closed" && state !== "page_closed";
 
   return (
-    <section className="rounded-md border border-border/70 bg-background/60 p-2">
+    <section ref={containerRef} className="rounded-md border border-border/70 bg-background/60 p-2">
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
           浏览器实时画面
@@ -41,6 +42,11 @@ export function BrowserTraceView({ sessionId }: BrowserTraceViewProps) {
           </div>
         )}
       </div>
+      {session.error && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {session.error}
+        </p>
+      )}
     </section>
   );
 }

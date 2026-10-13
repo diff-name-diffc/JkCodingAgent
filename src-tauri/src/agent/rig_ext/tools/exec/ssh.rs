@@ -79,7 +79,7 @@ fn ssh_exec_tool(
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "本次命令超时时间，单位秒，默认使用服务器配置",
+                    "description": "本次命令超时时间，单位秒，默认使用服务器配置（缺省 30s）。注意静默容忍联动：命令持续 timeout_secs/4 秒（最短 8s、最长 60s）无任何输出，会被判定为疑似交互阻塞而中止——扫描大目录、递归检索、备份等长时间无输出的命令请显式调大该值。",
                     "minimum": 1,
                     "maximum": 300
                 }
@@ -88,7 +88,7 @@ fn ssh_exec_tool(
         }),
         false,
         COMMAND_FORCE_COMPRESS_AFTER_CHARS,
-        "默认直接返回原始输出：8000 字符内全量内联，超出截断且完整原文保留在工具产物中。报错原文、状态值、配置片段等需要逐字核对的内容应保持 compress=false。仅当预期输出很大（全量日志、大目录清单等）且只需确认特定信息时才设 compress=true，并在 compress_intent 中写明要确认什么。",
+        "默认直接返回原始输出：8000 字符内全量内联；超出时先对单行超 500 字符的内容做行级截断（保留行首并标记），仍超限再整体截断并明确标记，完整原文保留在工具产物（仅供界面查看，无法经工具再读）。报错原文、状态值、配置片段等需要逐字核对的内容应保持 compress=false。仅当预期输出很大（全量日志、大目录清单等）且只需确认特定信息时才设 compress=true，并在 compress_intent 中写明要确认什么。",
     );
     PortableDynamicTool::new(
         "ssh_exec",

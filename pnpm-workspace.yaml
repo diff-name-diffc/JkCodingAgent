@@ -6,7 +6,6 @@ allowBuilds:
   esbuild: true
   protobufjs: true
 minimumReleaseAgeExclude:
-  - cloakbrowser@0.4.4
   - prettier@3.9.1
   - '@radix-ui/primitive@1.1.5'
   - '@radix-ui/react-collection@1.1.12'

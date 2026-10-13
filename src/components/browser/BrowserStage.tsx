@@ -3,6 +3,7 @@ import type { MouseEvent, RefObject } from "react";
 export interface BrowserStageProps {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   busy: boolean;
+  readOnly: boolean;
   hasSession: boolean;
   connected: boolean;
   pageClosed: boolean;
@@ -16,6 +17,7 @@ export interface BrowserStageProps {
 export function BrowserStage({
   canvasRef,
   busy,
+  readOnly,
   hasSession,
   connected,
   pageClosed,
@@ -26,7 +28,9 @@ export function BrowserStage({
       {hasSession && connected ? (
         <canvas
           ref={canvasRef}
-          onClick={onCanvasClick}
+          onClick={busy || readOnly ? undefined : onCanvasClick}
+          aria-label={readOnly ? "浏览器实时画面，自动化运行期间仅可观察" : "浏览器实时画面"}
+          style={readOnly ? { cursor: "default" } : undefined}
           className={busy ? "ai-browser-canvas is-busy" : "ai-browser-canvas"}
         />
       ) : (

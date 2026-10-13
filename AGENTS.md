@@ -19,7 +19,7 @@ pnpm format         # Prettier 格式化 src/**/*.{ts,tsx,css}（写入，提交
 pnpm format:check   # Prettier 格式化校验（CI 门禁）
 pnpm test           # Vitest（前端纯函数/归一化）
 pnpm contract:check # Tauri 命令双向契约检查（后端注册 ↔ 前端调用）
-pnpm styles:report  # .ai-* 类定义/引用双向 fail-closed 报告
+pnpm styles:report  # 样式类双向 fail-closed 报告（.ai-* + App.css 遗留类族，含动态拼接 safelist）
 pnpm tauri dev      # 启动完整桌面应用（自动启动开发服务器）
 pnpm tauri build    # 构建生产环境桌面二进制包（bundle 只出 .app，不打 dmg）
 pnpm app:install    # 将构建产物覆盖安装到 /Applications（scripts/install-app.sh，-y/--open 可选）
@@ -82,7 +82,8 @@ App
 | `platform/` | `app_settings.rs`（应用级键值配置） |
 | `rag/` | RAG sidecar 传输与管理 |
 | `ssh_tool/` | SSH 执行 + AI 安全审查门禁。russh 传输；连接池按 `server_id+session_id` 复用 `Handle`，并发命令各走独立 channel；瞬态网络错误（errno 集合见 `connection.rs`）间隔 1.5s 重试一次，认证/密钥失败不重试；TOFU 指纹 = key blob 的 SHA-256 hex。`memo.rs` 每服务器备忘录 `~/.jkcodingagent/ssh-memos/{server_id}.md`（全文 8000 / 单段 4000 字符硬上限），工具 `ssh_memo_read/upsert/delete`；删服务器随 `save_servers` 级联清理（同事务清主机密钥/审计行，提交后删备忘录文件） |
-| `browser.rs` / `chat_images.rs` / `python_runner.rs` | 内嵌浏览器宿主 / 聊天图片存储 / Python 运行器 |
+| `browser.rs` / `browser/` / `resources/browser-sidecar/` | 会话级浏览器宿主与 Python browser-use 执行器；通用工具仅 `browser_open_url`，`browser-agent` 经 `call_sub_agent` 委派；UI 与探索共用执行锁，取消/超时终止进程组 |
+| `chat_images.rs` / `python_runner.rs` | 聊天图片存储 / Python 运行器 |
 
 核心约束：
 - 所有接受路径参数的命令必须校验路径位于工作区内，防止目录遍历。
@@ -108,7 +109,7 @@ App
   - 子智能体：同层 `compact_history_offline` 规则兜底折叠，不消耗摘要模型，保护头部 2 条（system + 首轮任务）。
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
-- 当前 **v16 基线**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`，工作流口径定型形态）；历史迁移链已两次按产品决策清除（v0→v33、v1→v15），`init()` 只支持全新建库 / 同版本直开，任何旧版本库一律拒绝打开并引导删除本地数据库文件重建。
+- 当前 **v17**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：保留 v16 工作流基线，新增 v16→v17 浏览器配置迁移（`schema/migration_v17.rs`），迁移前整库快照，清除退役浏览器动作工具并保留模型及用户定制；新库直接建 v17。历史已清除的 v1→v15 仍拒绝打开，v17 同版本也校验关键表列形态以排除旧开发链同版本异构库。
 - 每次 schema 变更必须同时：① 更新基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 事务块（DDL/回填与 `user_version` 同事务、幂等可重试）。**禁止改写或删除历史迁移块**——已发布版本用户升级的唯一路径。
 - 破坏性迁移（DROP/清空数据）前必须整库快照（`VACUUM INTO`），保留「备份失败留痕」兜底。
 - 领域自管表（sub_agent / ssh / projects / mcp_servers / app_config）DDL 放在各领域 `ensure_*_tx` 助手，由 `create_baseline` 统一调用，单一出处。
@@ -214,12 +215,12 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 
 **超时契约（`ToolExecutionPolicy`）**：
 - `unified_timeout=true`：策略层包统一超时；到点发取消 → 宽限收敛（`SETTLE_CEILING`）→ 仍不收敛则移交后台并按「结算未确认」收口（绝不 drop future）。
-- `unified_timeout=false`（自管超时，当前 6 个：`local_zsh`/`ssh_exec`/`sync_directory`/`analyze_image`/`call_sub_agent`/`run_tool_program`）：执行预算工具自管（分阶段超时、交互/静默容忍、优雅终止：杀进程树 / 关 channel / 写审计与台账）；仍以 `settle_ceiling_secs`（= 最坏合法预算，登记在 `self_managed_settle_ceiling_secs`）作最后防线，到点走统一超时同一收口。`cancellable=false` 时兜底到点不发取消、直接交接后台。新增自管工具**必须**登记 settle ceiling（`spec.rs` 的 `self_managed_tools_declare_settle_ceiling` 测试守护）。
+- `unified_timeout=false`（自管超时，包括 `browser_open_url`、`call_sub_agent` 和命令执行类等，完整清单以策略表为准）：执行预算工具自管（分阶段超时、交互/静默容忍、优雅终止：杀进程树 / 关 channel / 写审计与台账）；仍以 `settle_ceiling_secs`（= 最坏合法预算，登记在 `self_managed_settle_ceiling_secs`）作最后防线，到点走统一超时同一收口。`cancellable=false` 时兜底到点不发取消、直接交接后台。新增自管工具**必须**登记 settle ceiling（`spec.rs` 的 `self_managed_tools_declare_settle_ceiling` 测试守护）。
 - **调用可声明超时白名单**（当前 3 个：`generate_image`/`edit_image`/`fetch_image`，仅限统一超时工具）：schema 经 `common.rs::with_call_timeout_parameters` 暴露 `timeout_secs` 参数（区间 = spec.rs 常量组，schema 校验 + 运行时夹紧双保险；**不设 default 键**以保留「未声明」语义）；deadline = clamp(调用声明 ?? 用户配置默认（`AhaSettingsV2.toolTimeouts`，设置中心「工具」页，越界键归一化剥离）?? 策略表默认)。单一解析出处 `spec.rs::effective_timeout_secs`——策略层 deadline 与工具内 HTTP/下载预算**必须共用**，防「配 300 却被 HTTP 120 掐死」的口径漂移；`call_timeout_tools_are_unified_and_defaulted` 测试守护白名单登记。
 
 ### 4. 工具输出压缩（可选）
 
-「显式声明（`compress=true`）+ 阈值」双条件驱动：声明且超阈值时 `rig_ext/tool_result.rs` 调用摘要模型（15s 超时），失败/超时回退零 LLM 的 `extract_structured_summary` 规则抽取；未摘要的超长结果按内联上限确定性截断，完整原文进工具产物。阈值随策略表声明（默认 5000，命令类 12000）。
+「显式声明（`compress=true`）+ 阈值」双条件驱动：声明且超阈值时 `rig_ext/tool_result.rs` 调用摘要模型（15s 超时），失败/超时回退零 LLM 的 `extract_structured_summary` 规则抽取；未摘要的超长结果按内联上限确定性截断，完整原文进工具产物。阈值随策略表声明（默认 5000，命令类 12000）。命令执行类工具（`ssh_exec` / `local_zsh`）整体截断前先做行级截断（单行超 500 字符仅保留行首 + 省略标记），常因此落回内联预算、保住行级证据；截断标记按工具给出可执行的恢复指引（命令类 = 更窄的命令 / `compress=true`，读取类 = 分页或缩范围参数）——工具产物仅供界面查看，模型无法经工具再读。
 
 ### 5. 配置（可选）
 

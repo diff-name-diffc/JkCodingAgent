@@ -41,6 +41,7 @@ pub async fn dispatcher_get_session_token_usage(
 #[tauri::command]
 pub async fn dispatcher_clear_messages(
     state: tauri::State<'_, DispatcherState>,
+    browser_manager: tauri::State<'_, BrowserManager>,
     workspace_id: String,
 ) -> Result<(), String> {
     // fail-closed：与 session_delete 同理——运行中清空会让 run 继续向
@@ -48,6 +49,9 @@ pub async fn dispatcher_clear_messages(
     if state.session_run_is_active(&workspace_id) {
         return Err("会话正在运行中，请先停止生成后再清空消息".to_string());
     }
+    let _browser_cleanup = browser_manager
+        .remove_session(state.db(), &workspace_id)
+        .await?;
     let db = state.db().clone();
     let workspace_for_cleanup = workspace_id.clone();
     let result = run_dispatcher_db("dispatcher_clear_messages", move || {

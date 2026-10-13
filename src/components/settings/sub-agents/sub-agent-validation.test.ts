@@ -65,6 +65,16 @@ describe("validateSubAgentDraft", () => {
     });
   });
 
+  it("browser-agent 的工具由固定引擎管理，允许空工具列表", () => {
+    expect(validateSubAgentDraft(draft({ agentId: "browser-agent", allowedTools: [] }))).toEqual(
+      {},
+    );
+    expect(
+      validateSubAgentDraft(draft({ agentId: "browser-agent", allowedTools: [], maxIterations: 0 }))
+        .focusTab,
+    ).toBe("runtime");
+  });
+
   it("运行时参数越界 → 聚焦运行时页签", () => {
     expect(validateSubAgentDraft(draft({ maxIterations: 0 }))).toEqual({
       error: `最大迭代轮次必须在 1-${MAX_ITERATIONS} 之间`,

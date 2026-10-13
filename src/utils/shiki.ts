@@ -53,7 +53,7 @@ const attemptedLanguages = new Set<string>(["plaintext"]);
 
 /**
  * 中性代码阅读主题：灰阶底色与正文，语法高亮仅用克制的蓝、紫、橙区分。
- * 注意：`bg` 与 App.css `:root` 的 `--markdown-code-bg` (#f7f7f7) 是分别
+ * 注意：`bg` 与 App.css `:root` 的 `--markdown-code-bg` (#f5f6f0) 是分别
  * 维护的两份取值，调整亮色面板色板时需同步两处。
  * 显式 ThemeRegistration 标注：tokenColors 字段名/结构错误可在编译期发现。
  */
@@ -61,10 +61,10 @@ export const NEUTRAL_LIGHT_THEME: ThemeRegistration = {
   name: "neutral-light",
   type: "light" as const,
   fg: "#262626",
-  bg: "#f7f7f7",
+  bg: "#f5f6f0",
   colors: {
     "editor.foreground": "#262626",
-    "editor.background": "#f7f7f7",
+    "editor.background": "#f5f6f0",
   },
   tokenColors: [
     { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#6b6b6b" } },
@@ -98,16 +98,16 @@ export const NEUTRAL_LIGHT_THEME: ThemeRegistration = {
 
 /**
  * 亮色主题的暗色对偶，语法色提高亮度以适配深灰底色。
- * `bg` (#1b1b1b) 需与 App.css `.dark` 的 `--markdown-code-bg` 同步。
+ * `bg` (#1c2520) 需与 App.css `.dark` 的 `--markdown-code-bg` 同步。
  */
 export const NEUTRAL_DARK_THEME: ThemeRegistration = {
   name: "neutral-dark",
   type: "dark" as const,
   fg: "#e5e5e5",
-  bg: "#1b1b1b",
+  bg: "#1c2520",
   colors: {
     "editor.foreground": "#e5e5e5",
-    "editor.background": "#1b1b1b",
+    "editor.background": "#1c2520",
   },
   tokenColors: [
     { scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#a3a3a3" } },

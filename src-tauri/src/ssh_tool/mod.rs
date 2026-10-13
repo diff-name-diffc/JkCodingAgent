@@ -153,7 +153,7 @@ impl SshSessionManager {
         Ok(cleaned)
     }
 
-    /// 列出已启用的 SSH server（不含凭据等敏感字段）。
+    /// 列出已启用的 SSH server（不含凭据、端口等敏感字段，仅含主机地址 host）。
     /// 每台附 `memo_chars`（运维备忘录字符数），供智能体判断已有积累。
     pub async fn list_servers_async(&self) -> Result<Vec<SshServerSummary>, String> {
         let ssh_db = self.db.clone();
@@ -168,6 +168,7 @@ impl SshSessionManager {
                     SshServerSummary {
                         id: server.id,
                         name: server.name,
+                        host: server.host,
                         description: server.description,
                         tags: server.tags,
                         memo_chars,

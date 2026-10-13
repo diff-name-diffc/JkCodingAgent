@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DispatcherMessage } from "../../types";
 import { createIdleLiveSessionState } from "../dispatcherSessionStore";
 import { buildItems, projectLiveMessageItems, type MessageDisplayItem } from "./message-projection";
+import { partitionAssistantSegments } from "../dispatcher-chat/assistant-segments";
 
 const user: DispatcherMessage = {
   id: "user-1",
@@ -75,6 +76,39 @@ describe("同一助手轮次从实时内容交接到历史", () => {
       "session-1",
     );
     expect(lastAssistant(items).segments.map((segment) => segment.messageId)).toEqual(["a1", "a2"]);
+  });
+
+  it("历史工具调用决定阶段身份，陈旧实时标记不降级无工具的渐进回复", () => {
+    const history = buildItems([
+      user,
+      assistant("a1", "先读取文件", {
+        toolCallsJson: JSON.stringify([
+          { id: "call-1", function: { name: "read_file", arguments: "{}" } },
+        ]),
+      }),
+      assistant("a2", "已完成一部分"),
+      assistant("a3", "全部完成"),
+    ]);
+    const during = lastAssistant(
+      projectLiveMessageItems(
+        history,
+        {
+          ...live(),
+          streamingSegments: [
+            { kind: "assistant-text", messageId: "a1", text: "先读取文件" },
+            { kind: "assistant-text", messageId: "a2", text: "已完成一部分", superseded: true },
+            { kind: "assistant-text", messageId: "a3", text: "全部完成" },
+          ],
+        },
+        "session-1",
+      ),
+    );
+    expect(partitionAssistantSegments(during.segments)).toEqual(
+      partitionAssistantSegments(lastAssistant(history).segments),
+    );
+    expect(
+      partitionAssistantSegments(during.segments).answerSegments.map((item) => item.messageId),
+    ).toEqual(["a2", "a3"]);
   });
 
   it("已落库的完整正文不被实时前缀覆盖", () => {
@@ -180,6 +214,23 @@ describe("同一助手轮次从实时内容交接到历史", () => {
       isThinking: false,
       thinking: { text: "检查依赖" },
     });
+  });
+
+  it("正文已落库但未保存该条思考时，保留同 ID 实时思考且不误删旧轮思考", () => {
+    const history = buildItems([
+      user,
+      assistant("a1", "先检查", { thinkingContent: "前期思考", thinkingElapsedMs: 100 }),
+      assistant("a2", "已完成"),
+    ]);
+    const item = lastAssistant(
+      projectLiveMessageItems(
+        history,
+        { ...live(), liveThinking: { messageId: "a2", text: "收尾思考", elapsedMs: 200 } },
+        "session-1",
+      ),
+    );
+    expect(item.isThinking).toBe(false);
+    expect(item.thinking).toEqual({ text: "前期思考\n\n收尾思考", elapsedMs: 300 });
   });
 
   it("失败或停止后的未对账内容仍可读，不再显示流式状态", () => {

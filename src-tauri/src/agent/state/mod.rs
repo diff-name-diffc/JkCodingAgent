@@ -75,6 +75,9 @@ impl DispatcherState {
                 // G11-04：子智能体配置加载失败时显式降级为 None（禁用子智能体
                 // 能力并在 UI 可见），而不是带着不完整状态继续静默运行。
                 let manager = Arc::new(SubAgentManager::new(db.pool()));
+                manager
+                    .recover_interrupted_runs()
+                    .context("恢复中断的浏览器探索轨迹")?;
                 let manager = match manager.load_all() {
                     Ok(_) => Some(manager),
                     Err(error) => {

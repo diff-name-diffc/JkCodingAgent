@@ -1,4 +1,5 @@
 import type { SubAgentConfig } from "../../../types";
+import { BROWSER_AGENT_ID } from "../../../lib/sub-agent-runtime";
 
 /**
  * sub-agent-validation.ts —— 子智能体编辑器的保存校验纯函数（自
@@ -46,7 +47,7 @@ export function validateSubAgentDraft(draft: SubAgentConfig): SubAgentDraftValid
   if (!draft.systemPrompt.trim()) {
     return { error: "系统指令不能为空" };
   }
-  if (draft.allowedTools.length === 0) {
+  if (draft.agentId !== BROWSER_AGENT_ID && draft.allowedTools.length === 0) {
     return { error: "至少选择一个工具", focusTab: "tools" };
   }
   if (draft.maxIterations < 1 || draft.maxIterations > MAX_ITERATIONS) {

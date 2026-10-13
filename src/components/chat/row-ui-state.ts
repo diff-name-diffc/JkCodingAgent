@@ -63,6 +63,14 @@ export function usePersistedToggle(
     if (storeKey === undefined || store === null) return defaultValue;
     return store.get(storeKey) ?? defaultValue;
   });
+  // 默认展开也是当前视图的阅读状态；流式结束后重挂不能重新套用历史默认值。
+  // 播种只写 defaultValue：若实例被复用而 storeKey 已变化，state 里还是旧
+  // key 的值，写 value 会把陈旧值串进新 key。
+  React.useEffect(() => {
+    if (storeKey !== undefined && store && store.get(storeKey) === undefined) {
+      store.set(storeKey, defaultValue);
+    }
+  }, [store, storeKey, defaultValue]);
   const keyRef = React.useRef(storeKey);
   keyRef.current = storeKey;
   const set = React.useCallback(

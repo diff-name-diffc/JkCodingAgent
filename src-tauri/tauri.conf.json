@@ -38,9 +38,17 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
-    "resources": [
-      "resources/browser-sidecar/*"
-    ],
+    "resources": {
+      "resources/browser-sidecar/driver.py": "browser-sidecar/driver.py",
+      "resources/browser-sidecar/bootstrap.py": "browser-sidecar/bootstrap.py",
+      "resources/browser-sidecar/diagnostics.py": "browser-sidecar/diagnostics.py",
+      "resources/browser-sidecar/runtime.py": "browser-sidecar/runtime.py",
+      "resources/browser-sidecar/explorer.py": "browser-sidecar/explorer.py",
+      "resources/browser-sidecar/model.py": "browser-sidecar/model.py",
+      "resources/browser-sidecar/dialogs.py": "browser-sidecar/dialogs.py",
+      "resources/browser-sidecar/navigation.py": "browser-sidecar/navigation.py",
+      "resources/browser-sidecar/previews.py": "browser-sidecar/previews.py"
+    },
     "externalBin": [
       "binaries/rag-server"
     ],

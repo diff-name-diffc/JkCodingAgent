@@ -6,7 +6,7 @@ use crate::ssh_tool::SshSessionManager;
 pub(super) fn ssh_list_servers_tool(manager: SshSessionManager) -> PortableDynamicTool {
     PortableDynamicTool::new(
         "ssh_list_servers",
-        "列出已启用的 SSH 服务器（全局配置，所有项目共享）。只返回 server_id、名称、描述和标签，不暴露 IP、端口、账号或密码。",
+        "列出已启用的 SSH 服务器（全局配置，所有项目共享）。返回每台的 server_id、名称、主机地址（IP/域名）、描述与标签；当用户用 IP 或域名指代某台服务器时，可据此定位其 server_id。不暴露端口、账号或密码。",
         json!({
             "type": "object",
             "properties": {},

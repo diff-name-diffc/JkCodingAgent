@@ -59,7 +59,7 @@ fn keeps_normal_user_assistant_and_tool_messages() {
         "已经为你查询了天气"
     )));
     let mut tool_result = chat_message("tool", "北京今天晴");
-    tool_result.name = Some("browser_read_text".to_string());
+    tool_result.name = Some("browser_open_url".to_string());
     assert!(should_keep_llm_message(&tool_result));
 }
 

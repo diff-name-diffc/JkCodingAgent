@@ -1,96 +1,72 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
+use tokio::process::Command;
 
 use crate::platform::get_login_shell_path;
 
 pub(super) fn plain_chat_browser_workspace() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "找不到用户主目录".to_string())?;
     let workspace = home.join(".jkcodingagent").join("plain-chat-browser");
-    std::fs::create_dir_all(workspace.join(".jkcodingagent")).map_err(|error| {
-        format!(
-            "创建普通聊天浏览器工作区失败（{}）：{error}",
-            workspace.display()
-        )
-    })?;
+    std::fs::create_dir_all(workspace.join(".jkcodingagent"))
+        .map_err(|error| format!("创建普通聊天浏览器工作区失败：{error}"))?;
     Ok(workspace)
 }
 
 pub(super) fn resolve_driver_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join("browser-sidecar")
-        .join("driver.mjs");
-    if dev_path.exists() {
+    let dev_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/browser-sidecar/driver.py");
+    if dev_path.is_file() {
         return Ok(dev_path);
     }
-
-    let resource_path = app
+    let path = app
         .path()
         .resource_dir()
         .map_err(|error| format!("解析应用资源目录失败：{error}"))?
-        .join("browser-sidecar")
-        .join("driver.mjs");
-    if resource_path.exists() {
-        Ok(resource_path)
+        .join("browser-sidecar/driver.py");
+    if path.is_file() {
+        Ok(path)
     } else {
         Err(format!(
-            "找不到浏览器 sidecar 脚本：{}",
-            resource_path.display()
+            "找不到 browser-use Python 服务：{}",
+            path.display()
         ))
     }
 }
 
-pub(super) fn resolve_node_path(app: &AppHandle) -> PathBuf {
-    if let Some(value) = std::env::var_os("JKC_BROWSER_NODE") {
-        return PathBuf::from(value);
-    }
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir
-            .join("node")
-            .join("bin")
-            .join(node_binary_name());
-        if bundled.exists() {
-            return bundled;
-        }
-    }
-
-    find_executable_in_path(node_binary_name(), get_login_shell_path())
-        .or_else(|| {
-            std::env::var_os("PATH").and_then(|path| {
-                find_executable_in_path(node_binary_name(), &path.to_string_lossy())
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from(node_binary_name()))
-}
-
-fn node_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "node.exe"
+pub(super) fn sidecar_command(driver: &std::path::Path) -> Command {
+    let mut command = if let Some(python) = std::env::var_os("JKC_BROWSER_PYTHON") {
+        Command::new(python)
     } else {
-        "node"
-    }
-}
-
-fn find_executable_in_path(binary: &str, path: &str) -> Option<PathBuf> {
-    std::env::split_paths(path)
-        .map(|dir| dir.join(binary))
-        .find(|candidate| candidate.is_file())
-}
-
-pub(super) fn resolve_node_modules_hint(app: &AppHandle) -> String {
-    let dev_modules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("node_modules");
-    if dev_modules.exists() {
-        return dev_modules.to_string_lossy().to_string();
-    }
-
-    app.path()
-        .resource_dir()
-        .ok()
-        .map(|path| path.join("node_modules").to_string_lossy().to_string())
-        .unwrap_or_default()
+        let uv = std::env::var_os("JKC_BROWSER_UV")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::split_paths(&get_login_shell_path())
+                    .map(|dir| dir.join(if cfg!(windows) { "uv.exe" } else { "uv" }))
+                    .find(|path| path.is_file())
+            })
+            .unwrap_or_else(|| PathBuf::from("uv"));
+        let mut command = Command::new(uv);
+        command.args([
+            "run",
+            "--no-project",
+            "--python",
+            "3.12",
+            "--with",
+            "browser-use==0.13.11",
+            "python",
+        ]);
+        command
+    };
+    command
+        .arg("-u")
+        .arg(driver)
+        .env("PATH", get_login_shell_path())
+        .env("PYTHONUNBUFFERED", "1")
+        .env("ANONYMIZED_TELEMETRY", "false")
+        .env("BROWSER_USE_CLOUD_SYNC", "false")
+        .env("BROWSER_USE_VERSION_CHECK", "false")
+        .env("BROWSER_USE_DISABLE_EXTENSIONS", "1")
+        .env("BROWSER_USE_LOGGING_LEVEL", "error");
+    command
 }

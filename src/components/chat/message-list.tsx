@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { elementScroll, useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "../../hooks/use-auto-scroll";
 import type {
   DispatcherMessage,
@@ -17,7 +17,6 @@ import { MessageItem } from "./message-item";
 import { buildItems, projectLiveMessageItems, type MessageDisplayItem } from "./message-projection";
 import { OVERSCAN_ROWS, ROW_ESTIMATE_PX, shouldUseWindowing } from "./message-list-metrics";
 import { RowUiStateProvider, useRowUiStateStore } from "./row-ui-state";
-import { ChatScrollAnchor } from "./chat-scroll-anchor";
 import { useCopyOnSelect } from "./use-copy-on-select";
 import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
 
@@ -30,14 +29,14 @@ import type { ToolActivityItem } from "../dispatcher-chat/tool-activity";
  *
  * Auto-follow logic (see use-auto-scroll.ts):
  *   - When the user is at the bottom, new streaming content pushes the view.
- *   - When the user scrolls up, follow stops; a floating "最新" button appears.
+ *   - When the user scrolls up, follow stops; reaching the bottom resumes it.
  *
  * 窗口化（UI-24b-3）：>300 条时启用 @tanstack/react-virtual 动态测量——
  * estimateSize 只作首帧初值，每行挂载后经 measureElement（ResizeObserver）
  * 实测修正，替换 24a 时代「固定 180px 估高 + spacer」的跳读/空白根因
  * （审计 A11）。行卸载丢失的展开态由 RowUiStateProvider 的行级 store 恢复
- * （UI-24b-1）；pinned 跟随仍由 DOM 级 useAutoScroll 承担（滚动容器
- * scrollHeight 含虚拟化总高 div，两套机制无写入冲突）。
+ * （UI-24b-1）；跟随由 DOM 级 useAutoScroll 承担；虚拟列表的测量补偿
+ * 经 scrollToFn 同步位置基线，避免被误判为用户滚动。
  */
 export interface MessageListProps {
   sessionId: string | null;
@@ -109,7 +108,7 @@ function MessageListInner({
 
   const isStreaming = Boolean(liveState && (liveState.hasPendingRun || liveState.isLoading));
 
-  const { containerRef, pinned, scrollToBottom } = useAutoScroll(sessionId);
+  const { containerRef, adjustScrollPosition } = useAutoScroll(sessionId);
   const handleCopyOnSelect = useCopyOnSelect();
 
   // useAutoScroll 的 containerRef 是回调 ref；本地组合 ref 供 virtualizer 的
@@ -129,6 +128,9 @@ function MessageListInner({
     getScrollElement: () => scrollElementRef.current,
     estimateSize: () => ROW_ESTIMATE_PX,
     overscan: OVERSCAN_ROWS,
+    scrollToFn: (offset, options, instance) => {
+      adjustScrollPosition(() => elementScroll(offset, options, instance));
+    },
   });
 
   // 历史变更或行数变化时清空索引测量；当前轮次的 token 增长由行级
@@ -191,6 +193,9 @@ function MessageListInner({
         ref={attachContainerRef}
         className="chat-scroll h-full overflow-y-auto overflow-x-hidden"
         role="log"
+        tabIndex={0}
+        aria-label="会话消息"
+        style={{ overflowAnchor: "none" }}
         aria-live="polite"
         aria-busy={isStreaming}
         onMouseUp={handleCopyOnSelect}
@@ -228,11 +233,6 @@ function MessageListInner({
           )}
         </div>
       </div>
-
-      <ChatScrollAnchor
-        showJumpButton={!pinned && items.length > 0}
-        onJumpToLatest={() => scrollToBottom({ behavior: "smooth" })}
-      />
     </div>
   );
 }

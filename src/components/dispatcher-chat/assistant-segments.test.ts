@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   appendAssistantTextSegment,
   appendToolSummarySegment,
-  demoteActiveTextSegments,
+  markAssistantTextAsProgress,
+  partitionAssistantSegments,
   pushAssistantSegment,
   type AssistantTurnSegment,
 } from "./assistant-segments";
@@ -18,18 +19,32 @@ describe("助手轮次分段身份", () => {
     ]);
   });
 
-  it("切换模型调用只标记阶段说明，原有文字和消息 ID 均保留", () => {
-    const original = appendAssistantTextSegment([], "先检查项目", "message-1");
-    const next = appendAssistantTextSegment(
-      demoteActiveTextSegments(original),
-      "检查完成",
-      "message-2",
-    );
+  it("只标记明确发起工具的消息，其他渐进回复和消息 ID 均保留", () => {
+    let original = appendAssistantTextSegment([], "已完成部分检查", "message-1");
+    original = appendAssistantTextSegment(original, "继续读取项目", "message-2");
+    const next = markAssistantTextAsProgress(original, "message-2");
     expect(next).toEqual([
-      { kind: "assistant-text", text: "先检查项目", messageId: "message-1", superseded: true },
-      { kind: "assistant-text", text: "检查完成", messageId: "message-2" },
+      { kind: "assistant-text", text: "已完成部分检查", messageId: "message-1" },
+      { kind: "assistant-text", text: "继续读取项目", messageId: "message-2", superseded: true },
     ]);
-    expect(original[0].superseded).toBeUndefined();
+    expect(next[0]).toBe(original[0]);
+    expect(original[1].superseded).toBeUndefined();
+    expect(markAssistantTextAsProgress(next, "unknown")).toEqual(next);
+  });
+
+  it("过程与回答按身份分组，空白和工具摘要不冒充助手回复", () => {
+    const segments: AssistantTurnSegment[] = [
+      { kind: "assistant-text", text: "已完成一部分", messageId: "answer-1" },
+      { kind: "assistant-text", text: "继续检查", messageId: "progress", superseded: true },
+      { kind: "tool-summary", text: "读取成功", toolCallId: "tool-1" },
+      { kind: "assistant-text", text: "全部完成", messageId: "answer-2" },
+      { kind: "assistant-text", text: "  ", messageId: "empty" },
+    ];
+    const { progressSegments, answerSegments } = partitionAssistantSegments(segments);
+    expect(progressSegments).toEqual([segments[1]]);
+    expect(answerSegments).toEqual([segments[0], segments[3]]);
+    expect(progressSegments[0]).toBe(segments[1]);
+    expect(answerSegments[0]).toBe(segments[0]);
   });
 
   it("历史相邻阶段说明不因相同 superseded 标记而粘成一段", () => {

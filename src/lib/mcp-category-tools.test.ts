@@ -47,7 +47,7 @@ describe("isMcpToolName / extractMcpToolNames", () => {
     const names = extractMcpToolNames([
       "local_zsh",
       "mcp__any_file_server__list_files",
-      "browser_read_text",
+      "browser_open_url",
       "mcp__srv__tool",
     ]);
     expect(names).toEqual(new Set(["mcp__any_file_server__list_files", "mcp__srv__tool"]));

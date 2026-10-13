@@ -3,7 +3,7 @@ use super::*;
 
 /// 解析子智能体模型槽位：继承父级凭据/网关（仅换模型名）或使用独立配置；
 /// 输出预算与温度取子智能体自身配置。
-pub(super) fn resolve_sub_agent_spec(
+pub(in crate::agent::rig_ext::sub_agent) fn resolve_sub_agent_spec(
     config: &SubAgentConfig,
     parent: &PurposeModelSpec,
 ) -> PurposeModelSpec {

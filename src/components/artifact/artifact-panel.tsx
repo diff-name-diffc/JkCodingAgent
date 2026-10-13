@@ -24,6 +24,7 @@ export interface ArtifactPanelProps {
   workspaceId?: string | null;
   artifact?: DispatcherToolArtifactRef | null;
   subAgentSession?: SubAgentSession | null;
+  subAgentToolCallId?: string | null;
   traceLoading?: boolean;
   traceError?: string | null;
   className?: string;
@@ -34,6 +35,7 @@ export function ArtifactPanel({
   workspaceId,
   artifact,
   subAgentSession,
+  subAgentToolCallId,
   traceLoading = false,
   traceError,
   className,
@@ -80,9 +82,11 @@ export function ArtifactPanel({
   const panelTitle = artifact?.title ?? title;
 
   return (
-    <div className={cn("flex h-full flex-col", className)}>
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <h3 className="flex-1 truncate text-sm font-semibold text-foreground">{panelTitle}</h3>
+    <div className={cn("flex h-full min-w-0 flex-col", className)}>
+      <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+          {panelTitle}
+        </h3>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -93,10 +97,20 @@ export function ArtifactPanel({
         </Button>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="p-4">
+      <ScrollArea
+        key={subAgentToolCallId ? `${workspaceId ?? ""}:${subAgentToolCallId}` : "artifact"}
+        // 详情只纵向滚动；Radix 默认的 display:table 会被 Canvas/长地址撑宽。
+        // 局部约束内容，保留其他需要横向滚动的 ScrollArea 行为。
+        className="min-h-0 min-w-0 flex-1 [&>[data-radix-scroll-area-viewport]>div]:block!"
+      >
+        <div className="min-w-0 p-3">
           {subAgentSession ? (
-            <SubAgentExecutionCard session={subAgentSession} />
+            <SubAgentExecutionCard
+              key={`${workspaceId ?? ""}:${subAgentToolCallId ?? ""}`}
+              session={subAgentSession}
+              dispatcherSessionId={workspaceId}
+              toolCallId={subAgentToolCallId}
+            />
           ) : traceLoading ? (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />

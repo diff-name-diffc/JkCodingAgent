@@ -2,65 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Pencil, Plus, Trash2, Check, X } from "lucide-react";
 import type { SubAgentConfig, SubAgentRecord } from "../../../types";
+import { BROWSER_AGENT_ID } from "../../../lib/sub-agent-runtime";
 import { SubAgentEditorDialog } from "./SubAgentEditorDialog";
-
-function toBackendConfig(config: SubAgentConfig): string {
-  return JSON.stringify({
-    agent_id: config.agentId,
-    agent_name: config.agentName,
-    description: config.description,
-    system_prompt: config.systemPrompt,
-    user_prompt_template: config.userPromptTemplate,
-    allowed_tools: config.allowedTools,
-    model_config: {
-      inherit_from_parent: config.modelConfig.inheritFromParent,
-      api_base: config.modelConfig.apiBase || null,
-      api_key: config.modelConfig.apiKey || null,
-      model_name: config.modelConfig.modelName || null,
-    },
-    max_iterations: config.maxIterations,
-    max_output_tokens: config.maxOutputTokens,
-    temperature: config.temperature,
-    timeout_secs: config.timeoutSecs,
-    enabled: config.enabled,
-    created_at: config.createdAt,
-    updated_at: config.updatedAt,
-  });
-}
-
-function fromBackendConfig(record: SubAgentRecord): SubAgentConfig | null {
-  try {
-    const raw = JSON.parse(record.configJson);
-    return {
-      agentId: raw.agent_id ?? record.id,
-      agentName: raw.agent_name ?? record.name,
-      description: raw.description ?? record.description,
-      systemPrompt: raw.system_prompt ?? "",
-      userPromptTemplate: raw.user_prompt_template ?? "{{task}}",
-      allowedTools: Array.isArray(raw.allowed_tools)
-        ? raw.allowed_tools
-        : Array.isArray(raw.allowedTools)
-          ? raw.allowedTools
-          : [],
-      modelConfig: {
-        inheritFromParent:
-          raw.model_config?.inherit_from_parent ?? raw.modelConfig?.inheritFromParent ?? true,
-        apiBase: raw.model_config?.api_base ?? raw.modelConfig?.apiBase ?? undefined,
-        apiKey: raw.model_config?.api_key ?? raw.modelConfig?.apiKey ?? undefined,
-        modelName: raw.model_config?.model_name ?? raw.modelConfig?.modelName ?? undefined,
-      },
-      maxIterations: raw.max_iterations ?? raw.maxIterations ?? 60,
-      maxOutputTokens: raw.max_output_tokens ?? raw.maxOutputTokens ?? 4096,
-      temperature: raw.temperature ?? 0.7,
-      timeoutSecs: raw.timeout_secs ?? raw.timeoutSecs ?? 3600,
-      enabled: record.enabled,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    };
-  } catch {
-    return null;
-  }
-}
+import { fromBackendConfig, toBackendConfig } from "./sub-agent-config";
 
 export function SubAgentManagePanel() {
   const [agents, setAgents] = useState<SubAgentRecord[]>([]);
@@ -141,7 +85,7 @@ export function SubAgentManagePanel() {
     }
   }
 
-  const hasBrowserAgent = agents.some((a) => a.id === "browser-agent");
+  const hasBrowserAgent = agents.some((a) => a.id === BROWSER_AGENT_ID);
 
   return (
     <div className="ai-subagent-panel">
@@ -188,7 +132,9 @@ export function SubAgentManagePanel() {
                   <div className="ai-subagent-description">{record.description}</div>
                   <div className="ai-subagent-card-footer">
                     <span className="ai-subagent-meta">
-                      工具: {config?.allowedTools.length ?? 0} 个
+                      {record.id === BROWSER_AGENT_ID
+                        ? "引擎: browser-use"
+                        : `工具: ${config?.allowedTools.length ?? 0} 个`}
                     </span>
                     <div className="ai-subagent-actions">
                       <button

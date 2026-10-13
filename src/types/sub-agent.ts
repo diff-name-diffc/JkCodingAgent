@@ -12,6 +12,8 @@ export interface SubAgentConfig {
   systemPrompt: string;
   userPromptTemplate: string;
   allowedTools: string[];
+  /** browser-use 是否使用截图视觉；缺省仅使用 DOM 文本。 */
+  browserUseVision?: boolean;
   modelConfig: SubAgentModelConfig;
   maxIterations: number;
   maxOutputTokens: number;
@@ -45,6 +47,9 @@ export interface SubAgentUsage {
   totalTokens: number;
 }
 
+export type SubAgentTerminationReason = "cancelled" | "timed_out";
+export type SubAgentRunStatus = "completed" | "failed" | SubAgentTerminationReason;
+
 export type SubAgentEventType =
   | "Started"
   | "ToolStarted"
@@ -52,11 +57,14 @@ export type SubAgentEventType =
   | "Progress"
   | "llmDelta"
   | "UsageUpdated"
+  | "traceTruncated"
   | "Finished"
   | "Failed";
 
 export interface SubAgentEvent {
   event: SubAgentEventType;
+  /** 持久化轨迹的事件时间；旧轨迹可能未记录。 */
+  timestampMs?: number;
   data: {
     agentId?: string;
     agentName?: string;
@@ -74,6 +82,9 @@ export interface SubAgentEvent {
     elapsedMs?: number;
     tokenUsage?: SubAgentUsage;
     error?: string;
+    terminationReason?: SubAgentTerminationReason;
+    dropped?: number;
+    note?: string;
   };
 }
 
@@ -89,7 +100,7 @@ export interface SubAgentRunTrace {
   workspaceId: string;
   toolCallId: string;
   agentId: string;
-  status: "completed" | "failed";
+  status: "running" | SubAgentRunStatus;
   eventsJson: string;
   /** 运行实际模型（schema v5 列）；老轨迹为 null，视图「未记录」兜底。 */
   model?: string | null;

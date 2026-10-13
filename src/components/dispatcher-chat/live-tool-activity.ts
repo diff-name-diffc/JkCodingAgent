@@ -223,6 +223,8 @@ function browserStateLabel(state: string): string {
       return "正在下载浏览器资源";
     case "busy":
       return "正在执行浏览器操作";
+    case "automating":
+      return "浏览器自动化运行中";
     case "ready":
       return "浏览器已就绪";
     case "closed":

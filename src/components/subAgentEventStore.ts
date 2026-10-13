@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { SubAgentEvent, SubAgentEventPayload, SubAgentUsage } from "../types";
+import type {
+  SubAgentEvent,
+  SubAgentEventPayload,
+  SubAgentRunStatus,
+  SubAgentUsage,
+} from "../types";
+import { mergeSubAgentTraceEvents, normalizeSubAgentUsage } from "./sub-agent-trace-events";
 
 export interface EventLine {
   id: string;
@@ -10,7 +16,7 @@ export interface EventLine {
 }
 
 export type SubAgentPhase =
-  "initializing" | "thinking" | "tool_calling" | "generating" | "completed" | "failed";
+  "initializing" | "thinking" | "tool_calling" | "generating" | SubAgentRunStatus;
 
 export interface SubAgentToolCall {
   id: string;
@@ -37,7 +43,7 @@ export interface SubAgentSession {
   progressMessages: SubAgentProgressMessage[];
   events: EventLine[];
   elapsed: number;
-  status: "running" | "completed" | "failed";
+  status: "running" | SubAgentRunStatus;
   phase: SubAgentPhase;
   toolCalls: SubAgentToolCall[];
   finishedResult?: string;
@@ -61,6 +67,9 @@ type Subscriber = (snapshot: Record<string, SessionMap>) => void;
 
 const store: Record<string, SessionMap> = {};
 const starts: Record<string, number> = {};
+/** 回放请求在途时仍接收实时事件；有界缓存用于合并 checkpoint，避免状态倒退。 */
+const liveEvents: Record<string, SubAgentEventPayload[]> = {};
+const MAX_LIVE_TRACE_EVENTS = 500;
 const subscribers = new Set<Subscriber>();
 let listenerRegistered = false;
 
@@ -73,6 +82,9 @@ function dropSessionData(sessionId: string): void {
   const prefix = `${sessionId}:`;
   for (const key of Object.keys(starts)) {
     if (key.startsWith(prefix)) delete starts[key];
+  }
+  for (const key of Object.keys(liveEvents)) {
+    if (key.startsWith(prefix)) delete liveEvents[key];
   }
 }
 
@@ -139,6 +151,9 @@ function notify(): void {
 }
 
 function buildEventText(eventType: string, data: SubAgentEventPayload["data"]): string {
+  if (eventType === "traceTruncated") {
+    return data.note ?? `早期的 ${data.dropped ?? 0} 条轨迹事件已被裁剪`;
+  }
   if (eventType === "Started") {
     return `任务：${data.task ?? ""}`;
   }
@@ -162,24 +177,43 @@ function buildEventText(eventType: string, data: SubAgentEventPayload["data"]): 
     return `✅ 完成 · ${data.iterations} 轮 · ${Math.round((data.elapsedMs ?? 0) / 1000)}s · ${totalTokens} tokens`;
   }
   if (eventType === "Failed") {
-    return `❌ 失败：${data.error ?? ""}`;
+    const label =
+      data.terminationReason === "cancelled"
+        ? "已取消"
+        : data.terminationReason === "timed_out"
+          ? "已超时"
+          : "失败";
+    return `${label}：${data.error ?? ""}`;
   }
   return "";
 }
 
-function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): void {
-  const { sessionId, toolCallId, event: eventType, data } = payload;
-  const agentId = data.agentId ?? "unknown";
+export function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): void {
+  const { sessionId, toolCallId, event: eventType } = payload;
+  const data = payload.data.tokenUsage
+    ? { ...payload.data, tokenUsage: normalizeSubAgentUsage(payload.data.tokenUsage) }
+    : payload.data;
   const now = payload.timestampMs || Date.now();
 
   ensureSessionMap(sessionId);
   const existing = store[sessionId][toolCallId];
+  const agentId = data.agentId ?? existing?.agentId ?? "unknown";
   const storeKey = keyFor(sessionId, toolCallId);
+  // 同一 tool_call_id 只对应一次执行；迟到的动作/进度不得重开已结束的轨迹。
+  if (existing && existing.status !== "running") return;
+  if (notifyAfter) {
+    // 高频事件路径：原地追加并在超限时裁剪头部，避免每条事件整表拷贝。
+    const trace = liveEvents[storeKey] ?? (liveEvents[storeKey] = []);
+    trace.push({ ...payload, data });
+    if (trace.length > MAX_LIVE_TRACE_EVENTS) {
+      trace.splice(0, trace.length - MAX_LIVE_TRACE_EVENTS);
+    }
+  }
 
   let name: string;
   let task: string;
   let model: string | undefined;
-  let status: "running" | "completed" | "failed";
+  let status: SubAgentSession["status"];
   let elapsed: number;
   let phase: SubAgentPhase;
   let toolCalls: SubAgentToolCall[];
@@ -201,7 +235,7 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     usageReceivedAt = undefined;
     starts[storeKey] = now;
   } else if (eventType === "Finished") {
-    name = existing?.name ?? agentId;
+    name = data.agentName ?? existing?.name ?? agentId;
     task = existing?.task ?? "";
     model = existing?.model;
     status = "completed";
@@ -212,16 +246,28 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
     tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
     iterations = data.iterations ?? existing?.iterations;
   } else if (eventType === "Failed") {
-    name = existing?.name ?? agentId;
+    name = data.agentName ?? existing?.name ?? agentId;
     task = existing?.task ?? "";
     model = existing?.model;
-    status = "failed";
+    status = data.terminationReason ?? "failed";
     elapsed = now - (starts[storeKey] ?? now);
-    phase = "failed";
-    toolCalls = existing?.toolCalls ?? [];
+    phase = status;
+    toolCalls = (existing?.toolCalls ?? []).map((call) =>
+      call.status === "running"
+        ? {
+            ...call,
+            status: "failed",
+            resultPreview: data.error,
+            finishedAt: now,
+            durationMs: now - call.startedAt,
+          }
+        : call,
+    );
     finishedError = data.error ?? existing?.finishedError;
+    tokenUsage = data.tokenUsage ?? existing?.tokenUsage;
+    iterations = data.iterations ?? existing?.iterations;
   } else {
-    name = existing?.name ?? agentId;
+    name = data.agentName ?? existing?.name ?? agentId;
     task = existing?.task ?? "";
     model = existing?.model;
     status = existing?.status ?? "running";
@@ -257,10 +303,10 @@ function applySubAgentEvent(payload: SubAgentEventPayload, notifyAfter = true): 
         if (idx !== -1) {
           toolCalls[idx] = {
             ...toolCalls[idx],
-            resultPreview: data.resultPreview,
+            resultPreview: data.error ?? data.resultPreview,
             finishedAt: now,
             durationMs: now - toolCalls[idx].startedAt,
-            status: "completed",
+            status: data.error ? "failed" : "completed",
           };
         }
       }
@@ -377,13 +423,20 @@ export function hydrateSubAgentTrace(
   model?: string | null,
 ): SubAgentSession | null {
   ensureSessionMap(sessionId);
+  const mergedEvents = mergeSubAgentTraceEvents(
+    events,
+    liveEvents[keyFor(sessionId, toolCallId)] ?? [],
+  );
   // 回放前移除旧轨迹：与 ensure 一样走写时替换，不原位 delete。
   const replayBase = { ...store[sessionId] };
   delete replayBase[toolCallId];
   commitSessionMap(sessionId, replayBase);
   delete starts[keyFor(sessionId, toolCallId)];
-  for (const event of events) {
-    applySubAgentEvent({ sessionId, toolCallId, timestampMs: Date.now(), ...event }, false);
+  for (const event of mergedEvents) {
+    applySubAgentEvent(
+      { ...event, sessionId, toolCallId, timestampMs: event.timestampMs ?? Date.now() },
+      false,
+    );
   }
   // trace 表 model 列为回放权威源：长任务中 Started 事件会被容量裁剪
   // 逐出（G1-20），此时事件流拿不到模型，用列值覆盖（UI-14 遗留）。

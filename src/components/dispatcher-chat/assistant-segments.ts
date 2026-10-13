@@ -1,5 +1,5 @@
 /**
- * 助手轮次的内容分段模型：正文/工具摘要两类段的流式追加、降级与展示净化。
+ * 助手轮次的内容分段模型：正文/工具摘要两类段的流式追加、阶段判定与展示分组。
  *
  * 分段是渲染与流式合并共用的中间形态；历史投影（`../dispatcherChatView`）
  * 与实时事件处理（`useDispatcherActions` / `useLiveSessionState`）都经过这里。
@@ -11,7 +11,7 @@ export interface AssistantTurnSegment {
   kind: "assistant-text" | "tool-summary";
   text: string;
   messageId?: string;
-  // assistant-text 专用：标记工具调用前的阶段说明，展示时保留在正文流中。
+  // assistant-text 专用：明确发起工具调用的阶段说明，或模型切换等系统进度。
   superseded?: boolean;
   toolCallId?: string;
   toolName?: string;
@@ -37,15 +37,30 @@ export function appendAssistantTextSegment(
   });
 }
 
-/**
- * 下一次模型调用开始时将之前的正文标记为阶段说明；只改变语义，不删除内容。
- */
-export function demoteActiveTextSegments(segments: AssistantTurnSegment[]): AssistantTurnSegment[] {
+/** 工具规划已确认时，只标记发起该批工具的消息，不降级其他渐进回复。 */
+export function markAssistantTextAsProgress(
+  segments: AssistantTurnSegment[],
+  messageId: string,
+): AssistantTurnSegment[] {
   return segments.map((segment) =>
-    segment.kind === "assistant-text" && !segment.superseded
+    segment.kind === "assistant-text" && segment.messageId === messageId && !segment.superseded
       ? { ...segment, superseded: true }
       : segment,
   );
+}
+
+/** 只分组助手文字；工具摘要沿用独立展示与去重规则，保留分段身份和顺序。 */
+export function partitionAssistantSegments(segments: AssistantTurnSegment[]): {
+  progressSegments: AssistantTurnSegment[];
+  answerSegments: AssistantTurnSegment[];
+} {
+  const progressSegments: AssistantTurnSegment[] = [];
+  const answerSegments: AssistantTurnSegment[] = [];
+  for (const segment of segments) {
+    if (segment.kind !== "assistant-text" || !segment.text.trim()) continue;
+    (segment.superseded ? progressSegments : answerSegments).push(segment);
+  }
+  return { progressSegments, answerSegments };
 }
 
 export function appendToolSummarySegment(

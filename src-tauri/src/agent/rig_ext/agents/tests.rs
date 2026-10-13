@@ -303,39 +303,39 @@ mod allowlist {
     fn empty_allowlist_keeps_builtins_and_drops_all_mcp() {
         let tools = vec![
             tool("local_zsh"),
-            tool("browser_read_text"),
+            tool("browser_open_url"),
             tool("mcp__srv__list"),
         ];
         let filtered = retain_allowed_tools(tools, &[], false);
-        assert_eq!(names(&filtered), vec!["local_zsh", "browser_read_text"]);
+        assert_eq!(names(&filtered), vec!["local_zsh", "browser_open_url"]);
     }
 
     #[test]
     fn mcp_tools_require_explicit_allowlist_entry() {
         let tools = vec![
             tool("local_zsh"),
-            tool("browser_read_text"),
+            tool("browser_open_url"),
             tool("mcp__srv__a"),
             tool("mcp__srv__b"),
         ];
-        let configured = vec!["browser_read_text".to_string(), "mcp__srv__a".to_string()];
+        let configured = vec!["browser_open_url".to_string(), "mcp__srv__a".to_string()];
         let filtered = retain_allowed_tools(tools, &configured, false);
-        assert_eq!(names(&filtered), vec!["browser_read_text", "mcp__srv__a"]);
+        assert_eq!(names(&filtered), vec!["browser_open_url", "mcp__srv__a"]);
     }
 
     #[test]
     fn sub_agent_tools_are_exempt_only_for_builtin_branch() {
         let tools = vec![
-            tool("browser_read_text"),
+            tool("browser_open_url"),
             tool("list_sub_agents"),
             tool("call_sub_agent"),
             tool("mcp__srv__a"),
         ];
-        let configured = vec!["browser_read_text".to_string()];
+        let configured = vec!["browser_open_url".to_string()];
         let filtered = retain_allowed_tools(tools, &configured, true);
         assert_eq!(
             names(&filtered),
-            vec!["browser_read_text", "list_sub_agents", "call_sub_agent"]
+            vec!["browser_open_url", "list_sub_agents", "call_sub_agent"]
         );
     }
 

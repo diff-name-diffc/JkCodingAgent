@@ -89,6 +89,8 @@ pub fn run() {
             browser::commands::browser_import_chrome_profile,
             browser::commands::browser_list_chrome_profile_candidates,
             browser::commands::browser_stop,
+            browser::commands::browser_preview_set,
+            browser::commands::browser_cancel_exploration,
             python_runner::commands::python_runner_list_results,
             python_runner::commands::python_runner_start,
             python_runner::commands::python_runner_stop,

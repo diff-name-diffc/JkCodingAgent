@@ -2,21 +2,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use tauri::AppHandle;
-use tokio::sync::Mutex;
-use tokio::time::Duration;
+use serde_json::Value;
 
+mod cleanup;
 mod paths;
+mod preview;
 mod process;
 mod profile;
+mod runtime;
+mod session;
+#[cfg(test)]
+mod tests;
 mod url;
 
 use paths::plain_chat_browser_workspace;
-use process::{
-    browser_command_timeout, empty_to_null, spawn_sidecar, status_from_value, BrowserProcess,
-};
 use profile::{
     import_chrome_profile_blocking, load_launch_options, scan_chrome_profile_candidates_blocking,
 };
@@ -88,7 +89,18 @@ pub struct BrowserStatus {
 
 #[derive(Default)]
 pub struct BrowserManager {
-    sessions: Mutex<HashMap<String, Arc<BrowserProcess>>>,
+    sessions: Arc<Mutex<HashMap<String, Arc<session::Session>>>>,
+}
+
+impl Drop for BrowserManager {
+    fn drop(&mut self) {
+        let sessions = self.sessions.lock().values().cloned().collect::<Vec<_>>();
+        for session in sessions {
+            if let Some(process) = session.process() {
+                process.abort("应用退出，浏览器服务已终止");
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -113,119 +125,7 @@ pub struct BrowserProfileCandidate {
     user_data_root: String,
 }
 
-impl BrowserManager {
-    pub async fn start(
-        &self,
-        app: AppHandle,
-        session_id: String,
-        project_path: String,
-    ) -> Result<BrowserStatus, String> {
-        if let Some(existing) = self.sessions.lock().await.get(&session_id).cloned() {
-            return Ok(existing.status());
-        }
-
-        let project_path = PathBuf::from(project_path);
-        let options = load_launch_options(&app, &project_path, &session_id)?;
-        if !options.config.enabled {
-            return Err("浏览器已在全局浏览器设置中禁用".to_string());
-        }
-        let profile_directory = options.profile_directory.clone();
-        let user_data_dir = options.user_data_dir;
-
-        let process = spawn_sidecar(&app, &session_id).await?;
-        self.sessions
-            .lock()
-            .await
-            .insert(session_id.clone(), Arc::clone(&process));
-
-        let start_result = process
-            .request_with_timeout(
-                "start",
-                json!({
-                    "sessionId": session_id,
-                    "userDataDir": user_data_dir,
-                    "headless": true,
-                    "proxy": empty_to_null(&options.config.proxy),
-                    "locale": empty_to_null(&options.config.locale),
-                    "timezone": empty_to_null(&options.config.timezone),
-                    "profileDirectory": profile_directory,
-                    "viewport": {
-                        "width": options.config.viewport_width,
-                        "height": options.config.viewport_height
-                    }
-                }),
-                Duration::from_secs(180),
-            )
-            .await;
-
-        match start_result {
-            Ok(value) => {
-                let status = status_from_value(&value).unwrap_or_else(|| process.status());
-                Ok(status)
-            }
-            Err(error) => {
-                self.sessions.lock().await.remove(&process.session_id);
-                let _ = process.kill().await;
-                Err(error)
-            }
-        }
-    }
-
-    pub async fn stop(&self, session_id: &str) -> Result<(), String> {
-        let process = self.sessions.lock().await.remove(session_id);
-        let Some(process) = process else {
-            return Ok(());
-        };
-        let _ = process
-            .request_with_timeout("close", json!({}), Duration::from_secs(10))
-            .await;
-        process.kill().await
-    }
-
-    pub async fn status(&self, session_id: &str) -> BrowserStatus {
-        self.sessions
-            .lock()
-            .await
-            .get(session_id)
-            .map(|process| process.status())
-            .unwrap_or_else(|| BrowserStatus {
-                session_id: session_id.to_string(),
-                state: "closed".to_string(),
-                url: None,
-                message: None,
-            })
-    }
-
-    pub async fn command(
-        &self,
-        app: AppHandle,
-        session_id: String,
-        project_path: String,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, String> {
-        let existing = {
-            let sessions = self.sessions.lock().await;
-            sessions.get(&session_id).cloned()
-        };
-
-        let process = match existing {
-            Some(process) => process,
-            None => {
-                self.start(app, session_id.clone(), project_path).await?;
-                self.sessions
-                    .lock()
-                    .await
-                    .get(&session_id)
-                    .cloned()
-                    .ok_or_else(|| "浏览器 sidecar 启动后未注册会话".to_string())?
-            }
-        };
-        let request_timeout = browser_command_timeout(&params);
-        process
-            .request_with_timeout(method, params, request_timeout)
-            .await
-    }
-}
+/// 浏览器探索事件以运行标识隔离，调用方负责投影到统一子智能体轨迹。
+pub type BrowserAgentEventCallback = Arc<dyn Fn(Value) + Send + Sync>;
 
 pub(crate) mod commands;

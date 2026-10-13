@@ -13,11 +13,8 @@
   --destructive-foreground: #ffffff;
   --composer-shadow: 0 3px 12px rgb(36 54 42 / 0.04), 0 14px 36px rgb(36 54 42 / 0.04);
 
-  --brand-graphite: #242a27;
-
   --bg-root: #e7ebe3;
   --bg-shell: var(--background);
-  --bg-titlebar: #f3f3ed;
   /* 窗口顶部拖拽区高度：与 macOS 红绿灯安全区配合，页面内容用它做顶部留白。 */
   --titlebar-h: 38px;
   --bg-sidebar: #f1f2ec;
@@ -50,30 +47,16 @@
   --accent-soft: #e8f0e9;
   --accent-hover: #1d5345;
   --accent-subtle: rgb(36 100 83 / 0.06);
-  --accent-pressed: #184737;
   --selection-bg: #d5e9da;
   --selection-foreground: #183f31;
 
-  /* RGB 伴随令牌：用于 alpha 合成，格式 `rgb(var(--accent-rgb) / 0.5)` */
+  /* RGB 伴随令牌：用于 alpha 合成，格式 `rgb(var(--accent-rgb) / 0.5)`；
+     三元组与上方 hex 令牌保持一致，Tailwind /NN 透明度由 color-mix 处理。 */
   --accent-rgb: 36 100 83;
-  --accent-strong-rgb: 24 71 55;
   --danger-rgb: 185 63 58;
   --warning-rgb: 154 91 19;
   --success-rgb: 45 113 75;
   --info-rgb: 55 104 149;
-  /* RGB 三元组与上方 hex 令牌保持一致；Tailwind /NN 透明度由 color-mix 处理。 */
-  --bg-card-rgb: 255 255 255;
-  --bg-subtle-rgb: 243 244 238;
-  --bg-input-rgb: 255 255 255;
-  --bg-sidebar-rgb: 241 242 236;
-  --bg-sidebar-elevated-rgb: 232 236 226;
-  --bg-selected-rgb: 227 238 229;
-  --bg-hover-rgb: 233 236 228;
-  --text-primary-rgb: 36 42 39;
-  --text-secondary-rgb: 80 92 84;
-  --text-muted-rgb: 97 108 99;
-  --border-medium-rgb: 216 221 212;
-  --accent-hover-rgb: 29 83 69;
 
   /* 主题缩略图同时展示两种外观，不随当前主题切换。 */
   --theme-preview-light-bg: #fcfbf8;
@@ -85,9 +68,7 @@
   --theme-preview-dark-ink: #e5eae4;
   --theme-preview-dark-accent: #9ccdb5;
 
-  --chat-main-rail: var(--bg-sidebar);
   --chat-surface: var(--background);
-  --chat-surface-strong: var(--bg-card);
   --chat-glass-border: var(--border-dim);
   --chat-focus-ring: var(--shadow-focus);
   --chat-shadow: var(--shadow-md);
@@ -134,7 +115,6 @@
   --shadow-md: 0 4px 18px rgb(36 54 42 / 0.07), 0 1px 3px rgb(36 54 42 / 0.03);
   --shadow-lg: 0 16px 48px rgb(36 54 42 / 0.12), 0 3px 10px rgb(36 54 42 / 0.04);
   --shadow-focus: 0 0 0 2px var(--border-focus);
-  --shadow-accent-glow: none;
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -163,7 +143,6 @@
   --destructive-foreground: #341c1c;
   --composer-shadow: 0 4px 20px rgb(0 0 0 / 0.16);
   --bg-root: #141a16;
-  --bg-titlebar: #1c2520;
   --bg-sidebar: #171e1a;
   --bg-sidebar-elevated: #28352c;
   --bg-panel: #1c2520;
@@ -185,27 +164,13 @@
   --accent-soft: #2c4435;
   --accent-hover: #b2dfc8;
   --accent-subtle: rgb(156 205 181 / 0.08);
-  --accent-pressed: #88bfa2;
   --selection-bg: #345b47;
   --selection-foreground: #eff9f1;
   --accent-rgb: 156 205 181;
-  --accent-strong-rgb: 184 226 204;
   --danger-rgb: 240 163 160;
   --warning-rgb: 223 190 132;
   --success-rgb: 154 206 170;
   --info-rgb: 165 196 224;
-  --bg-card-rgb: 33 44 37;
-  --bg-subtle-rgb: 37 49 40;
-  --bg-input-rgb: 33 44 37;
-  --bg-sidebar-rgb: 23 30 26;
-  --bg-sidebar-elevated-rgb: 40 53 44;
-  --bg-selected-rgb: 48 71 56;
-  --bg-hover-rgb: 43 58 48;
-  --text-primary-rgb: 229 234 228;
-  --text-secondary-rgb: 187 198 188;
-  --text-muted-rgb: 164 178 166;
-  --border-medium-rgb: 66 81 69;
-  --accent-hover-rgb: 178 223 200;
   --chat-user-bubble-bg: #29392e;
 
   /* Markdown 与代码工具栏共用中性表面，语法色由代码主题负责。 */
@@ -345,22 +310,6 @@
   }
 }
 
-.dispatcher-search-match {
-  padding: 0 1px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--warning) 34%, transparent);
-  color: inherit;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 42%, transparent);
-}
-
-.dispatcher-search-match--active {
-  background: color-mix(in srgb, var(--warning) 72%, white);
-  color: var(--brand-graphite);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--warning) 84%, var(--brand-graphite)),
-    0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
-}
-
 .nezha-brand-surface {
   background: var(--chat-surface);
   border: 1px solid var(--chat-glass-border);
@@ -370,80 +319,6 @@
 .nezha-chat-home {
   position: relative;
   isolation: isolate;
-}
-
-/* ── Radix Select ───────────────────────────────────────────────── */
-.radix-select-trigger {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 8px 10px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-medium);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font-size: 13px;
-  font-family: var(--font-ui);
-  cursor: pointer;
-  outline: none;
-  gap: 8px;
-  box-sizing: border-box;
-  transition: border-color 0.12s;
-}
-.radix-select-trigger:focus {
-  border-color: var(--border-focus);
-  box-shadow: var(--shadow-focus);
-}
-.radix-select-content {
-  background: var(--bg-card);
-  border: 1px solid var(--border-medium);
-  border-radius: 8px;
-  box-shadow: var(--shadow-md);
-  z-index: 2000;
-  min-width: var(--radix-select-trigger-width);
-  max-height: 280px;
-  overflow: hidden;
-}
-.radix-select-viewport {
-  padding: 4px;
-}
-.radix-select-label {
-  font-size: 10.5px;
-  font-weight: 700;
-  color: var(--text-hint);
-  letter-spacing: 0.7px;
-  padding: 6px 10px 3px;
-  text-transform: uppercase;
-  user-select: none;
-}
-.radix-select-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px 6px 28px;
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--text-primary);
-  cursor: pointer;
-  outline: none;
-  position: relative;
-  user-select: none;
-}
-.radix-select-item[data-highlighted] {
-  background: var(--bg-hover);
-}
-.radix-select-item-indicator {
-  position: absolute;
-  left: 8px;
-  display: inline-flex;
-  align-items: center;
-  color: var(--accent);
-}
-.radix-select-separator {
-  height: 1px;
-  background: var(--border-dim);
-  margin: 3px 4px;
 }
 
 /* ── Branch Popover (searchable select) ─────────────────────────── */
@@ -579,196 +454,6 @@
 
 .file-viewer-tab-strip::-webkit-scrollbar-thumb:hover {
   background: var(--text-hint);
-}
-
-.file-viewer-tab-menu {
-  min-width: 168px;
-  padding: 3px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-medium);
-  border-radius: 7px;
-  box-shadow: var(--shadow-md);
-  z-index: 2000;
-}
-
-.file-viewer-tab-menu-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 12px;
-  font-family: var(--font-ui);
-  text-align: left;
-  cursor: pointer;
-  line-height: 1.25;
-}
-
-.file-viewer-tab-menu-item:hover,
-.file-viewer-tab-menu-item:focus-visible {
-  background: var(--bg-hover);
-}
-
-.file-viewer-tab-menu-item:disabled {
-  color: var(--text-hint);
-  cursor: default;
-}
-
-.file-viewer-tab-menu-item:disabled:hover {
-  background: transparent;
-}
-
-@keyframes context-menu-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.file-explorer-context-menu {
-  min-width: 280px;
-  padding: 6px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-lg);
-  transform-origin: var(--radix-context-menu-content-transform-origin);
-  animation: context-menu-in 0.14s ease;
-  z-index: 2200;
-}
-
-.file-explorer-context-menu-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 11px 11px;
-  margin-bottom: 4px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg-card));
-  border: 1px solid color-mix(in srgb, var(--accent) 10%, var(--border-dim));
-}
-
-.file-explorer-context-menu-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-card) 88%, transparent);
-  border: 1px solid var(--border-dim);
-  flex-shrink: 0;
-}
-
-.file-explorer-context-menu-meta {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.file-explorer-context-menu-title {
-  font-size: 13px;
-  line-height: 1.25;
-  font-weight: 650;
-  color: var(--text-primary);
-  word-break: break-word;
-}
-
-.file-explorer-context-menu-path {
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  word-break: break-all;
-}
-
-.file-explorer-context-menu-separator {
-  height: 1px;
-  margin: 6px 4px;
-  background: var(--border-dim);
-}
-
-.file-explorer-context-menu-group-label {
-  display: block;
-  padding: 4px 10px 6px;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-hint);
-  user-select: none;
-}
-
-.file-explorer-context-menu-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 9px 10px;
-  border-radius: 12px;
-  outline: none;
-  cursor: pointer;
-  user-select: none;
-}
-
-.file-explorer-context-menu-item[data-highlighted] {
-  background: var(--bg-hover);
-}
-
-.file-explorer-context-menu-item-danger {
-  color: var(--text-primary);
-}
-
-.file-explorer-context-menu-item-danger[data-highlighted] {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-}
-
-.file-explorer-context-menu-item-danger[data-highlighted] .file-explorer-context-menu-item-label,
-.file-explorer-context-menu-item-danger[data-highlighted] .file-explorer-context-menu-item-icon {
-  color: var(--danger);
-}
-
-.file-explorer-context-menu-item-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--bg-card) 90%, transparent);
-  border: 1px solid var(--border-dim);
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-
-.file-explorer-context-menu-item-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.file-explorer-context-menu-item-label {
-  font-size: 13px;
-  line-height: 1.2;
-  font-weight: 600;
-  color: var(--text-primary);
-  font-family: var(--font-ui);
-}
-
-.file-explorer-context-menu-item-caption {
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  word-break: break-word;
 }
 
 /* ── Shared markdown surfaces ───────────────────────────────────── */
@@ -991,12 +676,9 @@
   min-height: 60px;
   padding: 12px;
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--text-error);
   background: var(--bg-subtle);
   border-radius: 8px;
-}
-.markdown-image-error {
-  color: var(--text-error);
 }
 
 .markdown-image-overlay {

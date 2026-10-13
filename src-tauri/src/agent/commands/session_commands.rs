@@ -43,6 +43,7 @@ pub async fn session_create(
 #[tauri::command]
 pub async fn session_delete(
     state: tauri::State<'_, DispatcherState>,
+    browser_manager: tauri::State<'_, BrowserManager>,
     session_id: String,
 ) -> Result<(), String> {
     // fail-closed：运行中的会话仍持有消息/用量写入路径，先删库会让 run
@@ -50,6 +51,9 @@ pub async fn session_delete(
     if state.session_run_is_active(&session_id) {
         return Err("会话正在运行中，请先停止生成后再删除".to_string());
     }
+    let _browser_cleanup = browser_manager
+        .remove_session(state.db(), &session_id)
+        .await?;
     let db = state.db().clone();
     let session_for_cleanup = session_id.clone();
     let result = run_dispatcher_db("session_delete", move || db.delete_session(&session_id)).await;

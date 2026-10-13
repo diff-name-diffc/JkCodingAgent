@@ -36,11 +36,14 @@ export function useBrowserPanelCommands({
 }: UseBrowserPanelCommandsOptions) {
   const { setStatus, setError, appendLog, refreshStatus } = session;
   const [busy, setBusy] = useState(false);
+  const [stopRequested, setStopping] = useState(false);
+  const stopping = stopRequested || session.status?.state === "stopping";
   const submittingUrlRef = useRef(false);
+  const automating = session.status?.state === "automating";
 
   const runBrowserAction = useCallback(
     async (action: () => Promise<void>, options: { refresh?: boolean } = {}) => {
-      if (busy) return;
+      if (busy || automating || stopping) return;
       setBusy(true);
       setError(null);
       try {
@@ -54,7 +57,7 @@ export function useBrowserPanelCommands({
         setBusy(false);
       }
     },
-    [busy, refreshStatus, setError],
+    [automating, busy, refreshStatus, setError, stopping],
   );
 
   const startBrowser = useCallback(async () => {
@@ -72,11 +75,18 @@ export function useBrowserPanelCommands({
   }, [projectPath, runBrowserAction, sessionId, setStatus]);
 
   const stopBrowser = useCallback(async () => {
-    if (!sessionId) return;
-    await runBrowserAction(async () => {
-      await invoke("browser_stop", { sessionId });
-    });
-  }, [runBrowserAction, sessionId]);
+    if (!sessionId || stopping) return;
+    setStopping(true);
+    setError(null);
+    try {
+      await invoke<void>("browser_stop", { sessionId });
+      await refreshStatus();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setStopping(false);
+    }
+  }, [refreshStatus, sessionId, setError, stopping]);
 
   const goBack = useCallback(async () => {
     if (!sessionId) return;
@@ -127,7 +137,7 @@ export function useBrowserPanelCommands({
   );
 
   const importChromeProfile = useCallback(async () => {
-    if (!sessionId || busy) return;
+    if (!sessionId || busy || automating || stopping) return;
 
     let candidates: BrowserProfileCandidate[] = [];
     let scanMessage: string;
@@ -191,7 +201,7 @@ export function useBrowserPanelCommands({
       },
       { refresh: false },
     );
-  }, [appendLog, busy, projectPath, runBrowserAction, sessionId, setStatus]);
+  }, [appendLog, automating, busy, projectPath, runBrowserAction, sessionId, setStatus, stopping]);
 
   const openCurrentUrl = useCallback(async () => {
     const url = session.status?.url?.trim();
@@ -230,6 +240,7 @@ export function useBrowserPanelCommands({
 
   return {
     busy,
+    stopping,
     runBrowserAction,
     startBrowser,
     stopBrowser,

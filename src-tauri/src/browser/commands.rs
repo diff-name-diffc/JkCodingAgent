@@ -4,9 +4,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use super::{
-    import_chrome_profile_blocking, normalize_browser_url, plain_chat_browser_workspace,
-    scan_chrome_profile_candidates_blocking, BrowserManager, BrowserProfileCandidate,
-    BrowserProfileImportResult, BrowserStatus,
+    normalize_browser_url, plain_chat_browser_workspace, scan_chrome_profile_candidates_blocking,
+    BrowserManager, BrowserProfileCandidate, BrowserProfileImportResult, BrowserStatus,
 };
 
 /// 解析前端传入的项目路径：空白/缺省回退到纯聊天浏览器的固定工作区；
@@ -26,9 +25,11 @@ async fn resolve_project_path(
                 .await?;
             Ok(validated.to_string_lossy().into_owned())
         }
-        _ => Ok(plain_chat_browser_workspace()?
-            .to_string_lossy()
-            .into_owned()),
+        _ => tokio::task::spawn_blocking(|| {
+            plain_chat_browser_workspace().map(|path| path.to_string_lossy().into_owned())
+        })
+        .await
+        .map_err(|error| format!("创建浏览器工作区失败：{error}"))?,
     }
 }
 
@@ -51,15 +52,12 @@ pub async fn browser_import_chrome_profile(
     project_path: Option<String>,
     chrome_profile_path: String,
 ) -> Result<BrowserProfileImportResult, String> {
-    manager.stop(&session_id).await?;
     let project_path = PathBuf::from(resolve_project_path(&app, project_path).await?);
     let chrome_profile_path = PathBuf::from(chrome_profile_path);
 
-    tokio::task::spawn_blocking(move || {
-        import_chrome_profile_blocking(project_path, chrome_profile_path)
-    })
-    .await
-    .map_err(|error| format!("导入 Chrome 登录态任务失败：{error}"))?
+    manager
+        .import_profile(app, session_id, project_path, chrome_profile_path)
+        .await
 }
 
 #[tauri::command]
@@ -76,6 +74,28 @@ pub async fn browser_stop(
     session_id: String,
 ) -> Result<(), String> {
     manager.stop(&session_id).await
+}
+
+#[tauri::command]
+pub async fn browser_preview_set(
+    manager: tauri::State<'_, BrowserManager>,
+    session_id: String,
+    observer_id: String,
+    tool_call_id: Option<String>,
+    visible: bool,
+) -> Result<(), String> {
+    manager
+        .preview_set(&session_id, observer_id, tool_call_id, visible)
+        .await
+}
+
+#[tauri::command]
+pub async fn browser_cancel_exploration(
+    manager: tauri::State<'_, BrowserManager>,
+    session_id: String,
+    tool_call_id: String,
+) -> Result<(), String> {
+    manager.cancel_exploration(&session_id, &tool_call_id)
 }
 
 #[tauri::command]

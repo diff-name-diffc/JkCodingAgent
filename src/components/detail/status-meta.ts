@@ -63,6 +63,8 @@ const SUBAGENT_STATUS: Record<string, StatusMeta> = {
   running: { tone: "running", label: "运行中" },
   completed: { tone: "success", label: "已完成" },
   failed: { tone: "error", label: "失败" },
+  cancelled: { tone: "warn", label: "已取消" },
+  timed_out: { tone: "error", label: "已超时" },
 };
 
 /** WorkflowRunSummary.verdictStatus：运行结果之外的独立验收结论。

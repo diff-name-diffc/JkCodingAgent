@@ -106,12 +106,13 @@ pub struct ProjectDeleteResult {
 #[tauri::command]
 pub async fn project_delete(
     state: tauri::State<'_, DispatcherState>,
+    browser_manager: tauri::State<'_, crate::browser::BrowserManager>,
     project_id: String,
 ) -> CommandResult<ProjectDeleteResult> {
     // fail-closed：任一会话仍在运行即拒绝——级联清理会移除会话数据与项目
     // 运行期目录，运行中的 run 将向已清理 workspace 幽灵写入并失去浏览器
     // 配置等运行环境。与 session_delete 的守卫同一语义。
-    {
+    let _browser_cleanups = {
         let db = state.db().clone();
         let project_id_for_guard = project_id.clone();
         let session_ids =
@@ -130,7 +131,19 @@ pub async fn project_delete(
             ))
             .into_command_result();
         }
-    }
+        let mut cleanups = Vec::with_capacity(session_ids.len());
+        for session_id in session_ids {
+            cleanups.push(
+                browser_manager
+                    .remove_session(state.db(), &session_id)
+                    .await
+                    .map_err(anyhow::Error::msg)
+                    .context("清理项目浏览器会话失败")
+                    .into_command_result()?,
+            );
+        }
+        cleanups
+    };
     let db = state.db().clone();
     let result = tokio::task::spawn_blocking(move || {
         let plan = db.delete_project(&project_id)?;

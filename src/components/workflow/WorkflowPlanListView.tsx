@@ -121,7 +121,9 @@ export function WorkflowPlanListView({
           <p className="px-2 py-8 text-center text-sm text-muted-foreground">加载中…</p>
         )}
         {isError && (
-          <p className="px-2 py-8 text-center text-sm text-danger">工作流列表加载失败，请重试。</p>
+          <p className="px-2 py-8 text-center text-sm text-destructive">
+            工作流列表加载失败，请重试。
+          </p>
         )}
         {plans && plans.length === 0 && <EmptyState icon={Network} title="本会话还没有工作流" />}
         {plans && plans.length > 0 && (
@@ -156,7 +158,7 @@ const WorkflowPlanRow = memo(function WorkflowPlanRow({
       <button
         type="button"
         onClick={() => onOpen(item.id, "canvas")}
-        className="flex min-w-0 flex-1 flex-col gap-1.5 rounded-md border border-border/60 bg-card px-3 py-2.5 text-left transition-colors hover:bg-sidebar-hover focus-visible:outline-2 focus-visible:outline-accent"
+        className="flex min-w-0 flex-1 flex-col gap-1.5 rounded-md border border-border/60 bg-card px-3 py-2.5 text-left transition-colors hover:bg-sidebar-hover focus-visible:outline-2 focus-visible:outline-primary"
         title={item.summary || item.title}
       >
         <span className="flex items-center gap-2">

@@ -68,7 +68,7 @@ function ensureMonacoThemes(monacoInstance: Monaco) {
       { token: "strong", fontStyle: "bold" },
     ],
     colors: {
-      "editor.background": "#F7F7F7",
+      "editor.background": "#F5F6F0",
       "editor.foreground": "#262626",
       "editor.lineHighlightBackground": "#EEEEEE",
       "editorLineNumber.foreground": "#858585",
@@ -98,7 +98,7 @@ function ensureMonacoThemes(monacoInstance: Monaco) {
       { token: "strong", fontStyle: "bold" },
     ],
     colors: {
-      "editor.background": "#1B1B1B",
+      "editor.background": "#1C2520",
       "editor.foreground": "#E5E5E5",
       "editor.lineHighlightBackground": "#242424",
       "editorLineNumber.foreground": "#787878",

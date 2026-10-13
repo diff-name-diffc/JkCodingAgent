@@ -21,7 +21,8 @@
 mod decision;
 #[path = "runner/lifecycle.rs"]
 mod lifecycle;
-use lifecycle::{forward_cancellation, resolve_sub_agent_spec};
+use lifecycle::forward_cancellation;
+pub(super) use lifecycle::resolve_sub_agent_spec;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -286,6 +287,7 @@ impl RigSubAgentRuntime {
                     agent_id: self.config.agent_id.clone(),
                     agent_name: self.config.agent_name.clone(),
                     error: error.clone(),
+                    termination_reason: None,
                 });
                 Err(error)
             }

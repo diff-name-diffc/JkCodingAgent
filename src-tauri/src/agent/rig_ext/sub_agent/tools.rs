@@ -1,9 +1,9 @@
 //! 子智能体工具（rig `PortableDynamicTool` 形态）。
 //!
 //! 迁移自旧 `agent/sub_agent/tool.rs`：
-//! - `call_sub_agent`：委派子任务；构建失败/执行失败一律按**致命失败**返回
-//!   （`with_code("fatal")`）——父循环不得基于不完整的委派结果继续推理，
-//!   与旧工具结果的致命失败语义一致；轨迹无论成败都持久化。
+//! - `call_sub_agent`：委派子任务；浏览器任务未达成返回明确失败结果，
+//!   主 Agent 根据执行结果继续；取消、超时、基础设施错误按对应工具错误收口。
+//!   普通 rig 子智能体保留既有致命失败语义；轨迹无论成败都持久化。
 //! - `list_sub_agents`：枚举本会话可用子智能体（同步 SQLite 读取走
 //!   `spawn_blocking`）。
 //! - `notify_user_progress`：子智能体专用进度通知（写轨迹 + 发
@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use super::events::{record_trace_event, SubAgentEvent, SubAgentEventPayload};
-use super::runner::{RigSubAgentRequest, RigSubAgentRuntime};
+use super::runner::RigSubAgentRequest;
+use super::runtime::SubAgentRuntime;
 use crate::agent::rig_ext::model::PurposeModelSpec;
 use crate::agent::rig_ext::tools::deps::RigToolDeps;
 use crate::agent::sub_agent::manager::SubAgentManager;
@@ -99,13 +100,18 @@ async fn run_sub_agent_call(
         return Err(fatal("错误：task 参数不能为空"));
     }
 
-    let config = match manager.get(agent_id) {
-        Some(config) if config.enabled => config,
-        Some(_) => {
-            return Err(fatal(format!("错误：子智能体 '{agent_id}' 已被禁用")));
-        }
-        None => return Err(fatal(format!("错误：未找到子智能体 '{agent_id}'"))),
-    };
+    let enabled_manager = manager.clone();
+    let enabled_session = workspace_id.clone();
+    let configs = tokio::task::spawn_blocking(move || {
+        enabled_manager.get_enabled_for_session(&enabled_session)
+    })
+    .await
+    .map_err(|error| fatal(format!("错误：读取子智能体作用域失败：{error}")))?
+    .map_err(|error| fatal(format!("错误：读取子智能体作用域失败：{error}")))?;
+    let config = configs
+        .into_iter()
+        .find(|config| config.agent_id == agent_id)
+        .ok_or_else(|| fatal(format!("错误：子智能体 '{agent_id}' 未在当前会话中启用")))?;
 
     let Some(invocation) = invocation else {
         return Err(fatal("错误：调用子智能体缺少 tool_call_id"));
@@ -120,19 +126,15 @@ async fn run_sub_agent_call(
         parent_tool_call_id: &parent_tool_call_id,
         app_handle: app_handle.clone(),
         session_id: &workspace_id,
-        cancel_rx: deps.cancel_rx.clone(),
+        cancel_rx: Some(invocation.cancel_rx.clone()),
     };
-    let runtime = match RigSubAgentRuntime::build(&request) {
+    let runtime = match SubAgentRuntime::build(&request) {
         Ok(runtime) => runtime,
         Err(error) => return Err(fatal(format!("错误：子智能体初始化失败：{error}"))),
     };
 
-    let outcome = runtime.execute(task).await;
-    let status = if outcome.is_ok() {
-        "completed"
-    } else {
-        "failed"
-    };
+    let outcome = runtime.execute(task, manager.clone()).await;
+    let status = runtime.status(outcome.is_ok());
     let trace_json = match runtime.trace_events_json() {
         Ok(trace) => trace,
         Err(error) => return Err(fatal(error)),
@@ -167,6 +169,14 @@ async fn run_sub_agent_call(
 
     match outcome {
         Ok(result) => Ok(ToolOutput::text(result)),
+        Err(error) if runtime.is_browser() => Err(match status {
+            "cancelled" => ToolExecutionError::cancelled(format!("错误：{error}")),
+            "timed_out" => {
+                ToolExecutionError::timeout(format!("错误：{error}")).with_retryable(false)
+            }
+            _ => ToolExecutionError::other(format!("错误：浏览器探索失败：{error}"))
+                .with_retryable(false),
+        }),
         Err(error) => Err(fatal(format!("错误：子智能体执行失败：{error}"))),
     }
 }

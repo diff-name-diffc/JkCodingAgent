@@ -63,6 +63,8 @@ pub struct SshServerConfig {
 pub struct SshServerSummary {
     pub id: String,
     pub name: String,
+    /// 主机地址（IP 或域名），供智能体在用户以 IP 指代服务器时定位。
+    pub host: String,
     pub description: String,
     pub tags: Vec<String>,
     /// 运维备忘录字符数（无备忘录为 0），供智能体判断哪些服务器已有积累。

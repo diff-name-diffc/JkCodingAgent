@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { clearBrowserPreviewSession } from "./browser/browser-preview-channel";
 import type { DispatcherMessage, DispatcherMessageWire } from "../types";
 import type {
   AssistantThinkingBlock,
@@ -192,6 +193,7 @@ export function settleDispatcherRun(
 }
 
 export function cleanupDispatcherSession(sessionId: string) {
+  clearBrowserPreviewSession(sessionId);
   dispatcherLiveSessionStates.delete(sessionId);
   dispatcherSessionRunningStates.delete(sessionId);
   dispatcherActiveRunIds.delete(sessionId);

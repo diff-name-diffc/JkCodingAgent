@@ -17,6 +17,8 @@ import { ActivityTimeline, type ActivityRow } from "./detail/ActivityTimeline";
 import { DetailSection } from "./detail/DetailSection";
 import { OutputBlock } from "./detail/OutputBlock";
 import { StatusPill } from "./detail/StatusPill";
+import { BrowserAgentMonitor } from "./browser/BrowserAgentMonitor";
+import { BROWSER_AGENT_ID } from "../lib/sub-agent-runtime";
 
 // ── Phase Metadata ──────────────────────────────────────────────────────────
 
@@ -34,6 +36,8 @@ const PHASE_ORDER: Record<SubAgentPhase, number> = {
   generating: 3,
   completed: 4,
   failed: -1,
+  cancelled: -1,
+  timed_out: -1,
 };
 
 const PHASE_LABEL: Record<SubAgentPhase, string> = {
@@ -43,6 +47,8 @@ const PHASE_LABEL: Record<SubAgentPhase, string> = {
   generating: "生成结果",
   completed: "已完成",
   failed: "已失败",
+  cancelled: "已取消",
+  timed_out: "已超时",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -79,7 +85,7 @@ function useLiveElapsed(session: SubAgentSession): number {
 
 function PhaseIndicator({ phase }: { phase: SubAgentPhase }) {
   const currentIdx = PHASE_ORDER[phase];
-  const isFailed = phase === "failed";
+  const isFailed = phase === "failed" || phase === "cancelled" || phase === "timed_out";
 
   return (
     <div className="ai-subagent-exec-phase-bar">
@@ -186,6 +192,8 @@ function buildActivityRows(toolCalls: SubAgentToolCall[]): ActivityRow[] {
 interface SubAgentExecutionCardProps {
   session: SubAgentSession;
   autoExpand?: boolean;
+  dispatcherSessionId?: string | null;
+  toolCallId?: string | null;
 }
 
 const TASK_PREVIEW_LIMIT = 200;
@@ -198,7 +206,12 @@ const TASK_PREVIEW_LIMIT = 200;
  * trace 表 model 列，UI-14 遗留已补），老轨迹两源皆无时如实显示「未记录」，
  * 不用当前配置冒充运行记录。
  */
-export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentExecutionCardProps) {
+export function SubAgentExecutionCard({
+  session,
+  autoExpand = true,
+  dispatcherSessionId,
+  toolCallId,
+}: SubAgentExecutionCardProps) {
   const [isOpen, setIsOpen] = useState(autoExpand);
   const [taskExpanded, setTaskExpanded] = useState(false);
   const elapsed = useLiveElapsed(session);
@@ -243,6 +256,15 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
       {/* Expanded body：概览 / 活动 / 输出 */}
       {isOpen && (
         <div className="ai-subagent-exec-body">
+          {session.agentId === BROWSER_AGENT_ID && dispatcherSessionId && toolCallId && (
+            <BrowserAgentMonitor
+              key={`${dispatcherSessionId}:${toolCallId}`}
+              sessionId={dispatcherSessionId}
+              toolCallId={toolCallId}
+              status={session.status}
+            />
+          )}
+
           <DetailSection title="概览">
             <div className="ai-detail-meta-grid">
               <div className="ai-detail-meta-item">
@@ -304,7 +326,7 @@ export function SubAgentExecutionCard({ session, autoExpand = true }: SubAgentEx
                 )}
               </div>
             )}
-            {session.status === "failed" && session.finishedError && (
+            {!isActive && session.finishedError && (
               <OutputBlock text={session.finishedError} tone="error" emptyHint="无错误信息" />
             )}
           </DetailSection>

@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn browser_and_canvas_tools_claim_session_write_lock() {
         let workspace = Workspace::new();
-        for name in ["browser_click", "browser_read_text", "architecture_run"] {
+        for name in ["browser_open_url", "architecture_run"] {
             let claims = declared(name, serde_json::json!({}), &workspace.root);
             assert!(
                 matches!(

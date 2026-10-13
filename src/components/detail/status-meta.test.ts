@@ -40,6 +40,8 @@ describe("resolveStatusMeta", () => {
   it("subagent 与 verdict 域全覆盖", () => {
     expect(resolveStatusMeta("subagent", "completed").tone).toBe("success");
     expect(resolveStatusMeta("subagent", "failed").tone).toBe("error");
+    expect(resolveStatusMeta("subagent", "cancelled")).toEqual({ tone: "warn", label: "已取消" });
+    expect(resolveStatusMeta("subagent", "timed_out")).toEqual({ tone: "error", label: "已超时" });
     expect(resolveStatusMeta("verdict", "pass")).toEqual({ tone: "success", label: "验收通过" });
     expect(resolveStatusMeta("verdict", "partial").tone).toBe("warn");
     expect(resolveStatusMeta("verdict", "fail").tone).toBe("error");

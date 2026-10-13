@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Wrench } from "lucide-react";
 import { summarizeToolActivity, type ToolActivityItem } from "../dispatcher-chat/tool-activity";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
@@ -79,9 +79,10 @@ export const ToolCallList = React.memo(function ToolCallList({
 
   return (
     <div className={cn("space-y-1", className)}>
-      <div className="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[11px] text-muted-foreground">
-        <span className="font-medium">
-          工具活动 <span className="tabular-nums">{items.length}</span>
+      <div className="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 px-2 text-xs text-muted-foreground">
+        <Wrench aria-hidden className="h-4 w-4 shrink-0" />
+        <span className="mr-auto font-medium text-[var(--text-secondary)]">
+          工具活动 <span className="ml-1 font-normal tabular-nums">{items.length}</span>
         </span>
         {summary.running > 0 && <span className="text-primary">{summary.running} 项进行中</span>}
         {summary.planned > 0 && <span>{summary.planned} 项等待</span>}

@@ -7,7 +7,7 @@ import { isDarkActive } from "../lib/theme";
 // ── Theme ───────────────────────────────────────────────────────────────────
 
 export const LIGHT_THEME = {
-  background: "#f7f7f7",
+  background: "#f5f6f0",
   foreground: "#262626",
   cursor: "#262626",
   selectionBackground: "#dce9f9",
@@ -30,7 +30,7 @@ export const LIGHT_THEME = {
 };
 
 export const DARK_THEME = {
-  background: "#1b1b1b",
+  background: "#1c2520",
   foreground: "#e5e5e5",
   cursor: "#e5e5e5",
   selectionBackground: "#293b55",

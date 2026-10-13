@@ -317,12 +317,10 @@ export function ChatShell({
       setTraceLoading(false);
       setArtifactPanelOpen(true);
 
-      if (getSubAgentSession(sessionId, tool.id)) return;
-      if (tool.status === "running") {
-        setTraceLoading(true);
-        return;
-      }
+      const cached = getSubAgentSession(sessionId, tool.id);
+      if (cached && cached.status !== "running") return;
       setTraceLoading(true);
+      let waitingForEvents = false;
       try {
         const trace = await invoke<SubAgentRunTrace | null>("sub_agent_get_run_trace", {
           workspaceId: sessionId,
@@ -330,7 +328,8 @@ export function ChatShell({
         });
         if (traceGuard.isStale(requestId)) return;
         if (!trace) {
-          setTraceError("该任务执行时未记录轨迹。");
+          waitingForEvents = tool.status === "running";
+          if (!waitingForEvents) setTraceError("该任务执行时未记录轨迹。");
           return;
         }
         const parsed: unknown = JSON.parse(trace.eventsJson);
@@ -348,7 +347,7 @@ export function ChatShell({
         if (traceGuard.isStale(requestId)) return;
         setTraceError(error instanceof Error ? error.message : String(error));
       } finally {
-        if (!traceGuard.isStale(requestId)) setTraceLoading(false);
+        if (!traceGuard.isStale(requestId)) setTraceLoading(waitingForEvents);
       }
     },
     [sessionId, setArtifactPanelOpen, traceGuard],
@@ -420,6 +419,7 @@ export function ChatShell({
               workspaceId={sessionId}
               artifact={selectedArtifact}
               subAgentSession={selectedSubAgent}
+              subAgentToolCallId={selectedSubAgentToolCallId}
               traceLoading={traceLoading}
               traceError={traceError}
             />

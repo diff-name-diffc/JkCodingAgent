@@ -141,7 +141,13 @@ fn push_review_summary(result: &mut String, review: Option<&crate::ssh_tool::Ssh
     };
     result.push_str(&format!(
         "- 审查结论: `{}`\n",
-        if review.allowed { "通过" } else { "拦截" }
+        if review.user_approved {
+            "经用户确认放行"
+        } else if review.allowed {
+            "通过"
+        } else {
+            "拦截"
+        }
     ));
     let reason = if review.reason.trim().is_empty() {
         if review.allowed {

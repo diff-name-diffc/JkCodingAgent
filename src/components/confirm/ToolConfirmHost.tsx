@@ -22,16 +22,17 @@ import { ToolConfirmDialog } from "./ToolConfirmDialog";
 
 export function ToolConfirmHost() {
   useEffect(() => {
-    let disposed = false;
     const unlistenPromise = listen<ToolConfirmRequest>("tool-confirm-request", (event) => {
       enqueueToolConfirm(event.payload);
     });
+    unlistenPromise.catch((error) => {
+      console.error("工具确认监听注册失败:", error);
+    });
     return () => {
-      disposed = true;
       unlistenPromise
         .then((unlisten) => unlisten())
-        .catch((error) => {
-          if (!disposed) console.error("工具确认监听注册失败:", error);
+        .catch(() => {
+          // 注册失败的清理：无需退订，也无需再报错（上面已记录）。
         });
     };
   }, []);
@@ -41,19 +42,27 @@ export function ToolConfirmHost() {
   if (!current) return null;
 
   const resolve = async (approved: boolean) => {
-    removeToolConfirm(current.requestId);
     try {
       const consumed = await invoke<boolean>("tool_confirm_resolve", {
         workspaceId: current.workspaceId,
         requestId: current.requestId,
         approved,
       });
+      // 回传成功才出队：失败（命令未注册/序列化失败等）时保留条目，用户可
+      // 重试，避免静默关闭审查门禁只能等后端 180s 超时。
+      removeToolConfirm(current.requestId);
       // 未消费（后端已超时/取消清槽）：提示用户该确认已失效，避免以为已生效。
       if (!consumed) {
         toast.warning("该确认请求已失效（可能已超时或任务已取消）。");
       }
     } catch (error) {
-      toast.error(`提交确认失败：${String(error)}`);
+      // 回传持续失败时按 fail-closed 出队：本弹窗是受控模态，出队是唯一关闭
+      // 途径，失败保留会让 UI 永久卡死且无放弃出口；后端侧等待会按超时拒绝
+      // 收口（命令不会执行），关闭弹窗不等于放行。
+      removeToolConfirm(current.requestId);
+      toast.error(
+        `提交确认失败（${String(error)}），本次确认未生效；后端将按超时拒绝处理，命令不会执行。`,
+      );
     }
   };
 
@@ -61,7 +70,7 @@ export function ToolConfirmHost() {
     <ToolConfirmDialog
       open
       request={current}
-      remaining={pending.length}
+      remaining={pending.length - 1}
       onApprove={() => void resolve(true)}
       onReject={() => void resolve(false)}
     />

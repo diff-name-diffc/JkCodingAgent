@@ -307,6 +307,12 @@ pub(super) static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::SERIAL,
         ClaimResource::SshServer,
     ),
+    // close 的 killTmuxSession=true 会执行远端 tmux kill-session，但它只作用于
+    // 本应用自开的会话（term_id → 自建会话名，目标域封闭），与 ssh_memo_delete
+    // 同属「效果由对应子系统托管」的 SUBSYSTEM_MANAGED 口径——设计文档
+    // docs/ssh-term-agent-2026-10-08.md §8 把 close 列为 EXTERNAL_EFFECTS 是
+    // 早期口径，以此处声明为准；若未来按 mutates_external_state 做授权/审查
+    // 判定，需重新评估（连带一致性断言「外部效应非 Safe」的取舍）。
     policy_row(
         "ssh_term_close",
         ToolCategory::Ssh,

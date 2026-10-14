@@ -6,9 +6,8 @@ use std::process::Command;
 pub(super) use super::binaries::supported_version;
 pub(super) use super::binaries::{find_binaries, Binaries};
 
-pub(super) fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
+// 单引号转义与命令执行（sudo 包装）共享同一实现：注入面关键函数不得两处副本各自演进。
+pub(super) use crate::ssh_tool::shell_single_quote as quote;
 
 pub(super) struct Transport {
     dir: PathBuf,

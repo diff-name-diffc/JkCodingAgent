@@ -169,6 +169,7 @@ async fn review_local_command(
         .map_err(|error| format!("审查服务异常：{error}"))
         .map(|verdict| crate::ssh_tool::SshAuditReview {
             allowed: verdict.allowed,
+            user_approved: false,
             reason: verdict.reason,
         })
 }
@@ -278,15 +279,17 @@ fn blacklist_reason(command: &str) -> Option<&'static str> {
         ("chmod 777 /", "禁止放开系统路径权限"),
         ("chmod -r 777 /", "禁止递归放开系统路径权限"),
         ("chown root", "禁止改为 root 所有者"),
-        ("curl | sh", "禁止管道执行远程脚本"),
-        ("curl | bash", "禁止管道执行远程脚本"),
-        ("wget | sh", "禁止管道执行远程脚本"),
-        ("wget | bash", "禁止管道执行远程脚本"),
     ];
 
     dangerous_patterns
         .iter()
-        .find_map(|(pattern, reason)| normalized.contains(pattern).then_some(*reason))
+        .find_map(|(pattern, reason)| normalized.contains(pattern).then_some(*reason));
+    // 管道执行远程脚本的真实形态是 "curl <url> | sh"（curl 与管道符之间总有
+    // URL），子串模式从未匹配过——按管道段分析判定（与确认门禁硬排除共用）。
+    if crate::agent::rig_ext::review_confirm::pipes_remote_script_into_shell(&normalized) {
+        return Some("禁止管道执行远程脚本");
+    }
+    None
 }
 
 pub(crate) fn command_invokes_command(command: &str, target: &str) -> bool {

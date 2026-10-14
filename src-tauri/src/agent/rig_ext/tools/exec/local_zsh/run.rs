@@ -82,6 +82,7 @@ pub(super) async fn run_local_zsh(
             );
             let blocked = crate::ssh_tool::SshAuditReview {
                 allowed: false,
+                user_approved: false,
                 reason: error.clone(),
             };
             return Err(ToolExecutionError::refused(
@@ -97,56 +98,94 @@ pub(super) async fn run_local_zsh(
         }
     };
     if !review.allowed {
-        // 需用户确认类拦截（原因带「需用户确认」标记）：统一走通用弹窗门禁，
-        // 用户明确允许则放行执行；拒绝/超时/取消按 fail-closed 走原拦截。
-        let approved_by_user =
-            crate::agent::rig_ext::review_confirm::needs_user_confirmation(&review.reason, false)
-                && matches!(
-                    crate::agent::rig_ext::review_confirm::request_confirmation(
-                        app_handle.as_ref(),
-                        cancel_rx.clone(),
-                        crate::agent::rig_ext::review_confirm::ConfirmRequest {
-                            workspace_id: session_id.clone(),
-                            tool: "local_zsh".to_string(),
-                            target: "本地 zsh".to_string(),
-                            command: command.clone(),
-                            reason: review.reason.clone(),
-                            elevated: false,
-                        },
+        // 需用户确认类拦截（原因带「需用户确认」标记）：统一走通用弹窗门禁。
+        // 裁决结局必须区分——用户明确拒绝≠超时无人裁决：拒绝后引导重发等于
+        // 让模型重试刚被用户否决的命令；等待期间取消按取消语义收口（取消
+        // 不得改判为审查拦截）。
+        let confirm_outcome = if crate::agent::rig_ext::review_confirm::needs_user_confirmation(
+            &review.reason,
+            &command,
+            false,
+        ) {
+            Some(
+                crate::agent::rig_ext::review_confirm::request_confirmation(
+                    app_handle.as_ref(),
+                    cancel_rx.clone(),
+                    crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                        workspace_id: session_id.clone(),
+                        tool: "local_zsh".to_string(),
+                        target: "本地 zsh".to_string(),
+                        command: command.clone(),
+                        reason: review.reason.clone(),
+                        elevated: false,
+                    },
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        match confirm_outcome {
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved) => {
+                // 用户确认放行：审计结论改标为经确认放行，并继续正常执行路径。
+                // 台账只在执行完成后登记一次（前置 Executed 会造成双写、且把
+                // 「尚未执行」误标为已执行）。
+                review = crate::ssh_tool::SshAuditReview {
+                    allowed: true,
+                    user_approved: true,
+                    reason: format!("安全审查未自动放行，经用户确认放行：{}", review.reason),
+                };
+            }
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Cancelled) => {
+                return Err(ToolExecutionError::cancelled(
+                    "错误：等待用户确认期间本轮已取消，命令未执行。",
+                ));
+            }
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Denied) => {
+                command_history::record(
+                    &session_id,
+                    "local_zsh",
+                    "本地 zsh",
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    &format!("用户已明确拒绝执行：{}", review.reason),
+                );
+                // 用户明确拒绝同样落 audit.json（与超时/未弹窗口径一致）：拒绝
+                // 是最需要留痕的裁决，取证链不得缺记。
+                let denied_review = crate::ssh_tool::SshAuditReview {
+                    allowed: false,
+                    user_approved: false,
+                    reason: format!("用户已明确拒绝执行：{}", review.reason),
+                };
+                return Err(ToolExecutionError::refused(
+                    blocked_command_response(
+                        &run_dir,
+                        &session_id,
+                        &command,
+                        denied_review,
+                        "错误：用户已明确拒绝执行该命令，不得重试或改写绕过。".to_string(),
                     )
                     .await,
-                    crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
+                ));
+            }
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Timeout) | None => {
+                command_history::record(
+                    &session_id,
+                    "local_zsh",
+                    "本地 zsh",
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    &review.reason,
                 );
-        if approved_by_user {
-            // 用户确认放行：审计结论改标为经确认放行，并继续正常执行路径。
-            review = crate::ssh_tool::SshAuditReview {
-                allowed: true,
-                reason: format!("安全审查未自动放行，经用户确认放行：{}", review.reason),
-            };
-            command_history::record(
-                &session_id,
-                "local_zsh",
-                "本地 zsh",
-                &command,
-                CommandHistoryStatus::Executed,
-                "安全审查拦截后经用户确认放行",
-            );
-        } else {
-            command_history::record(
-                &session_id,
-                "local_zsh",
-                "本地 zsh",
-                &command,
-                CommandHistoryStatus::Blocked,
-                &review.reason,
-            );
-            let headline = crate::agent::ssh_review::with_confirm_guidance(
-                format!("错误：命令已被安全审查拦截：{}", review.reason),
-                &review.reason,
-            );
-            return Err(ToolExecutionError::refused(
-                blocked_command_response(&run_dir, &session_id, &command, review, headline).await,
-            ));
+                let headline = crate::agent::ssh_review::with_confirm_guidance(
+                    format!("错误：命令已被安全审查拦截：{}", review.reason),
+                    &review.reason,
+                );
+                return Err(ToolExecutionError::refused(
+                    blocked_command_response(&run_dir, &session_id, &command, review, headline)
+                        .await,
+                ));
+            }
         }
     }
 

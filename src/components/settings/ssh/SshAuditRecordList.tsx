@@ -84,6 +84,9 @@ function ReviewBadge({ record }: { record: SshAuditRecord }) {
   if (!record.review) {
     return <span className="ai-ssh-badge is-muted">未审查</span>;
   }
+  if (record.review.userApproved) {
+    return <span className="ai-ssh-badge is-success">经用户确认放行</span>;
+  }
   return (
     <span className={record.review.allowed ? "ai-ssh-badge is-success" : "ai-ssh-badge is-danger"}>
       {record.review.allowed ? "审查通过" : "审查拦截"}

@@ -12,7 +12,6 @@ function request(id: string, overrides: Partial<ToolConfirmRequest> = {}): ToolC
   return {
     requestId: id,
     workspaceId: "ws-1",
-    sessionId: "ws-1",
     tool: "ssh_exec",
     target: "SSH server prod",
     command: "systemctl restart nginx",
@@ -59,5 +58,8 @@ describe("tool-confirm-store", () => {
     removeToolConfirm("missing");
     expect(listener).toHaveBeenCalledTimes(2);
     unsubscribe();
+    // 退订后不再收通知：ToolConfirmHost 的 useEffect cleanup 依赖此契约。
+    enqueueToolConfirm(request("b"));
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 });

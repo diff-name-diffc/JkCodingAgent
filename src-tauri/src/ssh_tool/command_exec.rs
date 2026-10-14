@@ -22,6 +22,8 @@ const PROMPT_SCAN_CHARS: usize = 512;
 pub const MAX_STDIN_CHARS: usize = 32_000;
 const TIMEOUT_EXIT_CODE: i32 = 124;
 const INTERACTIVE_EXIT_CODE: i32 = -1;
+/// 提权口令在输出中的掩码替代文本。
+const SECRET_MASK: &str = "[已掩码]";
 /// 命令正常结束但协议未带回退出码（极少见）；与交互阻塞的 -1 区分开。
 const UNKNOWN_EXIT_CODE: i32 = -2;
 
@@ -71,8 +73,11 @@ impl CommandFailure {
 ///
 /// `elevation` 为 Some(口令) 时以 sudo 提权执行：命令被包装为
 /// `sudo -k -S -p '' -- sh -c '<原命令>'`，口令作为 channel stdin 的首行写入。
-/// `-k` 强制 sudo 每次都读一次 stdin（避免 NOPASSWD 场景下 sudo 不读 stdin、
-/// 使首行口令串味给被包裹命令的 stdin）；`-p ''` 抑制提示符，因而不会命中
+/// `-k` 清理 sudo 的凭据时间戳缓存，让本条命令重新走一次认证（配合 `-S` 从
+/// stdin 读口令）；但它**不能**强制 sudo 读 stdin——NOPASSWD 规则或 root
+/// 登录时 sudo 不消费首行，口令会留在流里被被包裹命令的 stdin 读到、可能随
+/// stdout 回显，故出口处对口令字面量做统一掩码（`mask_secret_in_outputs`），
+/// 确保凭据不进入执行结果 / 审计 / LLM 上下文。`-p ''` 抑制提示符，不会命中
 /// 交互检测。口令绝不进入命令串 / 审计。
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_command_on_connection(
@@ -171,7 +176,7 @@ pub(super) async fn run_command_on_connection(
         let _ = tokio::time::timeout(Duration::from_secs(5), channel.close()).await;
     }
 
-    let stdout = finalize_output(&stdout_raw, stdout_capped);
+    let mut stdout = finalize_output(&stdout_raw, stdout_capped);
     let (exit_code, mut stderr) = match outcome {
         DrainOutcome::Completed => (
             exit_status
@@ -208,6 +213,13 @@ pub(super) async fn run_command_on_connection(
     if let Some(note) = disconnected_note {
         stderr.push_str(&note);
     }
+    // NOPASSWD / root 场景 sudo 不读 stdin，首行口令可能被被包裹命令读到并随
+    // stdout / stderr 回显：出口处对最终输出做口令字面量掩码（含交互检测附录、
+    // stdin 写入提示等所有拼接文本），凭据绝不进入结果 / 审计 / LLM 上下文。
+    if let Some(password) = elevation.filter(|password| !password.is_empty()) {
+        stdout = stdout.replace(password, SECRET_MASK);
+        stderr = stderr.replace(password, SECRET_MASK);
+    }
     connection.touch();
 
     Ok(SshExecResult {
@@ -226,18 +238,15 @@ pub(super) async fn run_command_on_connection(
     })
 }
 
-/// POSIX 单引号转义：把字符串包进 `'...'`，其中单引号替换为 `'\''`。
-/// 与 `sync/transport.rs::quote` 规则一致（同一转义语义的本地副本，避免
-/// 跨模块耦合到 sync 子系统）。
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 /// 构造 sudo 提权包装命令：`sudo -k -S -p '' -- sh -c '<原命令>'`。
 /// 远端 shell 展开的最外层只看到固定前缀与一个单引号参数，原命令的一切
 /// 元字符（含 `;`、`|`、`$()`、换行）都留在参数内部，不会被提前解释。
+/// 单引号转义用 `super::shell_single_quote`（与目录同步共享的注入面关键函数）。
 fn build_sudo_wrapped_command(command: &str) -> String {
-    format!("sudo -k -S -p '' -- sh -c {}", shell_single_quote(command))
+    format!(
+        "sudo -k -S -p '' -- sh -c {}",
+        super::shell_single_quote(command)
+    )
 }
 
 /// 静默阈值随命令超时放大：短命令保持灵敏（8s），长命令（如 300s 备份）放宽到
@@ -451,7 +460,9 @@ mod tests {
 
     #[test]
     fn shell_single_quote_matches_transport_rule() {
-        assert_eq!(shell_single_quote("a b"), "'a b'");
-        assert_eq!(shell_single_quote("it's"), "'it'\\''s'");
+        // 转义语义锚定：命令执行与目录同步共用 `crate::ssh_tool::shell_single_quote`，
+        // 本测试钉死 POSIX 单引号转义规则本身。
+        assert_eq!(crate::ssh_tool::shell_single_quote("a b"), "'a b'");
+        assert_eq!(crate::ssh_tool::shell_single_quote("it's"), "'it'\\''s'");
     }
 }

@@ -245,6 +245,11 @@ fn command_tools_manage_their_own_review() {
         "ssh_exec",
         "ssh_tmux_install",
         "sync_directory",
+        // ssh_term_*：open 的审查面在带 command 路径（裸 shell / tmux 模板
+        // 由应用拼装，注入面封闭），send 每次输入都过 review_term_command；
+        // 两者必须自管，否则裸 open 也会被 broker 通用审查 fail-closed。
+        "ssh_term_open",
+        "ssh_term_send",
     ] {
         let spec = spec_for(name);
 

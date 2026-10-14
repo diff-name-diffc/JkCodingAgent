@@ -309,6 +309,8 @@ impl AppToolExecutionPolicy {
         };
         let arguments = serde_json::to_string(&call.function.arguments)
             .unwrap_or_else(|_| call.function.arguments.to_string());
+        // 弹窗硬排除（灾难模式）与送审共用同一份参数文本。
+        let arguments_text = arguments.clone();
         let payload = self.config.review.build_payload(
             &self.config.workspace_id,
             None,
@@ -341,6 +343,7 @@ impl AppToolExecutionPolicy {
             // 拒绝/超时/取消按 fail-closed 走原拦截。
             let approved_by_user = crate::agent::rig_ext::review_confirm::needs_user_confirmation(
                 &verdict.reason,
+                &arguments_text,
                 false,
             ) && matches!(
                 crate::agent::rig_ext::review_confirm::request_confirmation(

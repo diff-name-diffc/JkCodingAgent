@@ -60,6 +60,7 @@ pub(super) async fn review_term_command(
         Ok(verdict) => {
             let review = SshAuditReview {
                 allowed: verdict.allowed,
+                user_approved: false,
                 reason: verdict.reason,
             };
             if !review.allowed {
@@ -94,6 +95,7 @@ async fn blocked_refusal(
     );
     let review = SshAuditReview {
         allowed: false,
+        user_approved: false,
         reason: reason.clone(),
     };
     if let Ok(record) = ctx

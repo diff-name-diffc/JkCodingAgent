@@ -19,6 +19,7 @@ impl SshAuditRecord {
         command: String,
         result: &Result<SshExecResult, CommandFailure>,
         review: Option<&SshAuditReview>,
+        elevated_requested: bool,
     ) -> Self {
         let review = review.cloned();
         match result {
@@ -40,6 +41,8 @@ impl SshAuditRecord {
                 error: None,
                 review,
             },
+            // 失败路径同样按请求意图标记提权：命令可能已在远端以 root 执行
+            // （ExternalStateUnknown 等），审计不得丢失 sudo 提权这一安全标记。
             Err(failure) => Self {
                 created_at: Utc::now().to_rfc3339(),
                 workspace_path: normalize_project_key(workspace_path),
@@ -54,7 +57,7 @@ impl SshAuditRecord {
                 duration_ms: None,
                 truncated: false,
                 interactive_blocked: false,
-                elevated: false,
+                elevated: elevated_requested,
                 error: Some(sanitize_error_text(&failure.message)),
                 review,
             },
@@ -87,7 +90,13 @@ pub fn render_ssh_audit_record_markdown(record: &SshAuditRecord) -> String {
     if let Some(review) = record.review.as_ref() {
         output.push_str(&format!(
             "- 审查结论: `{}`\n",
-            if review.allowed { "通过" } else { "拦截" }
+            if review.user_approved {
+                "经用户确认放行"
+            } else if review.allowed {
+                "通过"
+            } else {
+                "拦截"
+            }
         ));
         output.push_str(&format!(
             "- 审查原因: {}\n",

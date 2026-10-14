@@ -214,8 +214,10 @@ fn tmux_install_hint() -> &'static str {
     "可显式调用 ssh_tmux_install（支持 apt-get/dnf，经 ssh_exec 同一命令审查；需要提权时 sudo=true），成功后用 tmux=required 重开；其他系统请用 ssh_exec 检查 /etc/os-release 后自行安装。打开终端不会自动安装或注入 nohup/setsid"
 }
 
+/// tmux 启动命令拼装用的单引号转义：委托 `crate::ssh_tool::shell_single_quote`
+///（命令执行/目录同步共用的注入面关键函数，同一语义单一实现）。
 fn quote_shell_argument(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
+    crate::ssh_tool::shell_single_quote(text)
 }
 
 /// exec/shell/request_pty 返回仅表示写入 SSH 请求；Success 才是服务端确认。

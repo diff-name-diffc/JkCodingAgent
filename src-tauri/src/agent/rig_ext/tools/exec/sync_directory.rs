@@ -106,12 +106,14 @@ async fn review_sync_command(
     let Some(config) = review_context.config.as_ref() else {
         return crate::ssh_tool::SshAuditReview {
             allowed: false,
+            user_approved: false,
             reason: "未配置安全审查模型，已拒绝目录同步".into(),
         };
     };
     if !server.review_enabled {
         return crate::ssh_tool::SshAuditReview {
             allowed: true,
+            user_approved: false,
             reason: "服务器配置显式关闭执行前审查".into(),
         };
     }
@@ -135,10 +137,12 @@ async fn review_sync_command(
     match crate::agent::ssh_review::review_shell_command(config, &payload).await {
         Ok(verdict) => crate::ssh_tool::SshAuditReview {
             allowed: verdict.allowed,
+            user_approved: false,
             reason: verdict.reason,
         },
         Err(error) => crate::ssh_tool::SshAuditReview {
             allowed: false,
+            user_approved: false,
             reason: format!("安全审查服务失败：{error}"),
         },
     }
@@ -194,70 +198,113 @@ async fn execute_inner(
     let mut review =
         review_sync_command(&review_context, &workspace_id, args, &server, &command).await;
     if !review.allowed {
-        // 需用户确认类拦截：统一走通用弹窗门禁，用户明确允许则放行同步；
-        // 拒绝/超时/取消按 fail-closed 走原拦截（Recoverable 错误文本）。
-        let approved_by_user =
-            crate::agent::rig_ext::review_confirm::needs_user_confirmation(&review.reason, false)
-                && matches!(
-                    crate::agent::rig_ext::review_confirm::request_confirmation(
-                        app_handle.as_ref(),
-                        cancel_rx.clone(),
-                        crate::agent::rig_ext::review_confirm::ConfirmRequest {
-                            workspace_id: workspace_id.clone(),
-                            tool: "sync_directory".to_string(),
-                            target: format!("SSH server {}", server.id),
-                            command: command.clone(),
-                            reason: review.reason.clone(),
-                            elevated: false,
-                        },
-                    )
-                    .await,
-                    crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved
-                );
-        if !approved_by_user {
-            command_history::record(
-                &workspace_id,
-                "sync_directory",
-                &server.id,
-                &command,
-                CommandHistoryStatus::Blocked,
-                &review.reason,
-            );
-            let record_result = manager
-                .record_review_blocked(
-                    workspace.clone(),
-                    workspace_id.clone(),
-                    review_context.session_title.clone(),
-                    server.id.clone(),
-                    workspace_id.clone(),
-                    command.clone(),
-                    review.clone(),
-                )
-                .await;
-            let headline = match record_result {
-                Ok(_) => format!("目录同步已被安全审查拦截：{}", review.reason),
-                Err(error) => format!(
-                    "目录同步已被安全审查拦截：{}（写入审计记录失败：{error}）",
-                    review.reason
-                ),
-            };
-            return Err(SyncFailure::Recoverable(
-                crate::agent::ssh_review::with_confirm_guidance(headline, &review.reason),
-            ));
-        }
-        // 用户确认放行：审计结论改标为经确认放行并继续正常同步路径。
-        review = crate::ssh_tool::SshAuditReview {
-            allowed: true,
-            reason: format!("安全审查未自动放行，经用户确认放行：{}", review.reason),
-        };
-        command_history::record(
-            &workspace_id,
-            "sync_directory",
-            &server.id,
+        // 需用户确认类拦截：统一走通用弹窗门禁。裁决结局必须区分——用户明确
+        // 拒绝≠超时无人裁决（拒绝后引导重发等于重试刚被否决的同步）；等待期间
+        // 取消按取消语义收口。
+        let confirm_outcome = if crate::agent::rig_ext::review_confirm::needs_user_confirmation(
+            &review.reason,
             &command,
-            CommandHistoryStatus::Executed,
-            "安全审查拦截后经用户确认放行",
-        );
+            false,
+        ) {
+            Some(
+                crate::agent::rig_ext::review_confirm::request_confirmation(
+                    app_handle.as_ref(),
+                    cancel_rx.clone(),
+                    crate::agent::rig_ext::review_confirm::ConfirmRequest {
+                        workspace_id: workspace_id.clone(),
+                        tool: "sync_directory".to_string(),
+                        target: format!("SSH server {}", server.id),
+                        command: command.clone(),
+                        reason: review.reason.clone(),
+                        elevated: false,
+                    },
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        match confirm_outcome {
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Approved) => {
+                // 用户确认放行：审计结论改标为经确认放行并继续正常同步路径
+                //（台账只在同步完成后登记一次）。
+                review = crate::ssh_tool::SshAuditReview {
+                    allowed: true,
+                    user_approved: true,
+                    reason: format!("安全审查未自动放行，经用户确认放行：{}", review.reason),
+                };
+            }
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Cancelled) => {
+                return Err(SyncFailure::Cancelled(
+                    "错误：等待用户确认期间本轮已取消，目录同步未执行。".to_string(),
+                ));
+            }
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Denied) => {
+                command_history::record(
+                    &workspace_id,
+                    "sync_directory",
+                    &server.id,
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    &format!("用户已明确拒绝执行：{}", review.reason),
+                );
+                // 用户明确拒绝同样落 SSH 审计（与超时/未弹窗口径一致）：拒绝是
+                // 最需要留痕的裁决，取证链不得缺记。写失败仅留痕不阻断。
+                let denied_review = crate::ssh_tool::SshAuditReview {
+                    allowed: false,
+                    user_approved: false,
+                    reason: format!("用户已明确拒绝执行：{}", review.reason),
+                };
+                if let Err(error) = manager
+                    .record_review_blocked(
+                        workspace.clone(),
+                        workspace_id.clone(),
+                        review_context.session_title.clone(),
+                        server.id.clone(),
+                        workspace_id.clone(),
+                        command.clone(),
+                        denied_review,
+                    )
+                    .await
+                {
+                    eprintln!("[sync-directory] 拒绝审计写入失败：{error}");
+                }
+                return Err(SyncFailure::Recoverable(
+                    "错误：用户已明确拒绝执行该目录同步，不得重试或改写绕过。".to_string(),
+                ));
+            }
+            Some(crate::agent::rig_ext::review_confirm::ConfirmOutcome::Timeout) | None => {
+                command_history::record(
+                    &workspace_id,
+                    "sync_directory",
+                    &server.id,
+                    &command,
+                    CommandHistoryStatus::Blocked,
+                    &review.reason,
+                );
+                let record_result = manager
+                    .record_review_blocked(
+                        workspace.clone(),
+                        workspace_id.clone(),
+                        review_context.session_title.clone(),
+                        server.id.clone(),
+                        workspace_id.clone(),
+                        command.clone(),
+                        review.clone(),
+                    )
+                    .await;
+                let headline = match record_result {
+                    Ok(_) => format!("目录同步已被安全审查拦截：{}", review.reason),
+                    Err(error) => format!(
+                        "目录同步已被安全审查拦截：{}（写入审计记录失败：{error}）",
+                        review.reason
+                    ),
+                };
+                return Err(SyncFailure::Recoverable(
+                    crate::agent::ssh_review::with_confirm_guidance(headline, &review.reason),
+                ));
+            }
+        }
     }
 
     // 审计元数据需要会话标题：旧实现由 ToolContext 注入，此处从会话库按

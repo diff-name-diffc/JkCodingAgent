@@ -22,6 +22,7 @@ const SELF_REVIEWED_TOOLS: &[&str] = &[
     "ssh_exec",
     "ssh_tmux_install",
     "sync_directory",
+    "ssh_term_open",
     "ssh_term_send",
 ];
 
@@ -157,7 +158,7 @@ pub(crate) fn effective_timeout_secs(
 ///
 /// 返回 0 表示未登记：新增自管工具若忘了在这里登记，`self_managed_tools_declare_settle_ceiling`
 /// 测试会失败。
-fn self_managed_settle_ceiling_secs(name: &str) -> u64 {
+pub(crate) fn self_managed_settle_ceiling_secs(name: &str) -> u64 {
     match name {
         // config `exec_timeout_secs` 默认 60（非前端可配），留 10× 余量
         "local_zsh" => 600,

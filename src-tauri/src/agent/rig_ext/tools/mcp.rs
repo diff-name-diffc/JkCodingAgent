@@ -287,6 +287,7 @@ async fn review_mcp_call(name: &str, args: &Value, review: &McpReviewInputs) -> 
             ),
             confirmable: crate::agent::rig_ext::review_confirm::needs_user_confirmation(
                 &verdict.reason,
+                &args_json,
                 false,
             ),
             reason: verdict.reason,

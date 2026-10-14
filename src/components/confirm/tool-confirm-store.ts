@@ -10,9 +10,8 @@
 export interface ToolConfirmRequest {
   /** 后端登记的一次性请求 id，回传时的凭据。 */
   requestId: string;
-  /** 发起调用的会话（回传时后端做 workspace 域校验）。 */
+  /** 发起调用的会话（回传时后端做 workspace 域校验；workspace 即会话，不再单列 sessionId）。 */
   workspaceId: string;
-  sessionId: string;
   /** 工具名：ssh_exec / local_zsh / sync_directory / MCP 工具名 / 通用工具名。 */
   tool: string;
   /** 目标的简短人类可读标签（服务器 id / 本地 zsh / 工具名等）。 */

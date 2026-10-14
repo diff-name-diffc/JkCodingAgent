@@ -40,6 +40,13 @@ use validation::{
 
 const AUDIT_RECORD_LIMIT: usize = 100;
 
+/// POSIX 单引号转义：把字符串包进 `'...'`，其中单引号替换为 `'\''`。
+/// 命令执行（sudo 包装）、目录同步（rsync 参数）与 term 启动（tmux 命令
+/// 拼装）共用的注入面关键函数——同一语义必须单一实现，多处副本会各自演进漂移。
+pub(crate) fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// 连接池中空闲连接的保留时长；正在执行命令的连接不受影响。
 const CONNECTION_IDLE_SECS: u64 = 30 * 60;
 
@@ -244,6 +251,7 @@ impl SshSessionManager {
             command,
             &result,
             review.as_ref(),
+            elevate,
         );
         let ssh_db = self.db.clone();
         let audit_write =
@@ -374,8 +382,19 @@ impl SshSessionManager {
         // 提权：复用服务器配置的登录密码作 sudo 口令。sudo 认证口令与 SSH
         // 登录口令在多数机器上是同一份（sudo 默认校验调用者口令），故不新增
         // 独立凭据字段。口令只在传输层的 channel stdin 内出现，绝不出现在
-        // 命令串 / 审查载荷 / 审计正文中。
-        let elevation = elevate.then(|| server.password.clone());
+        // 命令串 / 审查载荷 / 审计正文中。密钥登录的服务器常未配置口令：
+        // 空口令的 sudo 包装必然认证失败，且会把空行留在 stdin 流里，提权前
+        // 显式拒绝。
+        let elevation = match elevate {
+            false => None,
+            true if server.password.is_empty() => {
+                return Err(CommandFailure::other(
+                    "错误：服务器未配置登录口令（可能为密钥登录），无法通过 sudo 提权；请改用免密账号（NOPASSWD）或在服务器设置中补充口令。"
+                        .to_string(),
+                ));
+            }
+            true => Some(server.password.clone()),
+        };
 
         let key = SshSessionKey {
             server_id: server.id.clone(),

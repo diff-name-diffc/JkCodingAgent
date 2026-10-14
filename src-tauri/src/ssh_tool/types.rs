@@ -114,6 +114,10 @@ pub struct SshAuditReview {
     /// 审查原因（拒绝时为拦截理由，通过时通常为空）
     #[serde(default)]
     pub reason: String,
+    /// AI 审查未自动放行、经用户弹窗确认后放行（结构化标记：区别于审查直接
+    /// 通过，按 allowed 统计拦截事件时可据此识别「曾被拦截」的事实）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user_approved: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

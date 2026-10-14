@@ -101,6 +101,8 @@ export interface SshToolsConfig {
 export interface SshAuditReview {
   allowed: boolean;
   reason: string;
+  /** AI 审查未自动放行、经用户弹窗确认后放行（区别于审查直接通过；仅 true 时序列化）。 */
+  userApproved?: boolean;
 }
 
 export interface SshAuditRecord {

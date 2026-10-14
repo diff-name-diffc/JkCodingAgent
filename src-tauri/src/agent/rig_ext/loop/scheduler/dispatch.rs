@@ -77,9 +77,11 @@ impl TaskScheduler {
                     ToolRunTraceContext {
                         parent_run_id: parent.as_ref().map(|p| p.task_id.clone()),
                         // 同一父 run 下 sequence 必须唯一（idx_dispatcher_tool_runs_
-                        // parent_sequence）。`32` 与 RunBudgets 的叶子准入上限耦合：
-                        // 单批 calls 超过 32 个时 `budgets.reserve` 先失败，走不到这里。
-                        sequence: round * 32 + index as u64,
+                        // parent_sequence）。乘数与 RunBudgets 的叶子准入上限
+                        // 共用同一常量：单批 calls 超过上限时 `budgets.reserve`
+                        // 先失败，走不到这里。
+                        sequence: round * super::super::budgets::LEAF_ADMISSION_CAP as u64
+                            + index as u64,
                         ..policy.registration_trace()
                     },
                 ))

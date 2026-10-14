@@ -134,10 +134,12 @@ where
             effective_messages,
             {
                 let mut definitions = surface.definitions();
-                // 仅当存在未结算任务时才提供等待工具：结构性消除空调用。
-                if coordinator.unsettled() {
-                    definitions.push(wait::wait_tool_definition());
-                }
+                // 恒定携带等待工具：tools 数组是 provider 前缀缓存（Anthropic/
+                // OpenAI/DeepSeek 自动缓存）的第一段，按在途状态增删会让每次
+                // 「有在途 ↔ 无在途」切换都打断整段缓存（miss 成本可达命中的
+                // 十倍量级）。无在途任务时的空调用由 wait_for 的 NoPendingTasks
+                // 兜底（立即返回、结果带纠错反馈，不悬挂）。
+                definitions.push(wait::wait_tool_definition());
                 definitions
             },
             hooks.request_max_tokens,

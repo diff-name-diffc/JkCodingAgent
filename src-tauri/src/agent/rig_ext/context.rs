@@ -27,6 +27,27 @@ use crate::agent::common::{UsageTracker, UNANSWERED_TOOL_RESULT_PLACEHOLDER};
 /// 数十万字符，按实际字符计会瞬间挤爆预算）。
 const IMAGE_FIXED_COST_CHARS: usize = 2000;
 
+/// CJK 字符的等效字符权重：预算公式按 3.5 字符/token 折算（英文 ≈4），但
+/// 中文在主流 tokenizer 下约 0.6-1 token/字——按 1 字符计会把中文预算高估
+/// 2-3 倍，只能靠 400 错误减半重试兜底。CJK 字符按 4 等效字符计（≈1 token/字
+/// 的保守假设），纯中文可容纳约 0.5×窗口的字数，在已知 tokenizer 的中文
+/// 密度下均不超窗；英文与既有口径完全不变。
+const CJK_EQUIV_CHARS: usize = 4;
+
+/// 文本的等效字符数（预算估算口径）：CJK 字符加权，其余按 1 计。
+fn equiv_chars(text: &str) -> usize {
+    text.chars()
+        .map(|ch| if is_cjk(ch) { CJK_EQUIV_CHARS } else { 1 })
+        .sum()
+}
+
+/// CJK 统表/扩展/兼容 + 假名 + 谚文（中文会话的主要高密度字符集）。
+fn is_cjk(ch: char) -> bool {
+    matches!(ch as u32,
+        0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF
+        | 0x3040..=0x30FF | 0xAC00..=0xD7AF | 0x3000..=0x303F)
+}
+
 /// 占位文案的预算预留量（占位在窗口选定后才按实际裁掉条数渲染，预留一个
 /// 富余量级避免边界抖动，组装后不再精确校验）。
 const TRIM_PLACEHOLDER_CHARS: usize = 80;
@@ -46,20 +67,20 @@ pub(crate) fn context_budget_chars(context_window_tokens: Option<u64>) -> usize 
     (window_tokens.saturating_mul(CHARS_PER_TOKEN_X10) / 10 * SAFETY_PERCENT / 100) as usize
 }
 
-/// 估算单条消息的上下文占用（字符数）：正文/思考计字符数，ToolCall 计
-/// name+arguments，ToolResult 计内容，Image 按固定成本估算。
+/// 估算单条消息的上下文占用（等效字符数）：正文/思考/工具调用与结果按
+/// [`equiv_chars`] 口径（CJK 加权），Image 按固定成本估算。
 /// 主对话与子智能体共用这一口径。
 pub(crate) fn message_chars(message: &Message) -> usize {
     match message {
-        Message::System { content } => content.chars().count(),
+        Message::System { content } => equiv_chars(content),
         Message::Assistant { content, .. } => content
             .iter()
             .map(|item| match item {
-                AssistantContent::Text(text) => text.text.chars().count(),
-                AssistantContent::Reasoning(reasoning) => reasoning.display_text().chars().count(),
+                AssistantContent::Text(text) => equiv_chars(&text.text),
+                AssistantContent::Reasoning(reasoning) => equiv_chars(&reasoning.display_text()),
                 AssistantContent::ToolCall(call) => {
-                    call.function.name.chars().count()
-                        + call.function.arguments.to_string().chars().count()
+                    equiv_chars(&call.function.name)
+                        + equiv_chars(&call.function.arguments.to_string())
                 }
                 AssistantContent::Image(_) => IMAGE_FIXED_COST_CHARS,
             })
@@ -67,14 +88,14 @@ pub(crate) fn message_chars(message: &Message) -> usize {
         Message::User { content } => content
             .iter()
             .map(|item| match item {
-                UserContent::Text(text) => text.text.chars().count(),
+                UserContent::Text(text) => equiv_chars(&text.text),
                 UserContent::ToolResult(result) => result
                     .content
                     .iter()
                     .map(|block| match block {
-                        ToolResultContent::Text(text) => text.text.chars().count(),
+                        ToolResultContent::Text(text) => equiv_chars(&text.text),
                         ToolResultContent::Image(_) => IMAGE_FIXED_COST_CHARS,
-                        ToolResultContent::Json { value } => value.to_string().chars().count(),
+                        ToolResultContent::Json { value } => equiv_chars(&value.to_string()),
                     })
                     .sum(),
                 UserContent::Image(_) => IMAGE_FIXED_COST_CHARS,
@@ -909,6 +930,24 @@ mod tests {
             if content.iter().any(|item| matches!(item, AssistantContent::ToolCall(_))))
     }
 
+    // ⓪ CJK 权重口径：中文字符按 4 等效字符计（≈1 token/字 的保守假设），
+    // 英文/ASCII 按 1 计——同等预算下中文更早触发裁剪，防止对中文 tokenizer
+    // 预算高估 2-3 倍后只能靠 400 重试兜底。
+    #[test]
+    fn cjk_characters_cost_more_equivalent_chars() {
+        assert_eq!(equiv_chars("hello"), 5);
+        assert_eq!(equiv_chars("你好"), CJK_EQUIV_CHARS * 2);
+        assert_eq!(equiv_chars("你好abc"), CJK_EQUIV_CHARS * 2 + 3);
+        // 预算行为：两条各 100 汉字的消息（800 等效字符）在 150 预算下必走
+        // 裁剪/截断路径且不 panic；等长 ASCII（200 字符）同预算仅触发极端
+        // 路径的头部截断。两条路径都不 panic、产出条数不增加。
+        let cjk_shaped = shape_history(vec![user(&"你".repeat(100)), user(&"好".repeat(100))], 150);
+        assert!(cjk_shaped.len() <= 2, "裁剪不得增加消息条数");
+        let ascii_shaped =
+            shape_history(vec![user(&repeat('H', 100)), user(&repeat('H', 100))], 150);
+        assert!(ascii_shaped.len() <= 2);
+    }
+
     // ① 未超预算：原样返回。
     #[test]
     fn under_budget_returns_history_unchanged() {
@@ -921,10 +960,10 @@ mod tests {
     // ② 超预算：保头保尾 + 占位说明。
     #[test]
     fn over_budget_keeps_head_and_tail_with_placeholder() {
-        let head = user(&repeat('头', 100));
-        let middle_user = user(&repeat('中', 300));
-        let middle_assistant = assistant_text(&repeat('答', 300));
-        let tail = user(&repeat('尾', 100));
+        let head = user(&repeat('H', 100));
+        let middle_user = user(&repeat('M', 300));
+        let middle_assistant = assistant_text(&repeat('A', 300));
+        let tail = user(&repeat('T', 100));
         let messages = vec![head.clone(), middle_user, middle_assistant, tail.clone()];
         // 预算 = 头 100 + 占位预留 80 + 尾 100：中段两条必须整体移除。
         let shaped = shape_history(messages, 280);
@@ -943,12 +982,12 @@ mod tests {
     // assistant-toolcall 上或其结果消息上，整对同进同出。
     #[test]
     fn boundary_moves_forward_off_tool_call_result_pair() {
-        let head = user(&repeat('头', 100));
+        let head = user(&repeat('H', 100));
         // assistant 工具调用：name 1 字符 + arguments JSON 100 字符 = 101。
-        let call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('参', 92) }));
+        let call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('a', 92) }));
         assert_eq!(message_chars(&call), 101);
-        let result = tool_result("c1", &repeat('果', 100));
-        let tail = user(&repeat('尾', 100));
+        let result = tool_result("c1", &repeat('R', 100));
+        let tail = user(&repeat('T', 100));
         let messages = vec![head.clone(), call, result, tail.clone()];
         // 预算 = 头 100 + 占位预留 80 + 尾 100 + 结果 100 = 380：
         // 尾部累计可容纳 tail+result，再加上 call（101）则超限——起点先落在
@@ -965,9 +1004,9 @@ mod tests {
     // 工具结果（其 assistant 已被裁掉），repair 必须把它剔除而不是发孤儿结果。
     #[test]
     fn orphan_tool_result_at_window_start_is_dropped() {
-        let head = user(&repeat('头', 100));
-        let call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('参', 95) }));
-        let result = tool_result("c1", &repeat('果', 100));
+        let head = user(&repeat('H', 100));
+        let call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('a', 95) }));
+        let result = tool_result("c1", &repeat('R', 100));
         let messages = vec![head.clone(), call, result];
         // 预算只够尾部一条工具结果：没有安全起点，结果并入被裁中段，不留孤儿。
         let shaped = shape_history(messages, 280);
@@ -981,8 +1020,8 @@ mod tests {
     // compact_history 不跑 repair）。整段并入被裁中段，只留头和占位。
     #[test]
     fn unanswered_trailing_tool_call_is_folded_away() {
-        let head = user(&repeat('头', 100));
-        let big_call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('参', 500) }));
+        let head = user(&repeat('H', 100));
+        let big_call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('a', 500) }));
         let last_call = assistant_toolcall("c9", serde_json::json!({}));
         let messages = vec![head.clone(), big_call, last_call];
         let shaped = shape_history(messages, 280);
@@ -1052,10 +1091,10 @@ mod tests {
     // 时，必须整对保留，不能把 assistant 裁掉只留孤儿结果。
     #[test]
     fn trailing_tool_pair_that_fits_stays_intact() {
-        let head = user(&repeat('头', 100));
-        let middle = user(&repeat('中', 400));
+        let head = user(&repeat('H', 100));
+        let middle = user(&repeat('M', 400));
         let call = assistant_toolcall("c1", serde_json::json!({ "a": "x" }));
-        let result = tool_result("c1", &repeat('果', 80));
+        let result = tool_result("c1", &repeat('R', 80));
         let call_chars = message_chars(&call);
         let result_chars = message_chars(&result);
         // 头 100 + 占位 80 + 整对：中段装不下，工具对装得下。
@@ -1074,8 +1113,8 @@ mod tests {
     // 任何输入不得 panic。
     #[test]
     fn extreme_over_budget_truncates_head_and_never_panics() {
-        let head = user(&repeat('头', 10_000));
-        let tail = user(&repeat('尾', 10_000));
+        let head = user(&repeat('H', 10_000));
+        let tail = user(&repeat('T', 10_000));
         let shaped = shape_history(vec![head, tail.clone()], 100);
         assert_eq!(shaped.len(), 2);
         let Message::User { content } = &shaped[0] else {
@@ -1091,9 +1130,9 @@ mod tests {
         assert_eq!(shaped[1], tail);
 
         // 单条巨型消息、空历史、全工具结果历史：均不得 panic。
-        let _ = shape_history(vec![user(&repeat('独', 100_000))], 10);
+        let _ = shape_history(vec![user(&repeat('X', 100_000))], 10);
         let _ = shape_history(Vec::new(), 10);
-        let _ = shape_history(vec![tool_result("c1", &repeat('果', 10_000))], 10);
+        let _ = shape_history(vec![tool_result("c1", &repeat('R', 10_000))], 10);
     }
 
     #[test]
@@ -1137,9 +1176,12 @@ mod tests {
         let call = assistant_toolcall("c1", serde_json::json!({ "a": "bc" }));
         // name 1 + arguments {"a":"bc"} 序列化 10 字符。
         assert_eq!(message_chars(&call), 1 + "{\"a\":\"bc\"}".chars().count());
-        assert_eq!(message_chars(&tool_result("c1", "结果")), 2);
-        assert_eq!(message_chars(&user("你好")), 2);
-        assert_eq!(message_chars(&Message::system("系统")), 2);
+        assert_eq!(
+            message_chars(&tool_result("c1", "结果")),
+            CJK_EQUIV_CHARS * 2
+        );
+        assert_eq!(message_chars(&user("你好")), CJK_EQUIV_CHARS * 2);
+        assert_eq!(message_chars(&Message::system("系统")), CJK_EQUIV_CHARS * 2);
     }
 
     // ⑦ 滚动压缩：摘要模型失败时回退规则抽取——被裁中段折叠为【前情摘要】
@@ -1147,9 +1189,9 @@ mod tests {
     #[tokio::test]
     async fn compact_history_folds_middle_into_summary_via_fallback() {
         let head = user("原始任务：重构上下文管理");
-        let middle_a = user(&repeat('中', 400));
-        let middle_b = assistant_text(&repeat('答', 400));
-        let tail = user(&repeat('尾', 100));
+        let middle_a = user(&repeat('M', 400));
+        let middle_b = assistant_text(&repeat('A', 400));
+        let tail = user(&repeat('T', 100));
         let mut messages = vec![head.clone(), middle_a, middle_b, tail.clone()];
         let mut tracker = UsageTracker::new();
         // 预算 300：头 11 + 占位预留 80 → 尾预算 209，只装得下 tail（100），
@@ -1188,8 +1230,8 @@ mod tests {
     #[tokio::test]
     async fn compact_history_folds_previous_summary_head() {
         let old_summary = user(&format!("{HISTORY_SUMMARY_MARKER}早期摘要：任务目标是 X。"));
-        let middle = assistant_text(&repeat('答', 400));
-        let tail = user(&repeat('尾', 100));
+        let middle = assistant_text(&repeat('A', 400));
+        let tail = user(&repeat('T', 100));
         let mut messages = vec![old_summary, middle, tail.clone()];
         let mut tracker = UsageTracker::new();
         let stub = failing_summary_model();
@@ -1222,8 +1264,8 @@ mod tests {
     #[tokio::test]
     async fn compact_history_cancelled_before_summary_uses_fallback() {
         let head = user("原始任务");
-        let middle = user(&repeat('中', 400));
-        let tail = user(&repeat('尾', 100));
+        let middle = user(&repeat('M', 400));
+        let tail = user(&repeat('T', 100));
         let mut messages = vec![head, middle, tail];
         let mut tracker = UsageTracker::new();
         let (_cancel_tx, cancel_rx) = watch::channel(true);
@@ -1269,9 +1311,9 @@ mod tests {
     #[tokio::test]
     async fn compact_history_uses_model_output_when_available() {
         let head = user("原始任务");
-        let middle_a = user(&repeat('中', 400));
-        let middle_b = assistant_text(&repeat('答', 400));
-        let tail = user(&repeat('尾', 100));
+        let middle_a = user(&repeat('M', 400));
+        let middle_b = assistant_text(&repeat('A', 400));
+        let tail = user(&repeat('T', 100));
         let mut messages = vec![head, middle_a, middle_b, tail];
         let mut tracker = UsageTracker::new();
         let stub = StubSummaryModel {
@@ -1302,8 +1344,8 @@ mod tests {
     // 调用和结果都折进摘要，窗口里不得留下孤儿 tool 结果。
     #[tokio::test]
     async fn compact_history_folds_orphan_tool_result_instead_of_emitting_it() {
-        let head = user(&repeat('头', 100));
-        let call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('参', 200) }));
+        let head = user(&repeat('H', 100));
+        let call = assistant_toolcall("c1", serde_json::json!({ "a": repeat('a', 200) }));
         let result = tool_result("c1", "工具结果正文-必须进摘要");
         let mut messages = vec![head.clone(), call, result];
         let mut tracker = UsageTracker::new();

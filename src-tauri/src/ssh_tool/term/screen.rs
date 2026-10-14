@@ -171,9 +171,8 @@ pub(crate) struct TermScreen {
     alt_tracker: AltScreenTracker,
     /// 历史上被裁出回滚上限的行数（行索引 → 绝对行号换算）。
     ejected_so_far: usize,
-    /// 当前跟踪的绝对行号与最新文本（未定稿；定稿行进 `pending`）。
+    /// 当前跟踪的绝对行号（未定稿；定稿行进 `pending`）。
     cur_abs_row: usize,
-    cur_line_text: String,
     pending: VecDeque<String>,
     /// 内存闸门触发过丢弃（永久信息损失），透传 truncated 标记。
     pending_overflow: bool,
@@ -196,7 +195,6 @@ impl TermScreen {
             alt_tracker: AltScreenTracker::new(),
             ejected_so_far: 0,
             cur_abs_row: 0,
-            cur_line_text: String::new(),
             pending: VecDeque::new(),
             pending_overflow: false,
             paused: false,
@@ -234,7 +232,6 @@ impl TermScreen {
         match alt_event {
             Some(AltScreenEvent::Entered) => {
                 self.paused = true;
-                self.cur_line_text.clear();
                 self.last_alt_view.clear();
             }
             Some(AltScreenEvent::Left) => {
@@ -407,7 +404,6 @@ impl TermScreen {
     /// 以当前光标行重新对齐增量轨（备屏退出 / resize 后）。
     fn realign_to_cursor(&mut self) {
         self.cur_abs_row = self.cursor_abs_row();
-        self.cur_line_text = self.total_line_text(self.cur_abs_row);
     }
 
     /// 光标行定稿算法主体（见模块注释）。一帧推送可能推进多行（reader 的 Data
@@ -435,7 +431,6 @@ impl TermScreen {
             line_no += 1;
         }
         self.cur_abs_row = abs;
-        self.cur_line_text = self.total_line_text(abs);
     }
 
     /// 光标行的绝对行号：总行数不变量换算（`vt.line(n)` 为含回滚的总坐标）。

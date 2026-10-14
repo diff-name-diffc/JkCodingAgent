@@ -6,6 +6,11 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// 每根 run 的未交付叶子任务准入上限。调度器登记台账的 sequence 编码
+/// （`dispatch.rs` 的 `round * LEAF_ADMISSION_CAP + index`）依赖同一数值保证
+/// 跨轮唯一——两处必须引用本常量，任何调整都不得再引入字面量副本。
+pub(super) const LEAF_ADMISSION_CAP: usize = 32;
+
 pub(super) struct RunBudgets {
     leaves: Arc<Semaphore>,
     composites: Arc<Semaphore>,
@@ -21,7 +26,7 @@ impl RunBudgets {
             return budget;
         }
         let budget = Arc::new(Self {
-            leaves: Arc::new(Semaphore::new(32)),
+            leaves: Arc::new(Semaphore::new(LEAF_ADMISSION_CAP)),
             composites: Arc::new(Semaphore::new(4)),
             summaries: Arc::new(Semaphore::new(2)),
         });
@@ -36,9 +41,9 @@ impl RunBudgets {
             &self.leaves
         };
         budget.clone().try_acquire_owned().map_err(|_| {
-            anyhow::Error::new(AdmissionError(
-                "调度容量不足：每个根 run 最多 32 个尚未交付叶子任务、4 个活动复合任务".into(),
-            ))
+            anyhow::Error::new(AdmissionError(format!(
+                "调度容量不足：每个根 run 最多 {LEAF_ADMISSION_CAP} 个尚未交付叶子任务、4 个活动复合任务"
+            )))
         })
     }
 }

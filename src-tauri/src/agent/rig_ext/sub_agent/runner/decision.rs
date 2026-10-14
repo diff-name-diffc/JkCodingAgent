@@ -71,27 +71,33 @@ impl RigSubAgentRuntime {
             // 在途任务快照：重建首条 system 消息（base + 快照段），与主循环的
             // preamble 注入同义（子智能体的 system 位于 messages[0]，逐轮重建）。
             // 覆写前固化契约：首条必须是 system——入口构造变化（注入工作区
-            // 上下文等）时静默覆写会丢内容，空 messages 会越界 panic。
-            debug_assert!(
-                matches!(messages.first(), Some(Message::System { .. })),
-                "run_loop 契约：messages[0] 必须为 system 消息"
-            );
-            messages[0] = Message::system(
+            // 上下文等）时静默覆写会丢内容。release 下同样守卫（debug_assert
+            // 会被编译剔除，空 messages 直接下标会越界 panic）。
+            let system_rebuilt = Message::system(
                 match wait::render_pending_snapshot(&coordinator.tasks.pending_tasks()) {
                     Some(snapshot) => format!("{}\n\n{snapshot}", self.config.system_prompt),
                     None => self.config.system_prompt.clone(),
                 },
             );
+            match messages.first_mut() {
+                Some(message @ Message::System { .. }) => *message = system_rebuilt,
+                _ => {
+                    return Err(format!(
+                        "子智能体 '{}' 循环契约破坏：历史首条必须是 system 消息",
+                        self.config.agent_id
+                    ));
+                }
+            }
 
             // 强制收口阶段传空工具集，逼模型给出最终结论。
-            // 仅当存在未结算任务时才提供等待工具：结构性消除空调用。
+            // 常规轮恒定携带等待工具：tools 数组是 provider 前缀缓存的第一段，
+            // 按在途状态增删会让每次切换都打断整段缓存；无在途任务时的空调用
+            // 由 wait_for 的 NoPendingTasks 兜底（立即返回、结果带纠错反馈）。
             let definitions = if *force_final_response {
                 Vec::new()
             } else {
                 let mut definitions = definitions_all.clone();
-                if coordinator.unsettled() {
-                    definitions.push(wait::wait_tool_definition());
-                }
+                definitions.push(wait::wait_tool_definition());
                 definitions
             };
             let request = build_completion_request(

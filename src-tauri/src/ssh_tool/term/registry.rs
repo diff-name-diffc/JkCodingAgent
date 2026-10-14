@@ -167,7 +167,39 @@ impl TermSessionRegistry {
                 TermError::Open(format!("{message}；远端会话 {name} 可能仍在，请先查询状态"))
             });
         }
-        self.inner.lock().insert(term_id.clone(), session);
+        // 配额复检与登记同锁原子完成：前置检查与这里的网络握手窗口（可达
+        // 20s）之间，其它 server 的并发 open 不受 SshServer 资源声明互斥约束，
+        // 可能已把配额占用满——此时释放本地资源（channel）并报配额超限，
+        // 而不是让登记突破上限。
+        let quota_error = {
+            let mut inner = self.inner.lock();
+            let server_id = session.meta.server_id.clone();
+            let per_server = inner
+                .values()
+                .filter(|term| term.meta.server_id == server_id)
+                .count();
+            let exceeded = if per_server >= PER_SERVER_LIMIT {
+                Some(Some(server_id))
+            } else if inner.len() >= GLOBAL_LIMIT {
+                Some(None)
+            } else {
+                inner.insert(term_id.clone(), session.clone());
+                None
+            };
+            exceeded.map(|scope| {
+                let filter_id = scope.as_deref();
+                let infos: Vec<_> = inner
+                    .values()
+                    .filter(|term| filter_id.is_none_or(|id| term.meta.server_id == id))
+                    .map(|term| term.info())
+                    .collect();
+                TermError::QuotaExceeded(render_quota_message(&infos))
+            })
+        };
+        if let Some(error) = quota_error {
+            session.close_channel().await;
+            return Err(error);
+        }
 
         Ok(TermHandlePayload {
             term_id,
@@ -253,7 +285,11 @@ impl TermSessionRegistry {
     ) -> Result<TermHandlePayload, TermError> {
         self.reap_idle().await;
         let session = self.get(term_id)?;
-        // 先确认远端 kill 成功再移除本地句柄；失败时保留登记以便重试。
+        // 远端 kill 成功（或目标已不存在）才移除本地句柄；其它失败保留登记
+        // 以便重试。tmux 会话常随其中进程退出而自动消亡，此时 kill-session
+        // 报「can't find session / no server running」——目标已达成，按幂等
+        // 成功继续清理，否则句柄永远无法释放（重试同样失败，只能等 reaper）。
+        let mut kill_note_override = None;
         if kill_tmux {
             if let Some(name) = &session.meta.tmux_session {
                 let result = run_template_command(
@@ -262,18 +298,25 @@ impl TermSessionRegistry {
                 )
                 .await
                 .map_err(TermError::Write)?;
-                result
-                    .ensure_success("终止 tmux 会话")
-                    .map_err(TermError::Write)?;
+                if let Err(error) = result.ensure_success("终止 tmux 会话") {
+                    if error.contains("can't find session") || error.contains("no server running") {
+                        kill_note_override = Some(format!("tmux 会话 {name} 已不存在，视为已回收"));
+                    } else {
+                        return Err(TermError::Write(error));
+                    }
+                }
             }
         }
         session.close_channel().await;
         // 给 reader task 一点收口时间拿终态。
         let payload = session.read_payload(500, None).await;
         self.inner.lock().remove(term_id);
-        let note = match (&session.meta.tmux_session, kill_tmux) {
-            (Some(name), true) => Some(format!("tmux 会话 {name} 已终止，远端现场已回收")),
-            (Some(name), false) => Some(format!(
+        let note = match (&session.meta.tmux_session, kill_note_override) {
+            (_, Some(note)) => Some(note),
+            (Some(name), None) if kill_tmux => {
+                Some(format!("tmux 会话 {name} 已终止，远端现场已回收"))
+            }
+            (Some(name), None) => Some(format!(
                 "终端已断开；tmux 会话 {name} 中仍在运行的程序可用同名 tmuxSession 重新连接"
             )),
             (None, _) => Some("裸终端已关闭，不支持断连保活或同名恢复".into()),

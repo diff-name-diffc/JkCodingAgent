@@ -873,22 +873,18 @@ async fn explicit_wait_is_event_driven_and_completion_causes_next_decision() {
     );
     assert_eq!(messages.iter().filter(|m| m.role == "runtime").count(), 1);
 
-    // 条件注入：首轮无在途任务不提供 wait_for_tools；accepted 后才注入。
+    // 恒定注入：tools 数组是 provider 前缀缓存的第一段，按在途状态增删会
+    // 打断缓存——无论有无在途任务，等待工具必须在每一轮请求中稳定出现。
     let requests = model.requests();
-    assert!(
-        !requests[0]
-            .tools
-            .iter()
-            .any(|tool| tool.name == "wait_for_tools"),
-        "无在途任务时不应注入 wait_for_tools"
-    );
-    assert!(
-        requests[1]
-            .tools
-            .iter()
-            .any(|tool| tool.name == "wait_for_tools"),
-        "有未结算任务时必须注入 wait_for_tools"
-    );
+    for (index, request) in requests.iter().enumerate() {
+        assert!(
+            request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "wait_for_tools"),
+            "第 {index} 轮请求必须恒定携带 wait_for_tools（前缀缓存保护）"
+        );
+    }
     // P3：等待有进展后，wait 控制对不进入后续请求上下文；事实由 runtime
     // 交付消息承载（最后一次请求含 tool_completion 观察）。
     assert!(
@@ -922,14 +918,23 @@ fn request_mentions_wait_control(request: &CompletionRequest) -> bool {
     })
 }
 
+/// 请求历史中 runtime 交付的工具完成观察条数（布尔判定与计数共用同一口径）。
+fn count_tool_completions(request: &CompletionRequest) -> usize {
+    request
+        .chat_history
+        .iter()
+        .filter(|message| {
+            matches!(message, Message::User { content } if content.iter().any(|part| {
+                matches!(part, rig::message::UserContent::Text(text)
+                    if text.text.contains("tool_completion"))
+            }))
+        })
+        .count()
+}
+
 /// 请求历史中是否携带 runtime 交付的工具完成观察。
 fn request_has_tool_completion(request: &CompletionRequest) -> bool {
-    request.chat_history.iter().any(|message| {
-        matches!(message, Message::User { content } if content.iter().any(|part| {
-            matches!(part, rig::message::UserContent::Text(text)
-                if text.text.contains("tool_completion"))
-        }))
-    })
+    count_tool_completions(request) > 0
 }
 
 /// P0 join 语义：fan-out 批次默认一次等待全部结算、单次唤醒、同一轮请求前
@@ -1052,16 +1057,11 @@ async fn wait_all_joins_fanout_and_strips_control_pair_from_context() {
         snapshot.contains("read_file") && snapshot.contains("list_dir"),
         "快照应列出在途任务：{snapshot}"
     );
-    let completions = requests[2]
-        .chat_history
-        .iter()
-        .filter(|message| {
-            matches!(message, Message::User { content } if content.iter().any(|part| {
-                matches!(part, rig::message::UserContent::Text(text) if text.text.contains("tool_completion"))
-            }))
-        })
-        .count();
-    assert_eq!(completions, 2, "两个完成观察应在同一轮请求前一并交付");
+    assert_eq!(
+        count_tool_completions(&requests[2]),
+        2,
+        "两个完成观察应在同一轮请求前一并交付"
+    );
 
     let messages = list_visible(&fixture);
     assert_eq!(messages.iter().filter(|m| m.role == "runtime").count(), 2);

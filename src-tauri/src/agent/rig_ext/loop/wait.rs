@@ -96,7 +96,7 @@ impl WaitReason {
 pub(crate) fn wait_tool_definition() -> rig::completion::ToolDefinition {
     rig::completion::ToolDefinition {
         name: WAIT_TOOL_NAME.into(),
-        description: "暂停决策并等待在途工具任务结算，条件满足时宿主自动唤醒（不要轮询、不要用 sleep 代替）。仅当后续每一步都依赖在途结果时才调用；还有独立工作就继续做。默认等待全部在途任务完成（join 语义）；传 task_ids 只等指定子集；mode=any 在任一完成时尽早唤醒。必须独占一批调用。".into(),
+        description: "暂停决策并等待在途工具任务结算，条件满足时宿主自动唤醒（不要轮询、不要用 sleep 代替）。仅当后续每一步都依赖在途结果时才调用；还有独立工作就继续做；当前没有在途任务时调用会立即返回 no_pending_tasks（视为纠错信号，继续手头工作）。默认等待全部在途任务完成（join 语义）；传 task_ids 只等指定子集；mode=any 在任一完成时尽早唤醒。必须独占一批调用。".into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

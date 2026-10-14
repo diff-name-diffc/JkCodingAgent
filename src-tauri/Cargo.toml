@@ -55,7 +55,7 @@ anyhow = "1"
 thiserror = "2"
 ropey = "1"
 sha2 = "0.11"
-russh = "0.63"
+russh = "0.64"
 # SSH 交互终端的屏幕模型（VT 解析）：ssh_tool/term 用，依赖仅 rgb + unicode-width。
 avt = "0.18"
 # 格式白名单与运行时闸门严格对齐：mime_for_ext / sniff_image_mime 仅放行
@@ -67,16 +67,24 @@ rmcp = { version = "3.4", default-features = false, features = ["client", "reqwe
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.35"
 libc = "0.2"
-agent-client-protocol = "2"
+agent-client-protocol = "3"
+# rig 0.43+ 移除了本项目 rig_ext/ 全运行时依赖的 0.42 portable contracts
+# （PortableDynamicTool/CompletionModel 等核心类型被 driver/operation 新架构整体替换），
+# 升级即运行时层重写，需单独立项设计，故锁定 0.42 线。
 rig = { package = "rig-core", version = "0.42" }
 # 编排器 PTC：进程内 QuickJS，只向程序暴露数据面绑定，不提供文件、网络或进程。
-rquickjs = { version = "0.9", features = ["futures", "macro", "parallel"] }
+rquickjs = { version = "0.14", features = ["futures", "macro", "parallel"] }
 
 [dev-dependencies]
 rmcp = { version = "3.4", default-features = false, features = ["server"] }
 tokio = { version = "1", features = ["test-util"] }
 # rig 官方 mock 模型（`test-utils`）：运行时循环的端到端测试用，仅测试构建启用。
 rig = { package = "rig-core", version = "0.42", features = ["test-utils"] }
+# tauri::test::mock_app：ACP 握手端到端测试的事件发射宿主，仅测试构建启用
+# （feature 只在测试目标并入，不影响产物构建）。
+tauri = { version = "2", features = ["test"] }
+# stub 执行器（examples/acp_stub_agent.rs）的 stdio 传输，仅测试目标启用。
+agent-client-protocol = { version = "3", features = ["stdio"] }
 
 [profile.dev]
 debug = 0

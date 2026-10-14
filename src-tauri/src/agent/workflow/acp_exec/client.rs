@@ -67,6 +67,7 @@ pub(super) fn pinned_settings_meta() -> Meta {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct PromptTurnResult {
     pub stop_reason: StopReason,
     pub diagnostics: Vec<String>,
@@ -116,12 +117,12 @@ pub(super) fn extract_usage_json(response: &PromptResponse) -> String {
 /// 单轮提示会话：spawn（env_clear + 白名单 env）→ initialize → session/new →
 /// 设模式/模型 → session/prompt 直到整轮结束。取消时发 session/cancel（尽力
 /// 而为）后结束作用域——进程组守卫 drop 时 SIGKILL 整组。
-pub(super) async fn run_prompt_turn(
+pub(super) async fn run_prompt_turn<R: tauri::Runtime>(
     plan: LaunchPlan,
     cwd: PathBuf,
     prompt: String,
     harness: &ResolvedNodeHarness,
-    handler: HandlerContext,
+    handler: HandlerContext<R>,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<PromptTurnResult, AcpSessionError> {
     let spawned = process::spawn(&plan).map_err(AcpSessionError::Failed)?;
@@ -324,10 +325,10 @@ async fn wait_for_cancel(cancel_rx: &mut watch::Receiver<bool>) {
 /// 0.79.0 的 ExitPlanMode 批准选项没有 bypass 变体（elevated 档恒为 auto），
 /// 目标级别只能由客户端在批准后主动保证。失败不致命（记审计活动 + 日志，
 /// 会话停留在批准选项携带的模式继续运行）。
-async fn restore_bypass_after_plan_approval(
+async fn restore_bypass_after_plan_approval<R: tauri::Runtime>(
     conn_slot: &Arc<Mutex<Option<ConnectionTo<Agent>>>>,
     session_slot: &Arc<Mutex<Option<SessionId>>>,
-    handler: &super::HandlerContext,
+    handler: &super::HandlerContext<R>,
 ) {
     let Some(connection) = conn_slot.lock().clone() else {
         return;

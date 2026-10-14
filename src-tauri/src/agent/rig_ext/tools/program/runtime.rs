@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rquickjs::prelude::Async;
-use rquickjs::{async_with, AsyncContext, AsyncRuntime, CatchResultExt, Function, Promise};
+use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Function, Promise};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
@@ -112,7 +112,7 @@ async fn drive(
         )
     })?;
     let script = assemble_script(code, captured_limit);
-    let evaluated = async_with!(context => |ctx| {
+    let evaluated = AsyncContext::async_with(&context, async |ctx| {
         let host_session = Arc::clone(&session);
         let host = Function::new(
             ctx.clone(),

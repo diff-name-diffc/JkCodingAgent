@@ -53,8 +53,10 @@ pub(crate) struct WorkflowRunServices {
     pub agent_config: DispatcherAgentConfig,
 }
 
-pub(crate) fn emit_run_event(
-    app: &AppHandle,
+// R 泛型放行 mock 运行时：握手端到端测试以 tauri::test 的 MockRuntime 挂
+// 事件发射宿主（acp_exec::handshake_e2e）；生产调用点均为 Wry。
+pub(crate) fn emit_run_event<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     plan_id: &str,
     run_id: &str,
     workspace_id: &str,

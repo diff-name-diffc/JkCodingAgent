@@ -12,6 +12,8 @@
 //! 子进程回收由 `process::ChildGuard` 负责。
 
 mod client;
+#[cfg(test)]
+mod handshake_e2e;
 mod launcher;
 mod mapping;
 pub(crate) mod permission_review;
@@ -83,9 +85,26 @@ pub(crate) struct NodeExecContext {
 /// 避免阻塞事件循环导致后续消息停摆（crate 文档明确警告）。权限应答
 /// 因需调用审查模型（秒级 LLM）是唯一例外——client.rs 把它整体挪进
 /// 独立 tokio 任务，事件循环立即返回。
-#[derive(Clone)]
-struct HandlerContext {
-    app: AppHandle,
+// 手写 Clone：derive 会连带要求 R: Clone（Runtime 不是），而各字段均可独立
+// 克隆。
+impl<R: tauri::Runtime> Clone for HandlerContext<R> {
+    fn clone(&self) -> Self {
+        Self {
+            app: self.app.clone(),
+            plan_id: self.plan_id.clone(),
+            run_id: self.run_id.clone(),
+            workspace_id: self.workspace_id.clone(),
+            node_id: self.node_id.clone(),
+            workspace_root: self.workspace_root.clone(),
+            mapper: Arc::clone(&self.mapper),
+            activity_tx: self.activity_tx.clone(),
+            review: Arc::clone(&self.review),
+        }
+    }
+}
+
+struct HandlerContext<R: tauri::Runtime> {
+    app: tauri::AppHandle<R>,
     plan_id: String,
     run_id: String,
     workspace_id: String,
@@ -96,7 +115,8 @@ struct HandlerContext {
     review: Arc<PermissionReviewMaterials>,
 }
 
-impl HandlerContext {
+// R 泛型放行 mock 运行时（握手端到端测试），生产装配恒为 Wry。
+impl<R: tauri::Runtime> HandlerContext<R> {
     fn handle_update(&self, update: &SessionUpdate) {
         let actions = self.mapper.lock().feed(update);
         self.apply(actions);

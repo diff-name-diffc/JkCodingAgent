@@ -6845,11 +6845,12 @@
      就会被渲染成巨大字体。这里按聊天密度（容器 15px）显式收敛各元素样式，
      与 .markdown-surface（App.css）的设计令牌保持一致。 */
   .ai-streamdown :where(h1, h2, h3, h4, h5, h6) {
-    margin: 1em 0 0.45em;
-    line-height: 1.3;
-    font-weight: 700;
-    letter-spacing: -0.01em;
+    margin: 1.3em 0 0.5em;
+    line-height: 1.28;
+    font-weight: 650;
+    letter-spacing: -0.015em;
     color: var(--text-primary);
+    text-wrap: balance;
   }
 
   .ai-streamdown h1 {
@@ -6866,6 +6867,7 @@
 
   .ai-streamdown :where(h4, h5, h6) {
     font-size: 1em;
+    font-weight: 600;
   }
 
   .ai-streamdown p {
@@ -6877,28 +6879,34 @@
   }
 
   .ai-streamdown :where(ul, ol) {
-    margin: 0.4em 0 0.8em;
-    padding-left: 1.4em;
+    margin: 0.35em 0 0.85em;
+    padding-left: 1.3em;
   }
 
   .ai-streamdown li {
-    margin: 0.25em 0;
+    margin: 0.3em 0;
+    padding-left: 0.15em;
+  }
+
+  /* 列表记号降一档，不抢正文视线。 */
+  .ai-streamdown li::marker {
+    color: var(--text-hint);
   }
 
   .ai-streamdown li > :where(ul, ol) {
-    margin: 0.25em 0;
+    margin: 0.3em 0 0.15em;
   }
 
   .ai-streamdown blockquote {
-    margin: 0.8em 0;
-    padding: 2px 0 2px 12px;
-    border-left: 2px solid var(--border-medium);
+    margin: 0.9em 0;
+    padding: 2px 0 2px 14px;
+    border-left: 2px solid var(--border-strong);
     color: var(--text-secondary);
   }
 
   .ai-streamdown hr {
     height: 1px;
-    margin: 1.2em 0;
+    margin: 1.4em 0;
     border: 0;
     background: var(--border-dim);
   }
@@ -6906,15 +6914,19 @@
   .ai-streamdown a {
     color: var(--text-link);
     text-decoration: none;
-    border-bottom: 1px solid color-mix(in srgb, var(--text-link) 35%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--text-link) 32%, transparent);
+    transition:
+      color var(--motion-fast) var(--motion-ease),
+      border-color var(--motion-fast) var(--motion-ease);
   }
 
   .ai-streamdown a:hover {
     color: var(--text-link-hover);
+    border-bottom-color: color-mix(in srgb, var(--text-link-hover) 70%, transparent);
   }
 
   .ai-streamdown strong {
-    font-weight: 700;
+    font-weight: 650;
   }
 
   /* 行内代码；代码块内部样式由 [data-streamdown="code-block-body"] 另行定义。 */
@@ -6989,59 +7001,73 @@
     background: var(--accent-subtle);
   }
 
-  .ai-streamdown [data-streamdown="table-wrapper"] {
-    gap: 0;
-    overflow: hidden;
-    border: 1px solid var(--border-medium);
-    border-radius: 8px;
-    padding: 0;
-    background: var(--bg-card);
-  }
-
-  .ai-streamdown [data-streamdown="table-wrapper"] > div:last-child {
+  /* ── Markdown 表格（书板式/booktabs）──────────────────────────────────
+     DOM 来自自定义 renderer（chat/markdown-table.tsx），不带 streamdown
+     注入的工具类，组件层规则可完全掌控。只保留横线：顶线、表头下线、
+     底线；无竖线无外框，列间靠留白分隔，表格融入正文流而非「盒中盒」。 */
+  .ai-md-table-scroll {
+    margin: 0.9em 0 1.1em;
     max-width: 100%;
-    /* streamdown 给内层滚动容器内联 max-height:300px，聊天里表格内嵌滚动很反直觉
-       （外层会话本身可滚动），覆盖为完整展开；横向超宽仍内部滚动。 */
-    max-height: none !important;
     overflow-x: auto;
     overflow-y: hidden;
-    border: 0;
-    border-radius: 0;
   }
 
-  .ai-streamdown [data-streamdown="table"] {
-    width: max-content;
-    min-width: 100%;
+  .ai-md-table {
+    width: 100%;
     border-collapse: collapse;
+    border-top: 1px solid var(--border-medium);
+    border-bottom: 1px solid var(--border-medium);
+    font-size: 13.5px;
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
   }
 
-  .ai-streamdown [data-streamdown="table-header"] {
-    background: var(--bg-subtle);
+  .ai-md-table th,
+  .ai-md-table td {
+    padding: 8px 24px 8px 0;
+    text-align: left;
+    vertical-align: top;
   }
 
-  .ai-streamdown [data-streamdown="table-row"] {
+  .ai-md-table th:last-child,
+  .ai-md-table td:last-child {
+    padding-right: 0;
+  }
+
+  .ai-md-table thead th {
+    padding-top: 6px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--border-medium);
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--text-secondary);
+  }
+
+  .ai-md-table tbody td {
+    border-bottom: 1px solid var(--border-dim);
+    color: var(--text-primary);
+  }
+
+  .ai-md-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .ai-md-table tbody tr {
     transition: background var(--motion-fast) var(--motion-ease);
   }
 
-  .ai-streamdown [data-streamdown="table-body"] [data-streamdown="table-row"]:hover {
-    background: var(--bg-hover);
+  .ai-md-table tbody tr:hover {
+    background: var(--accent-subtle);
   }
 
-  .ai-streamdown [data-streamdown="table-header-cell"],
-  .ai-streamdown [data-streamdown="table-cell"] {
-    padding: 10px 14px;
-    border-right: 1px solid var(--border-dim);
-    font-size: 13px;
-    line-height: 1.5;
+  /* 单元格内的段落（罕见）不产生额外间距。 */
+  .ai-md-table :where(th, td) > p {
+    margin: 0 0 0.35em;
   }
 
-  .ai-streamdown [data-streamdown="table-header-cell"]:last-child,
-  .ai-streamdown [data-streamdown="table-cell"]:last-child {
-    border-right: 0;
-  }
-
-  .ai-streamdown [data-streamdown="table-row"] > :first-child {
-    font-weight: 700;
+  .ai-md-table :where(th, td) > p:last-child {
+    margin-bottom: 0;
   }
 
   .ai-chat-footer {

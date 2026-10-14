@@ -25,6 +25,7 @@ import { StatusPill } from "../detail/StatusPill";
 import { useKatexCopy } from "./katex-copy";
 import { createChatCodePlugin } from "./shiki-code-plugin";
 import { createLazyMermaidPlugin } from "./lazy-mermaid-plugin";
+import { markdownTableComponents } from "./markdown-table";
 
 /**
  * Streamdown-based markdown renderer for the chat surface (AI text messages).
@@ -44,8 +45,11 @@ import { createLazyMermaidPlugin } from "./lazy-mermaid-plugin";
  * @streamdown/code's full bundled registry); mermaid loads on first diagram
  * via lazy-mermaid-plugin.ts.
  *
- * Styling hooks live in styles/tailwind.css under `.ai-streamdown` (code card,
- * table frame). User messages do NOT go through this — they stay plain text
+ * Styling hooks live in styles/tailwind.css under `.ai-streamdown` (code card)
+ * and `.ai-md-table` (booktabs-style tables — tables go through the custom
+ * renderers in chat/markdown-table.tsx because streamdown's default table DOM
+ * carries Tailwind utility classes that outrank components-layer overrides).
+ * User messages do NOT go through this — they stay plain text
  * (see user-message.tsx).
  *
  * The Python "Run" button / inline run output is preserved from the legacy
@@ -238,6 +242,7 @@ const streamdownRehypePlugins = [
 const streamdownComponents: Components = {
   img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
   a: MarkdownLink as NonNullable<Components["a"]>,
+  ...markdownTableComponents,
 };
 const streamdownControls = {
   code: { copy: true, download: false },

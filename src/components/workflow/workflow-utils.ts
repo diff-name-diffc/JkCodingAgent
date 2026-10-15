@@ -1,6 +1,7 @@
 import type {
   AgentActivity,
   WorkflowDefinition,
+  WorkflowDependencyRef,
   WorkflowNodeDef,
   WorkflowNodeRunRecord,
   WorkflowNodeStatus,
@@ -92,6 +93,17 @@ export function normalizePlanStatus(status: string): WorkflowPlanStatus {
   return status in PLAN_STATUS_META ? (status as WorkflowPlanStatus) : "draft";
 }
 
+/** 依赖边指向的上游节点 id：纯字符串与投影对象（{id, sections}）统一取 id。
+ * 拓扑/分层/就绪判定一律经此取边指向，投影选择器不参与图结构。 */
+export function depId(dep: WorkflowDependencyRef): string {
+  return typeof dep === "string" ? dep : dep.id;
+}
+
+/** 投影依赖声明的小节标题清单；纯字符串依赖返回空数组。 */
+export function projectedSections(dep: WorkflowDependencyRef): string[] {
+  return typeof dep === "string" ? [] : (dep.sections ?? []);
+}
+
 /**
  * Kahn 拓扑分层：第 0 层为无依赖节点，同层节点可并行。
  * 用于头部统计（并行数 = 最大层宽）；环/缺失依赖的节点归入末层兜底。
@@ -101,7 +113,7 @@ export function computeWorkflowLayers(definition: WorkflowDefinition): string[][
   const indegree = new Map<string, number>();
   const downstream = new Map<string, string[]>();
   for (const node of definition.nodes) {
-    const deps = node.dependsOn.filter((dep) => nodeIds.has(dep));
+    const deps = node.dependsOn.map(depId).filter((id) => nodeIds.has(id));
     indegree.set(node.id, deps.length);
     for (const dep of deps) {
       const list = downstream.get(dep) ?? [];
@@ -293,11 +305,11 @@ export function buildToolCallEntries(activities: AgentActivity[]): ToolCallEntry
 
 // ── 节点执行详情：运行通知（compaction / retry / lifecycle）与上下文占用 ──
 
-/** 时间线上的单行通知：上下文压缩、自动重试、执行器生命周期诊断等节点动态。 */
+/** 时间线上的单行通知：上下文压缩、自动重试、执行器生命周期诊断、投影降级等节点动态。 */
 export interface NodeNotice {
   id: string;
   sequence: number;
-  kind: "compaction" | "retry" | "lifecycle";
+  kind: "compaction" | "retry" | "lifecycle" | "input_degraded";
   /** 与工具卡片同口径的归一化状态；原始 started/updated/finished 仅用于文案。 */
   status: ToolCallStatus;
   title: string;
@@ -319,6 +331,10 @@ function noticeTitle(
     // 生命周期诊断的标题由执行器给出（如「未配置 ACP API Key」），原文透传。
     return title || "执行器动态";
   }
+  if (kind === "input_degraded") {
+    // 投影降级：上游输出未命中声明的小节（活动由运行器在派发前写入）。
+    return title || "上游小节缺失";
+  }
   if (kind === "compaction") {
     if (status === "started") return "正在压缩上下文…";
     if (status === "failed") return "上下文压缩失败";
@@ -334,14 +350,15 @@ function noticeTitle(
   return status === "failed" ? "重试失败" : "重试成功";
 }
 
-/** 提取 compaction / retry / lifecycle 活动为时间线通知（按执行顺序）。 */
+/** 提取 compaction / retry / lifecycle / input_degraded 活动为时间线通知（按执行顺序）。 */
 export function buildNodeNotices(activities: AgentActivity[]): NodeNotice[] {
   return activities
     .filter(
       (activity) =>
         activity.kind === "compaction" ||
         activity.kind === "retry" ||
-        activity.kind === "lifecycle",
+        activity.kind === "lifecycle" ||
+        activity.kind === "input_degraded",
     )
     .sort((left, right) => left.sequence - right.sequence)
     .map((activity) => {

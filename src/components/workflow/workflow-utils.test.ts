@@ -4,6 +4,9 @@ import type { AgentActivity } from "../../types";
 import {
   buildExecutionTimeline,
   buildNodeNotices,
+  computeWorkflowLayers,
+  depId,
+  projectedSections,
   buildPlanCards,
   buildThinkingEntries,
   buildToolCallEntries,
@@ -358,5 +361,75 @@ describe("workflowNodeModelLabel（UI-14 遗留：节点真实运行模型显示
 
   it("首尾空白被裁剪", () => {
     expect(workflowNodeModelLabel({ modelLabel: " glm-4.6 " }, null)).toBe("glm-4.6");
+  });
+});
+
+describe("depId / projectedSections", () => {
+  it("纯字符串与投影对象统一取 id；sections 仅对象形态返回", () => {
+    expect(depId("n8")).toBe("n8");
+    expect(depId({ id: "n8", sections: ["后端核心 API"] })).toBe("n8");
+    expect(projectedSections("n8")).toEqual([]);
+    expect(projectedSections({ id: "n8", sections: ["后端核心 API", "解析模块"] })).toEqual([
+      "后端核心 API",
+      "解析模块",
+    ]);
+  });
+});
+
+describe("computeWorkflowLayers 含投影依赖", () => {
+  it("对象形态依赖按 id 参与分层，不丢边", () => {
+    const definition = {
+      version: 4 as const,
+      title: "t",
+      summary: "",
+      stateKeys: [],
+      nodes: [
+        {
+          id: "n1",
+          title: "汇总",
+          role: "",
+          modelRef: "m",
+          baseToolGroup: "read_only" as const,
+          task: "t",
+          dependsOn: [],
+          injectStateKeys: [],
+          outputKey: "plan",
+        },
+        {
+          id: "n2",
+          title: "改造",
+          role: "",
+          modelRef: "m",
+          baseToolGroup: "coding" as const,
+          task: "t",
+          dependsOn: [{ id: "n1", sections: ["后端核心 API"] }],
+          injectStateKeys: [],
+          outputKey: "changes",
+        },
+      ],
+      inheritsFrom: undefined,
+    };
+    const layers = computeWorkflowLayers(definition);
+    expect(layers).toEqual([["n1"], ["n2"]]);
+  });
+});
+
+describe("buildNodeNotices input_degraded", () => {
+  it("投影降级活动转为「上游小节缺失」通知", () => {
+    const notices = buildNodeNotices([
+      activity({
+        id: "d1",
+        kind: "input_degraded",
+        status: "failed",
+        sequence: -1,
+        title: "上游小节缺失",
+        content: "投影依赖未命中：「后端核心 API」（上游 n8）；节点已带降级标注继续执行。",
+      }),
+    ]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0].kind).toBe("input_degraded");
+    expect(notices[0].title).toBe("上游小节缺失");
+    expect(notices[0].detail).toContain("后端核心 API");
+    expect(notices[0].status).toBe("failed");
   });
 });

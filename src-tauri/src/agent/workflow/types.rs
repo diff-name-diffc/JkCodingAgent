@@ -5,6 +5,8 @@
 //! 携带需求快照（requirement）与修复继承（inheritsFrom）；运行携带模式
 //! （full/resume）与验收结论（verdict）；节点携带预期文件（expectedFiles，
 //! 供并行写冲突预检）与导出策略（exportPolicy，控制下游注入摘要还是全文）。
+//! v4 内的可选增量：依赖边支持小节投影对象形态（见 WorkflowDependency），
+//! 纯字符串形态保持原语义，契约版本不递增。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -117,6 +119,58 @@ pub enum ExportPolicy {
     Full,
 }
 
+/// 依赖边引用：上游节点的 id，或带小节投影的对象形态。
+/// - Plain：按上游 exportPolicy 导出（summary/full），即既有行为。
+/// - Projected：小节投影——下游只注入上游「产出摘要」+ 指定二级标题的小节，
+///   用于「汇总方案 → 多个分面执行」的扇出场景，避免每个执行节点背上全量
+///   方案。sections 标题是计划期契约：运行时会把要求的标题清单注入上游的
+///   输出（上游按这些标题分节），派发下游时按标题精确取节。
+///
+/// 线上形态（serde untagged）：`"n8"` 或 `{"id":"n8","sections":["后端核心 API"]}`。
+/// 旧定义的纯字符串数组自然兼容（Plain 变体）；对象形态对旧版本应用是前向
+/// 不兼容（serde 层报错），故 WORKFLOW_DEFINITION_VERSION 不必递增——版本门
+/// 在此处不提供额外保护，契约仍是 v4 的可选增量。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum WorkflowDependency {
+    Plain(String),
+    Projected {
+        id: String,
+        /// 要取用的上游输出二级标题（trim + 去尾冒号后与上游 H2 标题精确匹配）。
+        sections: Vec<String>,
+    },
+}
+
+impl WorkflowDependency {
+    /// 依赖指向的上游节点 id（两形态共用；拓扑/校验/调度一律经此取 id）。
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            Self::Plain(id) => id,
+            Self::Projected { id, .. } => id,
+        }
+    }
+
+    /// 投影形态的小节标题清单；Plain 返回 None。
+    pub(crate) fn sections(&self) -> Option<&[String]> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Projected { sections, .. } => Some(sections),
+        }
+    }
+}
+
+impl From<&str> for WorkflowDependency {
+    fn from(value: &str) -> Self {
+        Self::Plain(value.to_string())
+    }
+}
+
+impl From<String> for WorkflowDependency {
+    fn from(value: String) -> Self {
+        Self::Plain(value)
+    }
+}
+
 /// 修复工作流继承来源：新 plan 从既有 plan 的某次 run 继承共享 state（提交时快照种入）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,7 +190,7 @@ pub struct WorkflowNode {
     pub base_tool_group: BaseToolGroup,
     pub task: String,
     #[serde(default)]
-    pub depends_on: Vec<String>,
+    pub depends_on: Vec<WorkflowDependency>,
     /// 要注入本节点输入的共享 state key 白名单（生产者必须是严格拓扑祖先）。
     /// 注入的是摘要值，单键与总量均有预算上限（见 input.rs）。
     #[serde(default)]
@@ -188,7 +242,29 @@ impl WorkflowDefinition {
             node.id = node.id.trim().to_string();
             node.output_key = node.output_key.trim().to_string();
             for dep in &mut node.depends_on {
-                *dep = dep.trim().to_string();
+                // 两形态统一规整：id 与小节标题 trim；标题全空的对象形态塌缩回
+                // Plain（空投影等价于普通依赖，不保留无意义的选择器）。
+                *dep = match std::mem::replace(dep, WorkflowDependency::Plain(String::new())) {
+                    WorkflowDependency::Plain(id) => {
+                        WorkflowDependency::Plain(id.trim().to_string())
+                    }
+                    WorkflowDependency::Projected { id, sections } => {
+                        let trimmed: Vec<String> = sections
+                            .iter()
+                            .map(|title| title.trim().to_string())
+                            .filter(|title| !title.is_empty())
+                            .collect();
+                        let id = id.trim().to_string();
+                        if trimmed.is_empty() {
+                            WorkflowDependency::Plain(id)
+                        } else {
+                            WorkflowDependency::Projected {
+                                id,
+                                sections: trimmed,
+                            }
+                        }
+                    }
+                };
             }
             for key in &mut node.inject_state_keys {
                 *key = key.trim().to_string();
@@ -562,7 +638,7 @@ mod tests {
     #[test]
     fn normalize_ids_trims_state_keys_and_inherits() {
         let mut definition: WorkflowDefinition = serde_json::from_str(
-            r#"{"version":4,"title":"测试","stateKeys":[{"key":" key1 ","description":"d"}],"inheritsFrom":{"planId":" p1 ","runId":" r1 "},"nodes":[{"id":" n1 ","title":"实现","modelRef":"m1","baseToolGroup":"coding","task":"调研","dependsOn":[" n0 "],"injectStateKeys":[" key1 "],"outputKey":" out "}]} "#,
+            r#"{"version":4,"title":"测试","stateKeys":[{"key":" key1 ","description":"d"}],"inheritsFrom":{"planId":" p1 ","runId":" r1"},"nodes":[{"id":" n1 ","title":"实现","modelRef":"m1","baseToolGroup":"coding","task":"调研","dependsOn":[" n0 "],"injectStateKeys":[" key1 "],"outputKey":" out "}]} "#,
         )
         .unwrap();
         definition.normalize_ids();
@@ -574,9 +650,64 @@ mod tests {
         assert_eq!(definition.inherits_from.as_ref().unwrap().run_id, "r1");
         let node = &definition.nodes[0];
         assert_eq!(node.id, "n1");
-        assert_eq!(node.depends_on, vec!["n0"]);
+        assert_eq!(
+            node.depends_on,
+            vec![WorkflowDependency::Plain("n0".to_string())]
+        );
         assert_eq!(node.inject_state_keys, vec!["key1"]);
         assert_eq!(node.output_key, "out");
+    }
+
+    #[test]
+    fn projected_dependency_round_trips_and_parses_plain_strings() {
+        // 旧定义纯字符串与新对象形态在同一数组中共存；序列化往返保形。
+        let raw = r#"{"version":4,"title":"测试","nodes":[{"id":"n9","title":"改造","modelRef":"m1","baseToolGroup":"coding","task":"改造","dependsOn":["n1",{"id":"n8","sections":["后端核心 API","解析模块"]}],"outputKey":"changes"}]}"#;
+        let definition: WorkflowDefinition = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            definition.nodes[0].depends_on,
+            vec![
+                WorkflowDependency::Plain("n1".to_string()),
+                WorkflowDependency::Projected {
+                    id: "n8".to_string(),
+                    sections: vec!["后端核心 API".to_string(), "解析模块".to_string()],
+                },
+            ]
+        );
+        let serialized = serde_json::to_string(&definition).unwrap();
+        assert!(serialized.contains(r#""dependsOn":["n1",{"id":"n8","#));
+        // 往返：对象形态不丢小节。
+        let reparsed: WorkflowDefinition = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.nodes[0].depends_on, definition.nodes[0].depends_on);
+        // 缺 sections 的对象不匹配任何变体：fail-closed 解析失败。
+        assert!(serde_json::from_str::<WorkflowDefinition>(
+            r#"{"version":4,"title":"t","nodes":[{"id":"n1","title":"t","modelRef":"m1","baseToolGroup":"coding","task":"t","dependsOn":[{"id":"n8"}],"outputKey":"k"}]}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn normalize_trims_projection_ids_and_titles_and_collapses_empty() {
+        let mut definition: WorkflowDefinition = serde_json::from_str(
+            r#"{"version":4,"title":"测试","nodes":[
+                {"id":"a","title":"t","modelRef":"m1","baseToolGroup":"coding","task":"t","dependsOn":[{"id":" n8 ","sections":[" 后端核心 API ","  ","解析模块"]}],"outputKey":"k1"},
+                {"id":"b","title":"t","modelRef":"m1","baseToolGroup":"coding","task":"t","dependsOn":[{"id":" n8 ","sections":["  "," "]}],"outputKey":"k2"},
+                {"id":"c","title":"t","modelRef":"m1","baseToolGroup":"coding","task":"t","dependsOn":[],"outputKey":"k3"}
+            ]}"#,
+        )
+        .unwrap();
+        definition.normalize_ids();
+        assert_eq!(
+            definition.nodes[0].depends_on,
+            vec![WorkflowDependency::Projected {
+                id: "n8".to_string(),
+                sections: vec!["后端核心 API".to_string(), "解析模块".to_string()],
+            }]
+        );
+        // 小节标题全空的对象形态塌缩回 Plain：空投影等价于普通依赖。
+        assert_eq!(
+            definition.nodes[1].depends_on,
+            vec![WorkflowDependency::Plain("n8".to_string())]
+        );
     }
 
     #[test]

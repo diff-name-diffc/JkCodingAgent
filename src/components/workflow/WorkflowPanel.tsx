@@ -30,6 +30,7 @@ import { WorkflowStateInspector } from "./WorkflowStateInspector";
 import {
   EDGE_STATE_COLOR,
   computeEdgeState,
+  depId,
   workflowModelRefLabel,
   normalizeNodeStatus,
   normalizePlanStatus,
@@ -205,7 +206,7 @@ function WorkflowPanelInner({
     const ready = new Set<string>();
     for (const node of definition?.nodes ?? []) {
       if (statusByNodeId.get(node.id) !== "pending") continue;
-      if (node.dependsOn.every((dep) => statusByNodeId.get(dep) === "succeeded")) {
+      if (node.dependsOn.every((dep) => statusByNodeId.get(depId(dep)) === "succeeded")) {
         ready.add(node.id);
       }
     }
@@ -235,6 +236,9 @@ function WorkflowPanelInner({
           durationMs: run?.durationMs ?? null,
           toolCallCount: run?.toolCallCount ?? 0,
           streaming: status === "running",
+          degraded: (snapshot.liveActivities[node.id] ?? []).some(
+            (activity) => activity.kind === "input_degraded",
+          ),
         },
       };
     });
@@ -242,6 +246,7 @@ function WorkflowPanelInner({
     definition,
     runByNodeId,
     snapshot.liveOutputs,
+    snapshot.liveActivities,
     statusByNodeId,
     dragOverrides,
     selectedNodeId,
@@ -285,7 +290,8 @@ function WorkflowPanelInner({
     for (const node of definition.nodes) {
       const targetStatus = statusByNodeId.get(node.id) ?? "pending";
       const targetReady = readyNodeIds.has(node.id);
-      for (const dependency of node.dependsOn) {
+      for (const rawDependency of node.dependsOn) {
+        const dependency = depId(rawDependency);
         const sourceStatus = statusByNodeId.get(dependency) ?? "pending";
         const state = computeEdgeState(sourceStatus, targetStatus, targetReady);
         edges.push({

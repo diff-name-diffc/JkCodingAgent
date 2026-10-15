@@ -9474,6 +9474,26 @@
     background: var(--danger);
   }
 
+  /* 投影降级（input_degraded）：上游输出未命中声明的小节，节点带降级标注
+     继续执行——以 danger 描边提示上下文不完整，与失败态区分（状态环不变）。
+     hover 变体必须显式声明：`.ai-workflow-node:hover` 权重更高，否则悬浮时
+     降级提示被普通 hover 描边顶掉。 */
+  .ai-workflow-node--degraded,
+  .ai-workflow-node--degraded:hover {
+    border-color: rgb(var(--danger-rgb) / 0.55);
+    box-shadow: 0 0 0 1px rgb(var(--danger-rgb) / 0.35);
+  }
+
+  /* 选中 + 降级：选中环 1px 在内、降级外环 2px 在外——两环半径不同才都可见，
+     同半径的双 1px 环会完全重叠混色。 */
+  .ai-workflow-node--degraded.ai-workflow-node--selected,
+  .ai-workflow-node--degraded.ai-workflow-node--selected:hover {
+    border-color: rgb(var(--danger-rgb) / 0.55);
+    box-shadow:
+      0 0 0 1px var(--border-strong),
+      0 0 0 2px rgb(var(--danger-rgb) / 0.35);
+  }
+
   .ai-workflow-node--skipped .ai-workflow-node-status-ring {
     background: var(--warning);
   }
@@ -9895,6 +9915,17 @@
   .ai-workflow-dep-chip:hover {
     border-color: var(--border-accent);
     color: var(--text-primary);
+  }
+
+  /* 投影依赖的小节数徽标（悬停 title 展示完整小节标题清单）。
+     subtle 与 chip 的 card 背景拉开一档，保证徽标可辨。 */
+  .ai-workflow-dep-chip-sections {
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--bg-subtle);
+    padding: 0 5px;
+    font-size: 10px;
+    color: var(--text-hint);
   }
 
   /* 影响文件列表 */

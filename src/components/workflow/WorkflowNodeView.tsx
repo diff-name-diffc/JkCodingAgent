@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { Wrench } from "lucide-react";
+import { TriangleAlert, Wrench } from "lucide-react";
 import type { WorkflowKnownNodePhase, WorkflowNodePhase, WorkflowNodeStatus } from "../../types";
 import { cn } from "../../lib/cn";
 import { StatusPill } from "../detail/StatusPill";
@@ -18,6 +18,8 @@ export interface WorkflowFlowNodeData extends Record<string, unknown> {
   durationMs: number | null;
   toolCallCount: number;
   streaming: boolean;
+  /** 投影降级：上游输出未命中声明的小节（input_degraded 活动），红色描边提示。 */
+  degraded: boolean;
 }
 
 export type WorkflowFlowNode = Node<WorkflowFlowNodeData, "workflowNode">;
@@ -56,6 +58,7 @@ export const WorkflowNodeView = memo(function WorkflowNodeView({
       className={cn(
         "ai-workflow-node",
         `ai-workflow-node--${data.status}`,
+        data.degraded && "ai-workflow-node--degraded",
         selected && "ai-workflow-node--selected",
       )}
     >
@@ -79,6 +82,16 @@ export const WorkflowNodeView = memo(function WorkflowNodeView({
             status={data.status}
             label={data.streaming ? streamingLabel : undefined}
           />
+          {data.degraded && (
+            <span
+              className="ai-workflow-node-duration"
+              style={{ color: "var(--danger)" }}
+              title="上游输出未命中投影声明的小节，节点已带降级标注继续执行"
+            >
+              <TriangleAlert className="h-3 w-3" />
+              输入降级
+            </span>
+          )}
           {data.toolCallCount > 0 && (
             <span className="ai-workflow-node-duration">
               <Wrench className="h-3 w-3" />

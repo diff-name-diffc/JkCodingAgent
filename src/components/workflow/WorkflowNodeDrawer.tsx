@@ -31,12 +31,14 @@ import { CopyIconButton } from "./CopyIconButton";
 import { ExecutionTimelineList, executionHint } from "./ExecutionTimelineList";
 import {
   buildExecutionTimeline,
+  depId,
   formatCharCount,
   formatContextUsage,
   formatWorkflowDuration,
   workflowNodeModelLabel,
   normalizeNodeStatus,
   parseWorkflowDefinition,
+  projectedSections,
 } from "./workflow-utils";
 
 interface WorkflowNodeDrawerProps {
@@ -239,8 +241,9 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
 
   const upstream = node?.dependsOn ?? [];
   const downstream =
-    definition?.nodes.filter((item) => item.dependsOn.includes(nodeId)).map((item) => item.id) ??
-    [];
+    definition?.nodes
+      .filter((item) => item.dependsOn.some((dep) => depId(dep) === nodeId))
+      .map((item) => item.id) ?? [];
   const titleOf = (id: string) => definition?.nodes.find((item) => item.id === id)?.title ?? id;
   const inputText = nodeRun?.inputText || node?.task || "";
   // 超长输出只渲染尾部最新部分，避免 MB 级文本拖慢渲染
@@ -493,8 +496,29 @@ export function WorkflowNodeDrawer(props: WorkflowNodeDrawerProps) {
           <section className="ai-workflow-drawer-section">
             <div className="ai-workflow-drawer-label">依赖关系</div>
             <div className="ai-workflow-drawer-deps-chips">
-              {[...upstream, ...downstream].map((id) => (
-                <button key={id} className="ai-workflow-dep-chip" onClick={() => onSelectNode(id)}>
+              {upstream.map((dep, index) => {
+                const id = depId(dep);
+                const sections = projectedSections(dep);
+                return (
+                  <button
+                    key={`up-${id}-${index}`}
+                    className="ai-workflow-dep-chip"
+                    title={sections.length > 0 ? `小节投影：${sections.join("、")}` : undefined}
+                    onClick={() => onSelectNode(id)}
+                  >
+                    {titleOf(id)}
+                    {sections.length > 0 && (
+                      <span className="ai-workflow-dep-chip-sections">{sections.length} 节</span>
+                    )}
+                  </button>
+                );
+              })}
+              {downstream.map((id) => (
+                <button
+                  key={`down-${id}`}
+                  className="ai-workflow-dep-chip"
+                  onClick={() => onSelectNode(id)}
+                >
                   {titleOf(id)}
                 </button>
               ))}

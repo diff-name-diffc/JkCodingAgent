@@ -9,7 +9,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::types::{
-    BaseToolGroup, WorkflowDefinition, WorkflowHarnessCatalog, WORKFLOW_DEFINITION_VERSION,
+    BaseToolGroup, WorkflowDefinition, WorkflowDependency, WorkflowHarnessCatalog,
+    WORKFLOW_DEFINITION_VERSION,
 };
 
 pub(crate) const MAX_WORKFLOW_NODES: usize = 20;
@@ -23,6 +24,15 @@ const MAX_DEPENDENCIES: usize = 20;
 const MAX_INJECT_STATE_KEYS: usize = 64;
 const MAX_EXPECTED_FILES: usize = 256;
 const MAX_EXPECTED_PATH_CHARS: usize = 4_096;
+/// 单条投影依赖最多声明的小节数（与编排器工具 schema 同口径双保险）。
+pub(crate) const MAX_PROJECTION_SECTIONS: usize = 8;
+/// 投影小节标题的字符上限（标题须与上游 H2 标题一行对应，天然不该长）。
+pub(crate) const MAX_PROJECTION_SECTION_TITLE_CHARS: usize = 120;
+
+/// 投影形态依赖的小节标题清单；Plain 返回 None。
+fn dep_sections(dep: &WorkflowDependency) -> Option<&[String]> {
+    dep.sections()
+}
 
 /// `seeded_keys`：运行期 state 中已存在的键（修复工作流继承的 state；普通工作流为空）。
 pub(crate) fn validate_workflow(
@@ -165,8 +175,8 @@ pub(crate) fn validate_workflow(
     for node in &definition.nodes {
         let id = node.id.trim();
         let mut seen = HashSet::new();
-        for dep in &node.depends_on {
-            let dep = dep.trim();
+        for dep_ref in &node.depends_on {
+            let dep = dep_ref.id().trim();
             if dep == id {
                 errors.push(format!("节点 '{id}' 不能依赖自身"));
             } else if !ids.contains(dep) {
@@ -174,6 +184,32 @@ pub(crate) fn validate_workflow(
             }
             if !seen.insert(dep) {
                 errors.push(format!("节点 '{id}' 的 dependsOn 中 '{dep}' 重复"));
+            }
+            if let Some(sections) = dep_sections(dep_ref) {
+                if sections.len() > MAX_PROJECTION_SECTIONS {
+                    errors.push(format!(
+                        "节点 '{id}' 对 '{dep}' 的投影小节数量超过上限 {MAX_PROJECTION_SECTIONS}"
+                    ));
+                }
+                let mut seen_sections = HashSet::new();
+                for title in sections {
+                    let title = title.trim();
+                    if title.is_empty() {
+                        errors.push(format!("节点 '{id}' 对 '{dep}' 的投影小节标题不能为空"));
+                    } else if title.chars().count() > MAX_PROJECTION_SECTION_TITLE_CHARS {
+                        errors.push(format!(
+                            "节点 '{id}' 对 '{dep}' 的投影小节标题超过 {MAX_PROJECTION_SECTION_TITLE_CHARS} 字符上限"
+                        ));
+                    }
+                    if title.contains('\n') || title.contains('\r') {
+                        errors.push(format!("节点 '{id}' 对 '{dep}' 的投影小节标题不能包含换行"));
+                    }
+                    if !seen_sections.insert(title) {
+                        errors.push(format!(
+                            "节点 '{id}' 对 '{dep}' 的投影小节标题 '{title}' 重复"
+                        ));
+                    }
+                }
             }
         }
     }
@@ -375,7 +411,10 @@ pub(crate) fn transitive_ancestors(
     for node in &definition.nodes {
         let id = node.id.trim();
         ids.push(id);
-        direct.insert(id, node.depends_on.iter().map(|dep| dep.trim()).collect());
+        direct.insert(
+            id,
+            node.depends_on.iter().map(|dep| dep.id().trim()).collect(),
+        );
     }
     // 拓扑序（Kahn）上逐层累积祖先集，保证计算祖先时其依赖已算完。
     let layers = topological_layers(definition).unwrap_or_default();
@@ -414,7 +453,7 @@ pub(crate) fn topological_layers(
     // id 也已作为结构错误上报），避免假环误报。
     for node in &definition.nodes {
         for dep in &node.depends_on {
-            let dep = dep.trim();
+            let dep = dep.id().trim();
             if !in_degree.contains_key(dep) {
                 continue;
             }
@@ -485,7 +524,10 @@ mod tests {
             model_ref: "m1".into(),
             base_tool_group: BaseToolGroup::ReadOnly,
             task: "task".into(),
-            depends_on: deps.iter().map(|v| v.to_string()).collect(),
+            depends_on: deps
+                .iter()
+                .map(|v| WorkflowDependency::Plain((*v).into()))
+                .collect(),
             inject_state_keys: vec![],
             output_key: format!("out_{}", id.trim()),
             expected_files: vec![],
@@ -758,5 +800,75 @@ mod tests {
             error.contains("expectedFiles 路径 '../outside.rs' 非法"),
             "{error}"
         );
+    }
+    // ── 投影依赖校验 ──────────────────────────────────────────────────────
+
+    fn projected(id: &str, upstream: &str, sections: &[&str]) -> WorkflowNode {
+        let mut n = node(id, &[upstream]);
+        n.depends_on = vec![WorkflowDependency::Projected {
+            id: upstream.into(),
+            sections: sections.iter().map(|v| (*v).to_string()).collect(),
+        }];
+        n
+    }
+
+    #[test]
+    fn projected_dependencies_pass_validation() {
+        let mut def = definition(vec![
+            node("n1", &[]),
+            projected("n2", "n1", &["后端核心 API", "解析模块"]),
+        ]);
+        def.version = WORKFLOW_DEFINITION_VERSION;
+        assert!(validate_workflow(&def, &catalog(), &HashSet::new()).is_ok());
+    }
+
+    #[test]
+    fn projected_sections_are_bounds_checked() {
+        let long_title = "长".repeat(MAX_PROJECTION_SECTION_TITLE_CHARS + 1);
+        let cases: Vec<(&str, Vec<String>)> = vec![
+            (
+                "超数量上限",
+                (0..=MAX_PROJECTION_SECTIONS)
+                    .map(|i| format!("s{i}"))
+                    .collect(),
+            ),
+            ("空标题", vec![" ".to_string()]),
+            ("超长标题", vec![long_title]),
+            ("含换行标题", vec!["a\nb".to_string()]),
+            ("重复标题", vec!["同".to_string(), "同".to_string()]),
+        ];
+        for (label, sections) in cases {
+            let mut n2 = node("n2", &["n1"]);
+            n2.depends_on = vec![WorkflowDependency::Projected {
+                id: "n1".into(),
+                sections,
+            }];
+            let mut def = definition(vec![node("n1", &[]), n2]);
+            def.version = WORKFLOW_DEFINITION_VERSION;
+            let err = validate_workflow(&def, &catalog(), &HashSet::new()).unwrap_err();
+            assert!(!err.is_empty(), "{label} 应报错");
+        }
+    }
+
+    #[test]
+    fn mixed_plain_and_projected_forms_with_same_id_count_as_duplicate() {
+        // 「n8」与 {id:"n8"} 在拓扑上同一条边：混用算重复依赖。
+        let mut n2 = node("n2", &["n1"]);
+        n2.depends_on.push(WorkflowDependency::Projected {
+            id: "n1".into(),
+            sections: vec!["小节".into()],
+        });
+        let mut def = definition(vec![node("n1", &[]), n2]);
+        def.version = WORKFLOW_DEFINITION_VERSION;
+        let err = validate_workflow(&def, &catalog(), &HashSet::new()).unwrap_err();
+        assert!(err.contains("重复"));
+    }
+
+    #[test]
+    fn projected_dependency_to_missing_node_is_rejected() {
+        let mut def = definition(vec![projected("n2", "ghost", &["小节"])]);
+        def.version = WORKFLOW_DEFINITION_VERSION;
+        let err = validate_workflow(&def, &catalog(), &HashSet::new()).unwrap_err();
+        assert!(err.contains("不存在"));
     }
 }

@@ -75,7 +75,12 @@ impl ReadyQueue {
         let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
         for node in &definition.nodes {
             let id = node.id.clone();
-            let deps = node.depends_on.clone();
+            // 拓扑只关心边指向（dep.id()）：投影选择器不参与就绪判定。
+            let deps = node
+                .depends_on
+                .iter()
+                .map(|dep| dep.id().trim().to_string())
+                .collect::<Vec<_>>();
             for dep in &deps {
                 dependents.entry(dep.clone()).or_default().push(id.clone());
             }
@@ -313,7 +318,7 @@ impl ReadyQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::workflow::types::{BaseToolGroup, WorkflowNode};
+    use crate::agent::workflow::types::{BaseToolGroup, WorkflowDependency, WorkflowNode};
 
     fn node(id: &str, deps: &[&str]) -> WorkflowNode {
         WorkflowNode {
@@ -323,7 +328,10 @@ mod tests {
             model_ref: "m1".into(),
             base_tool_group: BaseToolGroup::Coding,
             task: "task".into(),
-            depends_on: deps.iter().map(|v| v.to_string()).collect(),
+            depends_on: deps
+                .iter()
+                .map(|v| WorkflowDependency::Plain((*v).into()))
+                .collect(),
             inject_state_keys: vec![],
             output_key: format!("out_{id}"),
             expected_files: vec![],

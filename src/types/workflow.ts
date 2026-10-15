@@ -29,6 +29,12 @@ export interface WorkflowInherits {
   runId: string;
 }
 
+/**
+ * 依赖边引用（serde untagged）：纯 id = 整体引用（按上游 exportPolicy）；
+ * 对象 = 小节投影——下游只收上游「产出摘要」+ 指定二级标题的小节。
+ */
+export type WorkflowDependencyRef = string | { id: string; sections: string[] };
+
 /** WorkflowDefinition 中的节点定义（WorkflowNode）。 */
 export interface WorkflowNodeDef {
   id: string;
@@ -37,7 +43,7 @@ export interface WorkflowNodeDef {
   modelRef: string;
   baseToolGroup: WorkflowBaseToolGroup;
   task: string;
-  dependsOn: string[];
+  dependsOn: WorkflowDependencyRef[];
   injectStateKeys: string[];
   outputKey: string;
   /** 预期读写的文件（供并行写冲突预检）。 */

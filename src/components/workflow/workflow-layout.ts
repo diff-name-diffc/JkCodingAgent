@@ -1,5 +1,6 @@
 import dagre from "dagre";
 import type { WorkflowDefinition } from "../../types";
+import { depId } from "./workflow-utils";
 
 /**
  * dagre 分层布局（rankdir=TB，统一自上而下）：输入工作流定义，输出各节点在
@@ -42,8 +43,10 @@ export function computeWorkflowLayout(
   }
   const nodeIds = new Set(definition.nodes.map((node) => node.id));
   for (const node of definition.nodes) {
-    for (const dependency of node.dependsOn) {
-      // 依赖缺失属于校验失败场景，布局阶段直接跳过，避免 dagre 抛错。
+    for (const rawDependency of node.dependsOn) {
+      // 投影对象形态统一取 id 作边指向；依赖缺失属于校验失败场景，布局阶段
+      // 直接跳过，避免 dagre 抛错。
+      const dependency = depId(rawDependency);
       if (nodeIds.has(dependency)) {
         layoutGraph.setEdge(dependency, node.id);
       }

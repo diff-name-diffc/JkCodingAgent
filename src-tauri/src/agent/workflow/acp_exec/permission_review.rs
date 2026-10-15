@@ -128,7 +128,11 @@ pub(crate) fn build_workflow_digest(
         let deps = if node.depends_on.is_empty() {
             "无".to_string()
         } else {
-            node.depends_on.join(",")
+            node.depends_on
+                .iter()
+                .map(|dep| dep.id().trim())
+                .collect::<Vec<_>>()
+                .join(",")
         };
         lines.push(format!(
             "- {}「{}」 工具组={} 计划模式={} 依赖=[{}]",

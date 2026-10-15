@@ -23,7 +23,8 @@ use super::plan_access::{latest_run_of, resolve_session_plan};
 use crate::agent::db::DispatcherDb;
 use crate::agent::workflow::commands::apply_draft_definition_update;
 use crate::agent::workflow::types::{
-    BaseToolGroup, ExportPolicy, WorkflowDefinition, WorkflowNode, WorkflowPlanRecord, PLAN_DRAFT,
+    BaseToolGroup, ExportPolicy, WorkflowDefinition, WorkflowDependency, WorkflowNode,
+    WorkflowPlanRecord, PLAN_DRAFT,
 };
 use crate::agent::workflow::WorkflowStore;
 
@@ -268,7 +269,11 @@ pub(crate) async fn intercept_workflow_node_add(
     // 静默无效果的「插入」。
     let mut rewritten_targets = Vec::new();
     if let Some(insert_before) = &insert_before {
-        let upstream: HashSet<&str> = new_node.depends_on.iter().map(String::as_str).collect();
+        let upstream: HashSet<&str> = new_node
+            .depends_on
+            .iter()
+            .map(|dep| dep.id().trim())
+            .collect();
         for target_id in insert_before {
             let target_id = target_id.trim();
             if target_id == new_node.id {
@@ -296,7 +301,7 @@ pub(crate) async fn intercept_workflow_node_add(
             if !target
                 .depends_on
                 .iter()
-                .any(|dep| upstream.contains(dep.as_str()))
+                .any(|dep| upstream.contains(dep.id().trim()))
             {
                 return Ok(WorkflowNodeMutationOutcome::Rejected {
                     error: format!(
@@ -309,10 +314,11 @@ pub(crate) async fn intercept_workflow_node_add(
                 .depends_on
                 .iter()
                 .flat_map(|dep| {
-                    // 命中上游：接管边；多个上游同时命中时只注入一次
+                    // 命中上游：接管边（对象形态的投影选择器随旧边语义一起失效，
+                    // 改写为 Plain 新节点 id）；多个上游同时命中时只注入一次
                     //（下方 dedup 保序去重兜底）。
-                    if upstream.contains(dep.as_str()) {
-                        Some(new_node.id.clone())
+                    if upstream.contains(dep.id().trim()) {
+                        Some(WorkflowDependency::Plain(new_node.id.clone()))
                     } else {
                         Some(dep.clone())
                     }
@@ -452,7 +458,7 @@ fn downstream_closure(definition: &WorkflowDefinition, node_id: &str) -> HashSet
             if closure.contains(&node.id) {
                 continue;
             }
-            if node.depends_on.iter().any(|dep| dep == &current) {
+            if node.depends_on.iter().any(|dep| dep.id() == current) {
                 closure.insert(node.id.clone());
                 frontier.push(node.id.clone());
             }
@@ -473,7 +479,11 @@ fn dedup_preserving_order(definition: &mut WorkflowDefinition, targets: &[String
             continue;
         };
         let mut seen = HashSet::new();
-        target.depends_on.retain(|dep| seen.insert(dep.clone()));
+        // 重复以指向 id 判定：接管边改写只产生 Plain 形态的新 id，Plain 与既有
+        // Projected 指向同上游时保留先出现者（既有投影选择器优先）。
+        target
+            .depends_on
+            .retain(|dep| seen.insert(dep.id().trim().to_string()));
     }
 }
 
@@ -487,7 +497,7 @@ struct WorkflowNodePatch {
     task: Option<String>,
     model_ref: Option<String>,
     base_tool_group: Option<BaseToolGroup>,
-    depends_on: Option<Vec<String>>,
+    depends_on: Option<Vec<WorkflowDependency>>,
     inject_state_keys: Option<Vec<String>>,
     output_key: Option<String>,
     expected_files: Option<Vec<String>>,
@@ -626,7 +636,10 @@ mod tests {
         let patch: WorkflowNodePatch =
             serde_json::from_value(json!({ "dependsOn": ["n0"], "injectStateKeys": [] })).unwrap();
         apply_node_patch(&mut target, patch);
-        assert_eq!(target.depends_on, vec!["n0".to_string()]);
+        assert_eq!(
+            target.depends_on,
+            vec![WorkflowDependency::Plain("n0".to_string())]
+        );
         assert!(target.inject_state_keys.is_empty());
     }
 
@@ -848,10 +861,19 @@ mod tests {
                 .find(|node| node.id == id)
                 .unwrap_or_else(|| panic!("节点 {id} 应存在"))
         };
-        assert_eq!(by_id("n_mid").depends_on, vec!["n1".to_string()]);
-        assert_eq!(by_id("n2").depends_on, vec!["n_mid".to_string()]);
+        assert_eq!(
+            by_id("n_mid").depends_on,
+            vec![WorkflowDependency::Plain("n1".to_string())]
+        );
+        assert_eq!(
+            by_id("n2").depends_on,
+            vec![WorkflowDependency::Plain("n_mid".to_string())]
+        );
         // n3 不受影响。
-        assert_eq!(by_id("n3").depends_on, vec!["n2".to_string()]);
+        assert_eq!(
+            by_id("n3").depends_on,
+            vec![WorkflowDependency::Plain("n2".to_string())]
+        );
 
         // 尾部追加（无 insertBefore）：挂在 n3 下游。
         let appended = intercept_workflow_node_add(
@@ -1067,5 +1089,98 @@ mod tests {
         // 中游节点的闭包不含平行分支。
         let closure = downstream_closure(&definition, "n2");
         assert_eq!(closure, vec!["n4".to_string()].into_iter().collect());
+    }
+    #[tokio::test]
+    async fn node_add_insert_before_rewrites_projected_dep_to_plain() {
+        // n2 以小节投影依赖 n1；中间插入 n_mid 接管该边后，n2 的依赖改写为
+        // Plain(n_mid)——旧边的小节选择随旧语义失效。
+        let (db, _dir) = test_db();
+        let store = WorkflowStore::new(&db);
+        let mut definition = chain_definition();
+        definition.nodes[1].depends_on = vec![WorkflowDependency::Projected {
+            id: "n1".into(),
+            sections: vec!["后端核心 API".into()],
+        }];
+        let plan = store
+            .create_plan_async("w", &definition, "需求", "{}")
+            .await
+            .unwrap();
+
+        let outcome = intercept_workflow_node_add(
+            &db,
+            None,
+            "w",
+            &json!({
+                "node": {
+                    "id": "n_mid", "title": "中间步骤", "modelRef": "sonnet",
+                    "baseToolGroup": "read_only", "task": "中间处理", "outputKey": "mid",
+                    "dependsOn": ["n1"]
+                },
+                "insertBefore": ["n2"],
+            }),
+        )
+        .await
+        .unwrap();
+        match outcome {
+            WorkflowNodeMutationOutcome::Applied { text } => assert!(text.contains("n_mid")),
+            WorkflowNodeMutationOutcome::Rejected { error } => panic!("应成功：{error}"),
+        }
+        let updated = store.get_plan_async(&plan.id).await.unwrap().unwrap();
+        let definition: WorkflowDefinition =
+            serde_json::from_str(&updated.definition_json).unwrap();
+        let n2 = definition
+            .nodes
+            .iter()
+            .find(|node| node.id == "n2")
+            .unwrap();
+        assert_eq!(
+            n2.depends_on,
+            vec![WorkflowDependency::Plain("n_mid".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn node_update_patch_replaces_depends_on_with_projected_form() {
+        let (db, _dir) = test_db();
+        let store = WorkflowStore::new(&db);
+        let plan = store
+            .create_plan_async("w", &chain_definition(), "需求", "{}")
+            .await
+            .unwrap();
+
+        let outcome = intercept_workflow_node_update(
+            &db,
+            None,
+            "w",
+            &json!({
+                "nodeId": "n2",
+                "patch": {
+                    "dependsOn": [
+                        { "id": "n1", "sections": ["后端核心 API", "解析模块"] }
+                    ]
+                },
+            }),
+        )
+        .await
+        .unwrap();
+        match outcome {
+            WorkflowNodeMutationOutcome::Applied { text } => assert!(text.contains("dependsOn")),
+            WorkflowNodeMutationOutcome::Rejected { error } => panic!("应成功：{error}"),
+        }
+        let updated = store.get_plan_async(&plan.id).await.unwrap().unwrap();
+        let definition: WorkflowDefinition =
+            serde_json::from_str(&updated.definition_json).unwrap();
+        let n2 = definition
+            .nodes
+            .iter()
+            .find(|node| node.id == "n2")
+            .unwrap();
+        assert_eq!(
+            n2.depends_on,
+            vec![WorkflowDependency::Projected {
+                id: "n1".to_string(),
+                sections: vec!["后端核心 API".to_string(), "解析模块".to_string()],
+            }]
+        );
     }
 }

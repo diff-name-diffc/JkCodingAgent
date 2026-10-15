@@ -13,6 +13,7 @@ import {
   Pause,
   RotateCcw,
   Shrink,
+  TriangleAlert,
   Wrench,
 } from "lucide-react";
 import type { WorkflowNodeStatus } from "../../types";
@@ -172,6 +173,7 @@ const NOTICE_ICONS: Record<NodeNotice["kind"], typeof Shrink> = {
   compaction: Shrink,
   retry: RotateCcw,
   lifecycle: Info,
+  input_degraded: TriangleAlert,
 };
 
 /** 运行通知行：上下文压缩 / 自动重试等节点动态（不可展开）。 */

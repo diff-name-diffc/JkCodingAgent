@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
-use super::types::{BaseToolGroup, ExportPolicy, WorkflowNode};
+use super::types::{BaseToolGroup, ExportPolicy, WorkflowDependency, WorkflowNode};
 
 /// 摘要导出的统一上限：既是缺失「## 产出摘要」段时的兜底截取长度，也是提取
 /// 出的超长摘要段的封顶（输出契约只要求摘要 ≤500 字，但无法强制上游遵守，
@@ -12,6 +12,13 @@ use super::types::{BaseToolGroup, ExportPolicy, WorkflowNode};
 pub(super) const SUMMARY_EXPORT_MAX_CHARS: usize = 4_000;
 /// Full 导出策略的全文上限（兜底截断）。
 const FULL_EXPORT_MAX_CHARS: usize = 32_000;
+/// 小节投影：单个小节注入下游的截断上限（小节是「方案的一个方面」，比摘要
+/// 宽裕、比全文收敛；超限截断保留头部并标注）。
+const SECTION_EXPORT_MAX_CHARS: usize = 12_000;
+/// 小节投影：单节点全部投影小节的总量预算（跨多条投影依赖累计；边界小节按
+/// 剩余预算截断、预算耗尽后的小节只保留省略标注，防宽投影把 prompt 撑爆）。
+/// 口径与共享状态注入的总量预算一致：只累计小节本体，标注行不计入。
+const PROJECTED_TOTAL_BUDGET_CHARS: usize = 24_000;
 /// 重试时注入的「上次失败原因」最大长度（失败详情理论上可很大，需设上限）。
 const RETRY_REASON_MAX_CHARS: usize = 2_000;
 /// 共享状态注入的单键上限。state 值写回时已是 ≤4k 的产出摘要
@@ -35,9 +42,38 @@ const FULL_TRUNCATE_SUFFIX: &str = "\n...[输出已截断]";
 const SUMMARY_TRUNCATE_SUFFIX: &str = "\n...[产出摘要过长，已截断]";
 const HEAD_TRUNCATE_SUFFIX: &str = "\n...[未提供产出摘要，已截取开头]";
 const RETRY_REASON_TRUNCATE_SUFFIX: &str = "\n...[失败原因过长，已截断]";
+const SECTION_TRUNCATE_SUFFIX: &str = "\n...[小节过长，已截断]";
 
-/// 节点输入 = 总体需求 + 角色 + 子任务 + 上游输出（按各自 exportPolicy）+
-/// 共享状态（仅 injectStateKeys 声明的 key）+ 上次失败原因（重试时）+ 输出契约。
+/// 派发前装配发现的投影缺口：上游 id + 未在其输出中命中的小节标题。
+/// runner 据此分档（降级执行 / 独占依赖直接失败），见 projection_gap_is_exclusive。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectionGap {
+    pub(crate) upstream_id: String,
+    pub(crate) missing_sections: Vec<String>,
+}
+
+/// assemble_node_input 的产物：拼装好的输入文本 + 投影缺口（缺口的处置在 runner）。
+pub(crate) struct NodeInput {
+    pub(crate) text: String,
+    pub(crate) projection_gaps: Vec<ProjectionGap>,
+}
+
+/// 投影失配是否意味着该节点失去了全部任务依据：唯一的依赖就是失配的投影边、
+/// 且没有注入任何共享 state——运行时可判定的「严格独占依赖」代理。此时派发
+/// 只会产出无依据的执行，应按最终失败结算（下游级联跳过、旁路继续）。
+pub(crate) fn projection_gap_is_exclusive(node: &WorkflowNode, gaps: &[ProjectionGap]) -> bool {
+    !gaps.is_empty()
+        && node.depends_on.len() == 1
+        && node
+            .depends_on
+            .first()
+            .is_some_and(|dep| dep.sections().is_some())
+        && node.inject_state_keys.is_empty()
+}
+
+/// 节点输入 = 总体需求 + 角色 + 子任务 + 上游输出（Plain 边按各自 exportPolicy，
+/// Projected 边按小节投影：产出摘要 + 指定小节）+ 共享状态（仅 injectStateKeys
+/// 声明的 key）+ 上次失败原因（重试时）+ 下游小节取用要求（被投影时）+ 输出契约。
 pub(super) fn assemble_node_input(
     user_requirement: &str,
     node: &WorkflowNode,
@@ -45,7 +81,7 @@ pub(super) fn assemble_node_input(
     outputs: &HashMap<String, String>,
     state: &Map<String, Value>,
     retry_context: Option<&str>,
-) -> String {
+) -> NodeInput {
     let mut sections = vec![format!("# 总体需求\n{}", user_requirement.trim())];
 
     if !node.role.trim().is_empty() {
@@ -57,25 +93,56 @@ pub(super) fn assemble_node_input(
         sections.push(READ_ONLY_CONSTRAINT.to_string());
     }
 
+    let mut projection_gaps: Vec<ProjectionGap> = Vec::new();
     if !node.depends_on.is_empty() {
         let mut upstream = String::from("# 上游节点输出");
         let mut missing: Vec<String> = Vec::new();
+        // 投影总量预算跨依赖累计：预算内逐节截断注入，耗尽后的小节只留标注。
+        let mut projected_used_chars = 0usize;
         for dep in &node.depends_on {
-            let dep = dep.trim();
-            if let Some(output) = outputs.get(dep) {
-                let exported = export_for_downstream(node_by_id.get(dep), output);
-                // dep 与共享 state key 同源（LLM 提交的工作流定义，不可信输入）：
-                // 含换行/回车会撕裂「上游节点输出」段结构、注入伪造的顶级
-                // 标题，拼入标题前与 safe_key 同口径压平（查询仍用原始 id）。
-                upstream.push_str(&format!(
-                    "\n\n## 节点 {} 的输出\n{exported}",
-                    flatten_newlines(dep)
-                ));
-            } else {
-                // 依赖输出缺失（上游失败/输出丢失）不静默跳过：显式标注让
-                // 下游模型感知上下文不完整，与 render_state_section 的省略
-                // 标注口径一致。
-                missing.push(flatten_newlines(dep));
+            match dep {
+                WorkflowDependency::Plain(dep) => {
+                    let dep = dep.trim();
+                    if let Some(output) = outputs.get(dep) {
+                        let exported = export_for_downstream(node_by_id.get(dep), output);
+                        // dep 与共享 state key 同源（LLM 提交的工作流定义，不可信输入）：
+                        // 含换行/回车会撕裂「上游节点输出」段结构、注入伪造的顶级
+                        // 标题，拼入标题前与 safe_key 同口径压平（查询仍用原始 id）。
+                        upstream.push_str(&format!(
+                            "\n\n## 节点 {} 的输出\n{exported}",
+                            flatten_newlines(dep)
+                        ));
+                    } else {
+                        // 依赖输出缺失（上游失败/输出丢失）不静默跳过：显式标注让
+                        // 下游模型感知上下文不完整，与 render_state_section 的省略
+                        // 标注口径一致。
+                        missing.push(flatten_newlines(dep));
+                    }
+                }
+                WorkflowDependency::Projected { id, sections } => {
+                    let safe_id = flatten_newlines(id.trim());
+                    match outputs.get(id.trim()) {
+                        Some(output) => {
+                            upstream.push_str(&render_projected_export(
+                                id.trim(),
+                                &safe_id,
+                                output,
+                                sections,
+                                &mut projected_used_chars,
+                                &mut projection_gaps,
+                            ));
+                        }
+                        None => {
+                            // 上游输出整体缺失：与 Plain 缺失同口径标注；投影缺口
+                            // 记全部小节（下游无从取用任何一节）。
+                            missing.push(safe_id.clone());
+                            projection_gaps.push(ProjectionGap {
+                                upstream_id: id.trim().to_string(),
+                                missing_sections: sections.clone(),
+                            });
+                        }
+                    }
+                }
             }
         }
         if !missing.is_empty() {
@@ -84,6 +151,13 @@ pub(super) fn assemble_node_input(
                 missing.len(),
                 missing.join("、")
             ));
+        }
+        if !projection_gaps.is_empty() {
+            // 软指令：让下游在最终输出里显式报告缺失（前端据此有可见痕迹，
+            // 人类验收也能看到降级原因），再继续力所能及的部分。
+            upstream.push_str(
+                "\n\n注：以上标注缺失的小节属上游输出契约失配。请在最终输出的「## 遗留问题」中首先报告缺失的小节及其影响，再基于已有内容谨慎完成力所能及的部分；无法安全继续时不勉强执行。",
+            );
         }
         sections.push(upstream);
     }
@@ -115,8 +189,104 @@ pub(super) fn assemble_node_input(
         ));
     }
 
+    // 下游小节取用要求（闭环）：任何下游对本节点声明投影时，把要求出现的二级
+    // 标题原文告知上游——标题是计划期契约，上游照单分节，下游按单取节。
+    if let Some(section) = render_downstream_section_request(node, node_by_id) {
+        sections.push(section);
+    }
+
     sections.push(OUTPUT_CONTRACT.to_string());
-    sections.join("\n\n")
+    NodeInput {
+        text: sections.join("\n\n"),
+        projection_gaps,
+    }
+}
+
+/// 渲染一条投影依赖的「上游节点输出」块：产出摘要 + 按声明顺序逐个小节注入。
+/// 命中小节在单节上限与总量预算内截断；未命中小节显式标注并计入缺口。
+fn render_projected_export(
+    upstream_id: &str,
+    safe_id: &str,
+    output: &str,
+    requested: &[String],
+    projected_used_chars: &mut usize,
+    gaps: &mut Vec<ProjectionGap>,
+) -> String {
+    let mut block = format!("\n\n## 节点 {safe_id} 的输出（小节投影）");
+    block.push_str(&format!(
+        "\n（产出摘要）\n{}",
+        export_with_policy(ExportPolicy::Summary, output)
+    ));
+    let (found, missing) = extract_named_sections(output, requested);
+    for (title, text) in &found {
+        let section_text = format!("{title}\n{text}");
+        let remaining = PROJECTED_TOTAL_BUDGET_CHARS
+            .saturating_sub(*projected_used_chars)
+            .min(SECTION_EXPORT_MAX_CHARS);
+        if remaining == 0 {
+            // 标注用裸标题（去「## 」前缀），与注入块的完整标题行区分。
+            let bare = title.trim_start_matches("## ").trim();
+            block.push_str(&format!(
+                "\n\n…（小节「{}」因投影总量预算限制未注入）",
+                flatten_newlines(bare)
+            ));
+            continue;
+        }
+        let injected = truncate_chars(&section_text, remaining, SECTION_TRUNCATE_SUFFIX);
+        *projected_used_chars += injected.chars().count();
+        block.push_str(&format!("\n\n{injected}"));
+    }
+    if !missing.is_empty() {
+        let titles: Vec<String> = missing
+            .iter()
+            .map(|title| format!("「{}」", flatten_newlines(title)))
+            .collect();
+        block.push_str(&format!(
+            "\n\n…（未找到小节 {}：上游输出中没有该二级标题）",
+            titles.join("")
+        ));
+        gaps.push(ProjectionGap {
+            upstream_id: upstream_id.to_string(),
+            missing_sections: missing.clone(),
+        });
+    }
+    block
+}
+
+/// 下游小节取用要求段：收集所有下游节点对本节点声明的投影小节标题，告知
+/// 上游输出必须包含这些二级标题。node_by_id 是 HashMap（遍历序不确定），
+/// 排序去重以保证注入的标题清单跨 run 稳定（同一 plan 的提示词可复现）。
+fn render_downstream_section_request(
+    node: &WorkflowNode,
+    node_by_id: &HashMap<String, WorkflowNode>,
+) -> Option<String> {
+    let mut titles: Vec<String> = Vec::new();
+    for other in node_by_id.values() {
+        for dep in &other.depends_on {
+            if let WorkflowDependency::Projected { id, sections } = dep {
+                if id.trim() == node.id {
+                    for title in sections {
+                        let flat = flatten_newlines(title.trim());
+                        if !flat.is_empty() && !titles.contains(&flat) {
+                            titles.push(flat);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if titles.is_empty() {
+        return None;
+    }
+    titles.sort();
+    let list = titles
+        .iter()
+        .map(|title| format!("- {title}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "# 下游小节取用要求\n你的输出将被下游节点按二级标题精确取用。输出必须包含以下二级标题的小节（标题需与下列文字完全一致，行首「## 」开头，未命中的小节会导致下游拿不到对应内容）：\n{list}"
+    ))
 }
 
 /// 把换行/回车压平为空格：用于拼接进标题行的不可信文本（共享 state key、
@@ -236,6 +406,23 @@ fn export_with_policy(policy: ExportPolicy, output: &str) -> String {
 
 /// 提取 markdown 输出中「## 产出摘要」段（到下一个二级标题或结尾）。
 /// 跳过围栏代码块内的伪标题；标题容忍行尾冒号等常见修饰（「## 产出摘要：」）。
+/// 取第一个命中段。围栏与 fence-reset 规则见 scan_h2_sections。
+pub(crate) fn extract_summary_section(output: &str) -> Option<String> {
+    scan_h2_sections(output)
+        .into_iter()
+        .find(|section| {
+            normalize_heading_title(&section.heading_line).as_deref() == Some("产出摘要")
+        })
+        .map(|section| section.body)
+}
+
+/// 二级标题小节：标题行原文（含「## 」前缀）+ 正文（不含标题行，已 trim）。
+struct H2Section {
+    heading_line: String,
+    body: String,
+}
+
+/// 扫描输出中的全部二级标题小节（正文到下一个二级标题或结尾；空正文小节跳过）。
 ///
 /// 围栏匹配遵循 CommonMark 的近似规则：开栏记录符号与长度，闭栏必须是
 /// 同符号、不少于开栏长度、且仅由围栏符号（可带行尾空白）组成的行——
@@ -244,26 +431,27 @@ fn export_with_policy(policy: ExportPolicy, output: &str) -> String {
 /// 仅跳过该未闭合开栏所在行的围栏解释（不把它当作开栏），其后各行恢复
 /// 正常围栏匹配——这样后续已正确闭合的围栏继续屏蔽其中的伪标题，避免
 /// 「早期未闭合开栏」让其后本已正确闭合的围栏被整体无视、把围栏内的
-/// 伪摘要当真摘要注入下游。
-pub(crate) fn extract_summary_section(output: &str) -> Option<String> {
-    let (section, unclosed_fence_line) = scan_summary_section(output, None);
+/// 伪标题当真标题注入下游。
+fn scan_h2_sections(output: &str) -> Vec<H2Section> {
+    let (sections, unclosed_fence_line) = scan_h2_sections_inner(output, None);
     match unclosed_fence_line {
-        Some(line) => scan_summary_section(output, Some(line)).0,
-        None => section,
+        Some(line) => scan_h2_sections_inner(output, Some(line)).0,
+        None => sections,
     }
 }
 
-/// 单遍扫描。返回（摘要段，扫描结束时仍未闭合的开栏所在行号）。
+/// 单遍扫描。返回（全部小节，扫描结束时仍未闭合的开栏所在行号）。
 /// `fence_reset_line`：兜底重扫传入上一遍的未闭合开栏行号——仅该行不参与
 /// 围栏解释（中和未闭合的开栏），其余行（含该行之后）照常进行围栏匹配，
 /// 已正确闭合的围栏继续屏蔽其中的伪标题。
-fn scan_summary_section(
+fn scan_h2_sections_inner(
     output: &str,
     fence_reset_line: Option<usize>,
-) -> (Option<String>, Option<usize>) {
+) -> (Vec<H2Section>, Option<usize>) {
+    let mut sections: Vec<H2Section> = Vec::new();
     let mut open_fence: Option<(char, usize)> = None;
     let mut open_line: Option<usize> = None;
-    let mut found = false;
+    let mut heading_line: Option<String> = None;
     let mut collected: Vec<&str> = Vec::new();
     for (line_no, line) in output.lines().enumerate() {
         let trimmed = line.trim_start();
@@ -273,7 +461,7 @@ fn scan_summary_section(
                     if is_closing_fence(trimmed, marker, length) {
                         open_fence = None;
                         open_line = None;
-                        if found {
+                        if heading_line.is_some() {
                             collected.push(line);
                         }
                         continue;
@@ -283,7 +471,7 @@ fn scan_summary_section(
                     if let Some(open) = opening_fence(trimmed) {
                         open_fence = Some(open);
                         open_line = Some(line_no);
-                        if found {
+                        if heading_line.is_some() {
                             collected.push(line);
                         }
                         continue;
@@ -292,21 +480,77 @@ fn scan_summary_section(
             }
         }
         let in_fence = open_fence.is_some();
-        if !found {
-            if !in_fence && is_summary_heading(line) {
-                found = true;
+        if !in_fence && trimmed.starts_with("## ") {
+            // 新小节开始：结算上一节（正文为空的小节跳过——与摘要提取的
+            // 「空段视为缺失」口径一致）。
+            if let Some(heading) = heading_line.take() {
+                settle_section(&mut sections, heading, &collected);
             }
+            heading_line = Some(line.to_string());
+            collected = Vec::new();
             continue;
         }
-        if !in_fence && trimmed.starts_with("## ") {
-            break;
+        if heading_line.is_some() {
+            collected.push(line);
         }
-        collected.push(line);
     }
-    let section = found
-        .then(|| collected.join("\n").trim().to_string())
-        .filter(|body| !body.is_empty());
-    (section, open_line.filter(|_| open_fence.is_some()))
+    if let Some(heading) = heading_line.take() {
+        settle_section(&mut sections, heading, &collected);
+    }
+    (sections, open_line.filter(|_| open_fence.is_some()))
+}
+
+fn settle_section(sections: &mut Vec<H2Section>, heading_line: String, collected: &[&str]) {
+    let body = collected.join("\n").trim().to_string();
+    if !body.is_empty() {
+        sections.push(H2Section { heading_line, body });
+    }
+}
+
+/// 标题行归一化：去「## 」前缀、trim、去行尾冒号（全/半角）后再 trim。
+/// 返回 None 表示不是二级标题行。
+fn normalize_heading_title(heading_line: &str) -> Option<String> {
+    let trimmed = heading_line.trim_start();
+    let rest = trimmed.strip_prefix("## ")?;
+    Some(normalize_requested_title(rest))
+}
+
+/// 请求侧标题归一化（与 normalize_heading_title 的标题文本部分同口径）。
+fn normalize_requested_title(title: &str) -> String {
+    title
+        .trim()
+        .trim_end_matches([':', '：'])
+        .trim()
+        .to_string()
+}
+
+/// 按声明标题提取小节：命中返回（标题行原文、正文），同名多节按出现顺序拼接；
+/// 未命中的标题原样返回（调用方标注缺口、由 runner 分档处置）。
+fn extract_named_sections(
+    output: &str,
+    requested: &[String],
+) -> (Vec<(String, String)>, Vec<String>) {
+    let sections = scan_h2_sections(output);
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for title in requested {
+        let normalized = normalize_requested_title(title);
+        let mut matched_heading: Option<String> = None;
+        let mut matched_bodies: Vec<String> = Vec::new();
+        for section in &sections {
+            if normalize_heading_title(&section.heading_line).as_deref() == Some(&normalized) {
+                if matched_heading.is_none() {
+                    matched_heading = Some(section.heading_line.clone());
+                }
+                matched_bodies.push(section.body.clone());
+            }
+        }
+        match matched_heading {
+            Some(heading) => found.push((heading, matched_bodies.join("\n\n"))),
+            None => missing.push(title.clone()),
+        }
+    }
+    (found, missing)
 }
 
 /// 围栏开栏标记：行首（允许缩进）连续 3 个以上相同符号（` 或 ~），
@@ -343,14 +587,6 @@ fn fence_marker_run(trimmed: &str) -> Option<(char, usize)> {
         length += 1;
     }
     (length >= 3).then_some((first, length))
-}
-
-fn is_summary_heading(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    let Some(rest) = trimmed.strip_prefix("## ") else {
-        return false;
-    };
-    rest.trim().trim_end_matches([':', '：']).trim() == "产出摘要"
 }
 
 /// 按字符数截断（char boundary 安全），附加后缀。
@@ -411,6 +647,26 @@ mod tests {
     use super::*;
     use crate::agent::workflow::types::BaseToolGroup;
 
+    /// 纯文本视图 helper：既有用例只关心拼装结果文本。
+    fn assemble_text(
+        user_requirement: &str,
+        node: &WorkflowNode,
+        node_by_id: &HashMap<String, WorkflowNode>,
+        outputs: &HashMap<String, String>,
+        state: &Map<String, Value>,
+        retry_context: Option<&str>,
+    ) -> String {
+        assemble_node_input(
+            user_requirement,
+            node,
+            node_by_id,
+            outputs,
+            state,
+            retry_context,
+        )
+        .text
+    }
+
     fn node() -> WorkflowNode {
         WorkflowNode {
             id: "n2".to_string(),
@@ -419,7 +675,7 @@ mod tests {
             model_ref: "m1".to_string(),
             base_tool_group: BaseToolGroup::Coding,
             task: "根据分析结论改造".to_string(),
-            depends_on: vec!["n1".to_string()],
+            depends_on: vec![WorkflowDependency::Plain("n1".to_string())],
             inject_state_keys: vec!["auth_analysis".to_string(), "missing".to_string()],
             output_key: "backend_changes".to_string(),
             expected_files: Vec::new(),
@@ -458,7 +714,7 @@ mod tests {
             ("n2".to_string(), node()),
         ]);
 
-        let input = assemble_node_input("原始需求", &node(), &node_by_id, &outputs, &state, None);
+        let input = assemble_text("原始需求", &node(), &node_by_id, &outputs, &state, None);
 
         assert!(input.contains("# 总体需求\n原始需求"));
         assert!(input.contains("# 你的角色\n后端编码 Agent"));
@@ -481,7 +737,7 @@ mod tests {
         let outputs = HashMap::new();
         let state = Map::new();
 
-        let read_only_input = assemble_node_input(
+        let read_only_input = assemble_text(
             "原始需求",
             &upstream_node(ExportPolicy::Summary),
             &node_by_id,
@@ -492,8 +748,7 @@ mod tests {
         assert!(read_only_input.contains("# 运行约束（只读节点）"));
         assert!(read_only_input.contains("不得创建、修改、删除任何文件"));
 
-        let coding_input =
-            assemble_node_input("原始需求", &node(), &node_by_id, &outputs, &state, None);
+        let coding_input = assemble_text("原始需求", &node(), &node_by_id, &outputs, &state, None);
         assert!(!coding_input.contains("# 运行约束（只读节点）"));
     }
 
@@ -611,7 +866,7 @@ mod tests {
     #[test]
     fn long_retry_reason_is_truncated() {
         let node_by_id = HashMap::new();
-        let input = assemble_node_input(
+        let input = assemble_text(
             "需求",
             &{
                 let mut n = node();
@@ -642,7 +897,7 @@ mod tests {
     #[test]
     fn retry_context_is_injected() {
         let node_by_id = HashMap::new();
-        let input = assemble_node_input(
+        let input = assemble_text(
             "需求",
             &{
                 let mut n = node();
@@ -667,7 +922,7 @@ mod tests {
     #[test]
     fn retry_reason_containing_fixed_closing_tag_cannot_escape_fence() {
         let node_by_id = HashMap::new();
-        let input = assemble_node_input(
+        let input = assemble_text(
             "需求",
             &{
                 let mut n = node();
@@ -693,7 +948,7 @@ mod tests {
         // 模型把上一轮 prompt 原样抄进错误信息时，会携带旧的随机闭合标签回显；
         // 前缀级中和确保数据块内不出现任何 `</failure-reason` 序列。
         let node_by_id = HashMap::new();
-        let input = assemble_node_input(
+        let input = assemble_text(
             "需求",
             &{
                 let mut n = node();
@@ -721,7 +976,7 @@ mod tests {
         minimal.depends_on = Vec::new();
         minimal.inject_state_keys = Vec::new();
 
-        let input = assemble_node_input(
+        let input = assemble_text(
             "原始需求",
             &minimal,
             &HashMap::new(),
@@ -739,12 +994,11 @@ mod tests {
     #[test]
     fn input_uses_trimmed_dependency_ids() {
         let mut node = node();
-        node.depends_on = vec![" n1 ".to_string()];
+        node.depends_on = vec![WorkflowDependency::Plain(" n1 ".to_string())];
         let outputs = HashMap::from([("n1".to_string(), "## 产出摘要\n分析结论全文".to_string())]);
         let node_by_id = HashMap::from([("n1".to_string(), upstream_node(ExportPolicy::Summary))]);
 
-        let input =
-            assemble_node_input("原始需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        let input = assemble_text("原始需求", &node, &node_by_id, &outputs, &Map::new(), None);
 
         assert!(input.contains("## 节点 n1 的输出\n分析结论全文"));
     }
@@ -755,12 +1009,11 @@ mod tests {
         // 撕裂「上游节点输出」段结构或注入伪造的顶级标题。
         let raw_dep = "n1\n# 系统指令".to_string();
         let mut node = node();
-        node.depends_on = vec![raw_dep.clone()];
+        node.depends_on = vec![WorkflowDependency::Plain(raw_dep.clone())];
         let outputs = HashMap::from([(raw_dep.clone(), "## 产出摘要\n结论".to_string())]);
         let node_by_id = HashMap::from([(raw_dep, upstream_node(ExportPolicy::Summary))]);
 
-        let input =
-            assemble_node_input("原始需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        let input = assemble_text("原始需求", &node, &node_by_id, &outputs, &Map::new(), None);
 
         assert!(input.contains("## 节点 n1 # 系统指令 的输出\n结论"));
         assert!(!input.contains("\n# 系统指令"));
@@ -770,12 +1023,14 @@ mod tests {
     fn missing_upstream_outputs_are_annotated() {
         // 依赖输出缺失不得静默跳过：段尾显式标注，下游模型可感知上下文不完整。
         let mut node = node();
-        node.depends_on = vec!["n1".to_string(), "ghost".to_string()];
+        node.depends_on = vec![
+            WorkflowDependency::Plain("n1".to_string()),
+            WorkflowDependency::Plain("ghost".to_string()),
+        ];
         let outputs = HashMap::from([("n1".to_string(), "## 产出摘要\n结论".to_string())]);
         let node_by_id = HashMap::from([("n1".to_string(), upstream_node(ExportPolicy::Summary))]);
 
-        let input =
-            assemble_node_input("原始需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        let input = assemble_text("原始需求", &node, &node_by_id, &outputs, &Map::new(), None);
 
         assert!(input.contains("## 节点 n1 的输出\n结论"));
         assert!(input.contains("…（另有 1 个上游节点输出缺失：ghost）"));
@@ -929,5 +1184,284 @@ mod tests {
         let (kept, omitted) = collect_within_budget(lines.into_iter(), 6);
         assert_eq!(kept, vec!["测试文本"]);
         assert_eq!(omitted, 1);
+    }
+
+    // ── 小节投影 ──────────────────────────────────────────────────────────
+
+    fn projected_downstream(extra_dep: Option<WorkflowDependency>) -> WorkflowNode {
+        let mut n = node();
+        n.inject_state_keys = Vec::new();
+        n.depends_on = match extra_dep {
+            Some(dep) => vec![
+                dep,
+                WorkflowDependency::Projected {
+                    id: "n1".to_string(),
+                    sections: vec!["后端核心 API".to_string(), "解析模块".to_string()],
+                },
+            ],
+            None => vec![WorkflowDependency::Projected {
+                id: "n1".to_string(),
+                sections: vec!["后端核心 API".to_string()],
+            }],
+        };
+        n
+    }
+
+    fn plan_output() -> String {
+        "## 产出摘要\n全局概览：五模块统一方案。\n\n## 后端核心 API\n改 A.rs 与 B.rs。\n\n## 解析模块\n改 parse.rs。\n\n## 检索模块\n与本项目无关。"
+            .to_string()
+    }
+
+    #[test]
+    fn projected_dependency_injects_summary_and_named_sections_only() {
+        let node = projected_downstream(Some(WorkflowDependency::Plain("n0".to_string())));
+        let node_by_id = HashMap::from([
+            ("n0".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n1".to_string(), upstream_node(ExportPolicy::Full)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let outputs = HashMap::from([
+            ("n0".to_string(), "## 产出摘要\n无关上游".to_string()),
+            ("n1".to_string(), plan_output()),
+        ]);
+        let input = assemble_node_input("需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        assert!(input.text.contains("## 节点 n1 的输出（小节投影）"));
+        assert!(input
+            .text
+            .contains("（产出摘要）\n全局概览：五模块统一方案。"));
+        assert!(input.text.contains("## 后端核心 API\n改 A.rs 与 B.rs。"));
+        assert!(input.text.contains("## 解析模块\n改 parse.rs。"));
+        // 未声明的小节不注入；exportPolicy=full 不影响投影边（不会注入全文）。
+        assert!(!input.text.contains("检索模块"));
+        assert!(input.projection_gaps.is_empty());
+    }
+
+    #[test]
+    fn projected_dependency_missing_section_annotated_and_reported() {
+        let node = projected_downstream(Some(WorkflowDependency::Plain("n0".to_string())));
+        let node_by_id = HashMap::from([
+            ("n0".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let outputs = HashMap::from([
+            ("n0".to_string(), "## 产出摘要\n无关上游".to_string()),
+            (
+                "n1".to_string(),
+                "## 产出摘要\n只有摘要，没有分节。".to_string(),
+            ),
+        ]);
+        let input = assemble_node_input("需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        assert!(input
+            .text
+            .contains("未找到小节 「后端核心 API」「解析模块」"));
+        assert!(input
+            .text
+            .contains("请在最终输出的「## 遗留问题」中首先报告缺失的小节"));
+        assert_eq!(
+            input.projection_gaps,
+            vec![ProjectionGap {
+                upstream_id: "n1".to_string(),
+                missing_sections: vec!["后端核心 API".to_string(), "解析模块".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn projected_upstream_output_missing_counts_all_sections_as_gap() {
+        let node = projected_downstream(None);
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let input = assemble_node_input(
+            "需求",
+            &node,
+            &node_by_id,
+            &HashMap::new(),
+            &Map::new(),
+            None,
+        );
+        assert!(input.text.contains("上游节点输出缺失"));
+        assert_eq!(
+            input.projection_gaps,
+            vec![ProjectionGap {
+                upstream_id: "n1".to_string(),
+                missing_sections: vec!["后端核心 API".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn projected_section_truncated_at_per_section_cap() {
+        let long_body = "改".repeat(SECTION_EXPORT_MAX_CHARS + 500);
+        let output = format!("## 产出摘要\n概览\n\n## 后端核心 API\n{long_body}");
+        let node = projected_downstream(None);
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let outputs = HashMap::from([("n1".to_string(), output)]);
+        let input = assemble_node_input("需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        assert!(input.text.contains("小节过长，已截断"));
+        assert!(!input.text.contains(&long_body));
+    }
+
+    #[test]
+    fn projected_total_budget_omits_overflowing_sections() {
+        // 两个 12k 小节恰好用满 24k 总预算：第三个小节只保留省略标注。
+        let body = "节".repeat(SECTION_EXPORT_MAX_CHARS);
+        let output = format!("## 产出摘要\n概览\n\n## A\n{body}\n\n## B\n{body}\n\n## C\n{body}");
+        let mut node = projected_downstream(None);
+        node.depends_on = vec![WorkflowDependency::Projected {
+            id: "n1".to_string(),
+            sections: vec!["A".to_string(), "B".to_string(), "C".to_string()],
+        }];
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let outputs = HashMap::from([("n1".to_string(), output)]);
+        let input = assemble_node_input("需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        assert!(input.text.contains("## A"));
+        assert!(input.text.contains("## B"));
+        assert!(input.text.contains("小节「C」因投影总量预算限制未注入"));
+        // 预算内小节近乎完整保留（单节上限按标题+正文计，留出标题余量）。
+        assert!(input
+            .text
+            .contains(&"节".repeat(SECTION_EXPORT_MAX_CHARS - 100)));
+    }
+
+    #[test]
+    fn projected_section_inside_fenced_code_block_not_matched() {
+        let output =
+            "## 产出摘要\n概览\n\n```\n## 后端核心 API\n伪小节\n```\n## 后端核心 API\n真小节";
+        let node = projected_downstream(None);
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let outputs = HashMap::from([("n1".to_string(), output.to_string())]);
+        let input = assemble_node_input("需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        // 取用的是围栏外真小节：标题行与正文紧邻；围栏内伪标题不作为小节命中。
+        assert!(input.text.contains("## 后端核心 API\n真小节"));
+        assert!(input.projection_gaps.is_empty());
+    }
+
+    #[test]
+    fn duplicate_section_titles_concatenated_in_order() {
+        let output = "## 产出摘要\n概览\n\n## 后端核心 API\n第一部分\n\n## 其他\nx\n\n## 后端核心 API\n第二部分";
+        let node = projected_downstream(None);
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let outputs = HashMap::from([("n1".to_string(), output.to_string())]);
+        let input = assemble_node_input("需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        let start = input
+            .text
+            .find("## 后端核心 API\n第一部分")
+            .expect("首段命中");
+        let end = input.text.find("第二部分").expect("次段命中");
+        assert!(start < end, "同名小节按出现顺序拼接");
+    }
+
+    #[test]
+    fn projected_title_matching_tolerates_trailing_colon() {
+        let output = "## 产出摘要\n概览\n\n## 后端核心 API：\n带冒号的标题";
+        let node = projected_downstream(None);
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream_node(ExportPolicy::Summary)),
+            ("n2".to_string(), node.clone()),
+        ]);
+        let outputs = HashMap::from([("n1".to_string(), output.to_string())]);
+        let input = assemble_node_input("需求", &node, &node_by_id, &outputs, &Map::new(), None);
+        assert!(input.text.contains("带冒号的标题"));
+        assert!(input.projection_gaps.is_empty());
+    }
+
+    #[test]
+    fn downstream_section_request_injected_into_upstream_input() {
+        // 装配 n1（被投影方）的输入：应出现「下游小节取用要求」并列出标题原文。
+        let downstream = projected_downstream(None);
+        let upstream = upstream_node(ExportPolicy::Full);
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream.clone()),
+            ("n2".to_string(), downstream),
+        ]);
+        let input = assemble_node_input(
+            "需求",
+            &upstream,
+            &node_by_id,
+            &HashMap::new(),
+            &Map::new(),
+            None,
+        );
+        assert!(input.text.contains("# 下游小节取用要求"));
+        assert!(input.text.contains("- 后端核心 API"));
+        assert!(input.text.contains("标题需与下列文字完全一致"));
+    }
+
+    #[test]
+    fn downstream_section_request_titles_sorted_for_stability() {
+        // node_by_id 是 HashMap（遍历序不确定）：多个下游声明的标题清单排序注入
+        //（「后」U+540E 排在「解」U+89E3 之前），保证同一 plan 跨 run 的
+        // 上游提示词稳定可复现。
+        let mut other_downstream = projected_downstream(None);
+        other_downstream.id = "n3".to_string();
+        other_downstream.depends_on = vec![WorkflowDependency::Projected {
+            id: "n1".to_string(),
+            sections: vec!["解析模块".to_string()],
+        }];
+        let upstream = upstream_node(ExportPolicy::Full);
+        let node_by_id = HashMap::from([
+            ("n1".to_string(), upstream.clone()),
+            ("n2".to_string(), projected_downstream(None)),
+            ("n3".to_string(), other_downstream),
+        ]);
+        let input = assemble_node_input(
+            "需求",
+            &upstream,
+            &node_by_id,
+            &HashMap::new(),
+            &Map::new(),
+            None,
+        );
+        assert!(input.text.contains("- 后端核心 API\n- 解析模块"));
+    }
+
+    #[test]
+    fn projection_gap_exclusivity_requires_sole_projected_dep_and_no_state() {
+        // 唯一投影依赖 + 无 state 注入：独占（应停止）。
+        let node = projected_downstream(None);
+        assert!(projection_gap_is_exclusive(
+            &node,
+            &[ProjectionGap {
+                upstream_id: "n1".to_string(),
+                missing_sections: vec!["后端核心 API".to_string()],
+            }]
+        ));
+        // 另有普通上游：非独占（降级执行）。
+        let node = projected_downstream(Some(WorkflowDependency::Plain("n0".to_string())));
+        assert!(!projection_gap_is_exclusive(
+            &node,
+            &[ProjectionGap {
+                upstream_id: "n1".to_string(),
+                missing_sections: vec!["后端核心 API".to_string()],
+            }]
+        ));
+        // 注入了共享 state：非独占。
+        let mut node = projected_downstream(None);
+        node.inject_state_keys = vec!["baseline".to_string()];
+        assert!(!projection_gap_is_exclusive(
+            &node,
+            &[ProjectionGap {
+                upstream_id: "n1".to_string(),
+                missing_sections: vec!["后端核心 API".to_string()],
+            }]
+        ));
+        // 无缺口：恒非独占。
+        let node = projected_downstream(None);
+        assert!(!projection_gap_is_exclusive(&node, &[]));
     }
 }

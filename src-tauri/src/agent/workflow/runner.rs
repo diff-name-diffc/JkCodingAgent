@@ -25,7 +25,9 @@ use super::acp_exec::permission_review::{
 };
 use super::acp_exec::{NodeExecContext, NodeExecOutcome};
 use super::harness::{build_harness_catalog, resolve_node_harness};
-use super::input::{assemble_node_input, state_value_from_output};
+use super::input::{
+    assemble_node_input, projection_gap_is_exclusive, state_value_from_output, ProjectionGap,
+};
 use super::node_task::{
     cancel_pending_nodes, finish_node_record, mark_node_skipped, persist_and_emit_state,
     run_node_task, NodeTaskContext, NodeTaskResult,
@@ -34,11 +36,11 @@ use super::receipt;
 use super::scheduler::{FinishKind, ReadyQueue, MAX_PARALLEL_NODES};
 use super::store::WorkflowStore;
 use super::types::{
-    BaseToolGroup, WorkflowDefinition, WorkflowNode, WorkflowNodeRunRecord, WorkflowPlanRecord,
-    WorkflowPlanUpdatedPayload, WorkflowRunEvent, WorkflowRunEventPayload, WorkflowRunResult,
-    WorkflowRunSummary, NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED, PLAN_CANCELLED,
-    PLAN_COMPLETED, PLAN_FAILED, RESULT_KIND_EDIT, RESULT_KIND_NONE, RESULT_KIND_REVIEW,
-    RUN_MODE_RESUME,
+    AgentActivity, BaseToolGroup, WorkflowDefinition, WorkflowNode, WorkflowNodeRunRecord,
+    WorkflowPlanRecord, WorkflowPlanUpdatedPayload, WorkflowRunEvent, WorkflowRunEventPayload,
+    WorkflowRunResult, WorkflowRunSummary, NODE_CANCELLED, NODE_FAILED, NODE_SUCCEEDED,
+    PLAN_CANCELLED, PLAN_COMPLETED, PLAN_FAILED, RESULT_KIND_EDIT, RESULT_KIND_NONE,
+    RESULT_KIND_REVIEW, RUN_MODE_RESUME,
 };
 use super::validate::validate_workflow;
 use super::verifier;
@@ -164,6 +166,59 @@ async fn wait_for_cancel(cancel_rx: &mut watch::Receiver<bool>) {
 /// 或 expectedFiles 声明任一即视为可写。
 fn node_may_write(node: &WorkflowNode) -> bool {
     node.base_tool_group == BaseToolGroup::Coding || !node.expected_files.is_empty()
+}
+
+/// 投影缺口降级标注：落库并广播一条 `input_degraded` 活动，前端据此对节点做
+/// 红色高亮与时间线通知。sequence 取 -1——排在节点执行器从 0 分配的全部活动
+/// 之前（降级发生在派发前），且与执行器的分配序列永不相撞（upsert 键为
+/// run_id+node_id+sequence，正数区归执行器独占）。
+#[allow(clippy::too_many_arguments)]
+async fn record_input_degraded_activity(
+    app: &AppHandle,
+    store: &WorkflowStore,
+    plan_id: &str,
+    run_id: &str,
+    workspace_id: &str,
+    node_id: &str,
+    gaps: &[ProjectionGap],
+) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let detail = gaps
+        .iter()
+        .flat_map(|gap| {
+            gap.missing_sections
+                .iter()
+                .map(move |title| format!("「{title}」（上游 {}）", gap.upstream_id))
+        })
+        .collect::<Vec<_>>()
+        .join("、");
+    let activity = AgentActivity {
+        id: format!("{run_id}:{node_id}:input_degraded"),
+        run_id: run_id.to_string(),
+        node_id: node_id.to_string(),
+        sequence: -1,
+        kind: "input_degraded".into(),
+        status: "failed".into(),
+        title: "上游小节缺失".into(),
+        content: format!("投影依赖未命中：{detail}；节点已带降级标注继续执行。"),
+        payload_json: "{}".into(),
+        started_at: now,
+        finished_at: Some(now),
+    };
+    if let Err(error) = store.save_activity_async(&activity).await {
+        eprintln!("[workflow] 保存 input_degraded 活动失败（{node_id}）：{error:#}");
+        return;
+    }
+    emit_run_event(
+        app,
+        plan_id,
+        run_id,
+        workspace_id,
+        WorkflowRunEvent::NodeActivity {
+            node_id: node_id.to_string(),
+            activity,
+        },
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -404,7 +459,7 @@ async fn run_workflow(
 
             queue.claim(&node_id);
             let retry_count = queue.retry_count(&node_id);
-            let input = assemble_node_input(
+            let assembled = assemble_node_input(
                 &user_requirement,
                 &node,
                 &node_by_id,
@@ -412,6 +467,76 @@ async fn run_workflow(
                 &state,
                 last_errors.get(&node_id).map(String::as_str),
             );
+
+            // 投影缺口分档（见 input::projection_gap_is_exclusive）：
+            // - 独占依赖（唯一投影边失配 + 无 state 注入）：缺失小节即全部任务
+            //   依据，派发只会产出无依据的执行——不派发，直接按最终失败结算
+            //   （不重试：上游输出不会再变）。此后复用既有 FailedFinal 语义：
+            //   传递下游级联跳过、旁路分支继续、无就绪路径时 run 按失败收尾。
+            // - 非独占：记 input_degraded 活动后带降级标注正常派发。
+            if projection_gap_is_exclusive(&node, &assembled.projection_gaps) {
+                let error = format!(
+                    "上游 {} 未产出必需小节 {}，且本节点无其他输入来源，无法执行",
+                    assembled
+                        .projection_gaps
+                        .iter()
+                        .map(|gap| gap.upstream_id.clone())
+                        .collect::<Vec<_>>()
+                        .join("、"),
+                    assembled
+                        .projection_gaps
+                        .iter()
+                        .flat_map(|gap| gap.missing_sections.iter())
+                        .map(|title| format!("「{title}」"))
+                        .collect::<Vec<_>>()
+                        .join("")
+                );
+                let newly_skipped = queue.on_finished(&node_id, FinishKind::FailedFinal);
+                let mut record = WorkflowNodeRunRecord::pending(&run.id, &plan_id, &node);
+                record.input_text = assembled.text;
+                finish_node_record(store, record, NODE_FAILED, None, Some(&error)).await;
+                emit_run_event(
+                    app,
+                    &plan_id,
+                    &run.id,
+                    &workspace_id,
+                    WorkflowRunEvent::NodeFailed {
+                        node_id: node_id.clone(),
+                        error,
+                        duration_ms: 0,
+                        affected_files: vec![],
+                    },
+                );
+                for skipped_id in newly_skipped {
+                    if let Some(node) = node_by_id.get(&skipped_id) {
+                        mark_node_skipped(
+                            app,
+                            store,
+                            &plan_id,
+                            &run.id,
+                            &workspace_id,
+                            node,
+                            "上游节点失败",
+                        )
+                        .await;
+                    }
+                }
+                emit_plan_updated(app, &plan_id, &workspace_id);
+                continue;
+            }
+            if !assembled.projection_gaps.is_empty() {
+                record_input_degraded_activity(
+                    app,
+                    store,
+                    &plan_id,
+                    &run.id,
+                    &workspace_id,
+                    &node.id,
+                    &assembled.projection_gaps,
+                )
+                .await;
+            }
+            let input = assembled.text;
             let harness = match harnesses.get(&node_id).cloned() {
                 Some(harness) => harness,
                 // 同「未知节点」分支：不能 `?` 直接返回，统一走停止派发→
@@ -733,7 +858,7 @@ pub(crate) fn resolve_run_result(
     let mut has_downstream: HashSet<&str> = HashSet::new();
     for node in &definition.nodes {
         for dep in &node.depends_on {
-            has_downstream.insert(dep.as_str());
+            has_downstream.insert(dep.id().trim());
         }
     }
     let conclusion_node_id = {
@@ -821,7 +946,7 @@ async fn resolve_workspace_root(db: &DispatcherDb, workspace_id: &str) -> Result
 #[cfg(test)]
 mod result_tests {
     use super::*;
-    use crate::agent::workflow::types::{NODE_RUNNING, NODE_SKIPPED};
+    use crate::agent::workflow::types::{WorkflowDependency, NODE_RUNNING, NODE_SKIPPED};
 
     fn node(id: &str, group: BaseToolGroup, deps: &[&str]) -> WorkflowNode {
         WorkflowNode {
@@ -831,7 +956,10 @@ mod result_tests {
             model_ref: "m1".into(),
             base_tool_group: group,
             task: "task".into(),
-            depends_on: deps.iter().map(|dep| dep.to_string()).collect(),
+            depends_on: deps
+                .iter()
+                .map(|dep| WorkflowDependency::Plain((*dep).into()))
+                .collect(),
             inject_state_keys: vec![],
             output_key: format!("out_{id}"),
             expected_files: vec![],

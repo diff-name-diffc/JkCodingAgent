@@ -191,12 +191,36 @@ fn bounded_identifier(description: &str) -> Value {
 }
 
 fn workflow_node_schema() -> Value {
+    // 依赖项两种形态：纯 id（按上游 exportPolicy 导出）或小节投影对象
+    // （产出摘要 + 指定二级标题小节）。注意 JSON Schema 的 uniqueItems 按整值
+    // 比较：「n8」与 {id:"n8"} 可同时通过 schema，重复指向由 Rust 校验兜底。
+    let projected_dependency = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "id": bounded_identifier("上游节点 id"),
+            "sections": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "maxLength": 120 },
+                "description": "要取用的小节标题；须与上游输出中的二级标题一致（系统会把要求的标题注入上游的输出要求）",
+            },
+        },
+        "required": ["id", "sections"],
+    });
     let depends_on = json!({
         "type": "array",
         "maxItems": 20,
         "uniqueItems": true,
-        "items": bounded_identifier("上游节点 id"),
-        "description": "上游节点 id 列表；多上游 => 接收多个上游输出；必须构成无环图",
+        "items": {
+            "oneOf": [
+                bounded_identifier("上游节点 id（整体引用：按上游 exportPolicy 拿摘要或全文）"),
+                projected_dependency,
+            ],
+        },
+        "description": "上游依赖列表；必须构成无环图。项为纯 id 时按上游 exportPolicy 接收输出；项为 {\"id\",\"sections\"} 时为小节投影：只接收上游「产出摘要」+ 指定二级标题的小节（用于汇总方案 → 多个分面执行节点的扇出，各执行节点只拿自己的方面）",
     });
     let inject_state_keys = json!({
         "type": "array",
@@ -410,6 +434,35 @@ mod tests {
         // 非布尔值拒绝。
         planned["definition"]["nodes"][0]["usePlanMode"] = json!("yes");
         assert!(!validator.is_valid(&planned));
+    }
+
+    #[test]
+    fn schema_accepts_projected_dependencies_and_rejects_typos() {
+        let validator =
+            jsonschema::draft202012::new(&submit_workflow_parameters_schema()).expect("schema");
+        // 混合形态：纯字符串与投影对象共存。
+        let mut projected = minimal_definition();
+        projected["definition"]["nodes"][0]["dependsOn"] = json!([
+            "n0",
+            { "id": "n0x", "sections": ["后端核心 API"] },
+        ]);
+        assert!(validator.is_valid(&projected));
+
+        // sections 缺失 / 错拼字段名 / 空数组：fail-closed 拒绝
+        //（untagged serde 的报错不可读，schema 层给可操作信息）。
+        let mut missing_sections = minimal_definition();
+        missing_sections["definition"]["nodes"][0]["dependsOn"] = json!([{ "id": "n0x" }]);
+        assert!(!validator.is_valid(&missing_sections));
+
+        let mut typo = minimal_definition();
+        typo["definition"]["nodes"][0]["dependsOn"] =
+            json!([{ "id": "n0x", "section": ["后端核心 API"] }]);
+        assert!(!validator.is_valid(&typo));
+
+        let mut empty_sections = minimal_definition();
+        empty_sections["definition"]["nodes"][0]["dependsOn"] =
+            json!([{ "id": "n0x", "sections": [] }]);
+        assert!(!validator.is_valid(&empty_sections));
     }
 
     #[test]

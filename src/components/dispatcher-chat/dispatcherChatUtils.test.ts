@@ -2,9 +2,46 @@ import { describe, expect, it } from "vitest";
 import type { DispatcherMessage, DispatcherMessageWire } from "../../types";
 import {
   buildOptimisticUserMessage,
+  formatTokenCount,
   mergeDispatcherMessages,
   toErrorMessage,
 } from "./dispatcherChatUtils";
+
+describe("formatTokenCount", () => {
+  it("非正数与非有限值归零", () => {
+    expect(formatTokenCount(0)).toBe("0");
+    expect(formatTokenCount(-5)).toBe("0");
+    expect(formatTokenCount(Number.NaN)).toBe("0");
+  });
+
+  it("千以下直出原数", () => {
+    expect(formatTokenCount(1)).toBe("1");
+    expect(formatTokenCount(999)).toBe("999");
+  });
+
+  it("千级缩写为 k，百 k 以上舍弃小数位", () => {
+    expect(formatTokenCount(1000)).toBe("1.0k");
+    expect(formatTokenCount(12_300)).toBe("12.3k");
+    expect(formatTokenCount(120_000)).toBe("120k");
+  });
+
+  it("k 舍入到千位前升级为 m，不出现 1000k", () => {
+    expect(formatTokenCount(999_499)).toBe("999k");
+    expect(formatTokenCount(999_500)).toBe("1.0m");
+  });
+
+  it("k / m 段的一位小数在 99.95 处进整，不出现 100.0k / 100.0m", () => {
+    expect(formatTokenCount(99_949)).toBe("99.9k");
+    expect(formatTokenCount(99_950)).toBe("100k");
+    expect(formatTokenCount(99_949_999)).toBe("99.9m");
+    expect(formatTokenCount(99_950_000)).toBe("100m");
+  });
+
+  it("百万级缩写为 m", () => {
+    expect(formatTokenCount(2_400_000)).toBe("2.4m");
+    expect(formatTokenCount(120_000_000)).toBe("120m");
+  });
+});
 
 describe("toErrorMessage", () => {
   it("reads Error.message", () => {

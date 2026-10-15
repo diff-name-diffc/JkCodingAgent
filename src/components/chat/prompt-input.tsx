@@ -39,6 +39,8 @@ export interface PromptInputProps {
   disabled?: boolean;
   editing?: boolean;
   onCancelEdit?: () => void;
+  /** 输入框下方底部行左侧插槽（会话统计条）；缺省时底部行仅右侧快捷键提示。 */
+  statsBar?: React.ReactNode;
   className?: string;
 }
 
@@ -89,6 +91,7 @@ export function PromptInput({
   disabled,
   editing = false,
   onCancelEdit,
+  statsBar,
   className,
 }: PromptInputProps) {
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
@@ -259,11 +262,11 @@ export function PromptInput({
           )}
         </div>
       </div>
-      <div
-        className="mt-1.5 flex justify-end px-2 text-[11px] leading-4 text-muted-foreground"
-        aria-hidden="true"
-      >
-        Enter 发送 · Shift+Enter 换行 · 支持粘贴截图
+      <div className="mt-1.5 flex items-center gap-3 px-2 text-[11px] leading-4 text-muted-foreground">
+        {statsBar}
+        <span className="ml-auto shrink-0" aria-hidden="true">
+          Enter 发送 · Shift+Enter 换行 · 支持粘贴截图
+        </span>
       </div>
     </div>
   );

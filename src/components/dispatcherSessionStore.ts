@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { clearBrowserPreviewSession } from "./browser/browser-preview-channel";
-import type { DispatcherMessage, DispatcherMessageWire } from "../types";
+import type {
+  DispatcherMessage,
+  DispatcherMessageUsageStats,
+  DispatcherMessageWire,
+} from "../types";
 import type {
   AssistantThinkingBlock,
   AssistantTurnSegment,
@@ -15,6 +19,10 @@ export interface DispatcherLiveSessionState {
   liveToolCalls: ToolActivityItem[];
   assistantPlaceholder: string | null;
   runError: string | null;
+  /** 当前 run 的累计用量快照（runUsageUpdated 事件每次模型调用完成后写入）：
+   * 输入框下方会话统计条的实时速度数据源；run 收尾回 idle 时清空，展示层
+   * 回退到最后一条 assistant 消息携带的 usageStats。 */
+  runUsage: DispatcherMessageUsageStats | null;
 }
 
 export function createIdleLiveSessionState(): DispatcherLiveSessionState {
@@ -26,6 +34,7 @@ export function createIdleLiveSessionState(): DispatcherLiveSessionState {
     liveToolCalls: [],
     assistantPlaceholder: null,
     runError: null,
+    runUsage: null,
   };
 }
 

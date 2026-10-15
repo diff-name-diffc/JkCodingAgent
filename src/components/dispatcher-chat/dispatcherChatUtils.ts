@@ -51,6 +51,21 @@ export function formatTokenCountK(totalTokens: number): string {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)}k`;
 }
 
+/** 会话统计条的 token 计数格式：千以下直出，之上按 k / m 自适应缩写。
+ * k → m 的升级阈值取 999_500：整数 k 舍入到 1000 前即升级为 m，
+ * 不出现「1000k」；一位小数在 99.95 处升级为整数（k 与 m 段同口径），
+ * 不出现「100.0k」/「100.0m」。 */
+export function formatTokenCount(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "0";
+  if (tokens < 1000) return `${Math.round(tokens)}`;
+  if (tokens < 999_500) {
+    const k = tokens / 1000;
+    return `${k >= 99.95 ? Math.round(k) : k.toFixed(1)}k`;
+  }
+  const m = tokens / 1_000_000;
+  return `${m >= 99.95 ? Math.round(m) : m.toFixed(1)}m`;
+}
+
 export function mergeDispatcherMessages(
   current: DispatcherMessage[],
   incoming: Array<DispatcherMessage | DispatcherMessageWire>,

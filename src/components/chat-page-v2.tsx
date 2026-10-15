@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { DispatcherMessage, ImageSegment, McpStatus, OpenSettingsOptions } from "../types";
+import type {
+  DispatcherMessage,
+  DispatcherMessageUsageStats,
+  ImageSegment,
+  McpStatus,
+  OpenSettingsOptions,
+} from "../types";
 import { toast } from "./Toast";
 import { useDispatcherSessionTokenUsage } from "../hooks/useDispatcherSessionTokenUsage";
 import {
@@ -9,6 +15,7 @@ import {
 } from "./dispatcher-chat/useLiveSessionState";
 import { useDispatcherActions } from "./dispatcher-chat/useDispatcherActions";
 import { ChatShell } from "./chat/chat-shell";
+import type { SessionStatsData } from "./chat/session-stats-bar";
 import { resolveChatEmptyState } from "./chat/chat-empty-content";
 import { CategoryPickerState } from "./chat/category-picker-state";
 import type { ComposerMode } from "./chat/prompt-input";
@@ -154,6 +161,28 @@ export function ChatPageV2({
       capacityTokens: latest.contextWindowCapacity,
     };
   }, [sessionTokenUsageEntries]);
+  // 输入框下方会话统计条：累计输入/输出与头部上下文占用同口径（primary、
+  // 跨模型求和，不含摘要模型消耗）；速度回退取最后一条带 usageStats 的
+  // assistant 消息（一轮 run 的最终累计快照），运行中的实时速度由统计条
+  // 自行窄订阅 live state 的 runUsage。
+  const sessionStats = useMemo<SessionStatsData>(() => {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (const entry of sessionTokenUsageEntries) {
+      if (entry.sourceKind !== "primary") continue;
+      inputTokens += entry.promptTokens;
+      outputTokens += entry.completionTokens;
+    }
+    let lastRunStats: DispatcherMessageUsageStats | null = null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === "assistant" && message.usageStats) {
+        lastRunStats = message.usageStats;
+        break;
+      }
+    }
+    return { inputTokens, outputTokens, lastRunStats };
+  }, [sessionTokenUsageEntries, messages]);
   // 布局根节点 ref（UI-23a）：把输入框聚焦等 DOM 查询限定在本实例子树内——
   // 多项目保活时页面同时挂载多套聊天 DOM，全局选择器会命中隐藏工作区。
   const shellContainerRef = useRef<HTMLDivElement>(null);
@@ -524,6 +553,7 @@ export function ChatPageV2({
             ) : undefined
           }
           composerPlaceholder={needsCategoryChoice ? "先选择分类，开始新对话…" : undefined}
+          sessionStats={sessionStats}
         />
       </div>
       <ChatPageOverlays

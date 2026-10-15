@@ -133,8 +133,13 @@ export function createDispatcherEventChannel({
       }
       case "runUsageUpdated":
         if (!isActiveRun || event.data.workspaceId !== targetSessionId) return;
-        // 仅刷新用量查询缓存（assistant-message 的历史用量投影来源）；
-        // 无 live-state 消费方，不再写死字段（UI-24 遗留④）。
+        // 快照写入 live state：输入框下方会话统计条的实时速度数据源
+        //（低频事件——每次模型调用完成一次，不会拖入流式帧节奏）。同时刷新
+        // 用量查询缓存（assistant-message 的历史用量投影来源）。
+        updateLiveSessionState(targetSessionId, (state) => ({
+          ...state,
+          runUsage: event.data.stats,
+        }));
         void refreshSessionTokenUsage(targetSessionId);
         break;
       case "toolPlanned":

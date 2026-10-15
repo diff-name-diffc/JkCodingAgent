@@ -29,6 +29,7 @@ import { MessageList } from "./message-list";
 import type { ChatEmptyStateContent } from "./chat-empty-content";
 import { SessionKeywordBar } from "./session-keyword-bar";
 import { PromptInput, type ComposerMode } from "./prompt-input";
+import { SessionStatsBar, type SessionStatsData } from "./session-stats-bar";
 import { ArtifactPanel } from "../artifact/artifact-panel";
 import { CommandPalette } from "./command-palette";
 import { SessionScopeContext } from "./session-scope";
@@ -129,6 +130,9 @@ export interface ChatShellProps {
   categoryPicker?: React.ReactNode;
   /** 输入框占位文案透传（如「先选择分类，开始新对话…」）。 */
   composerPlaceholder?: string;
+  /** 输入框下方会话统计条数据（累计输入/输出 + 最近一轮用量快照）；
+   * 缺省或无会话时不渲染统计条。 */
+  sessionStats?: SessionStatsData;
   /**
    * UI-23a：多项目保活下隐藏工作区传 false——不注册全局快捷键（消除多实例
    * 叠加触发）、不渲染命令面板（其 open 态来自全局 store，多份渲染会重叠）。
@@ -183,6 +187,7 @@ export function ChatShell({
   emptyState,
   categoryPicker,
   composerPlaceholder,
+  sessionStats,
   enabled = true,
   containerRef,
 }: ChatShellProps) {
@@ -406,6 +411,11 @@ export function ChatShell({
               if (entry) bindChatModel.mutate({ kind: modelPurposeKind, entry });
             }}
             onConfigureModel={handleConfigureModel}
+            statsBar={
+              sessionStats && sessionId ? (
+                <SessionStatsBar sessionId={sessionId} stats={sessionStats} />
+              ) : undefined
+            }
           />
         }
         artifactPanel={

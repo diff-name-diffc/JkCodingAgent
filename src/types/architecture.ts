@@ -13,3 +13,18 @@ export interface ArchRunRequestPayload {
 
 /** 架构会话的内部分类（与后端 `INTERNAL_CHAT_CATEGORY` 同值，勿改）。 */
 export const ARCH_DESIGN_CATEGORY = "arch-design";
+
+/** 架构画板文件元数据（镜像后端 `ArchitectureCanvasMeta`，camelCase）。 */
+export interface ArchitectureCanvasMeta {
+  id: string;
+  name: string;
+  /** epoch 毫秒。 */
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 画板文件完整载荷：元数据 + `.excalidraw` 场景 JSON 原文。 */
+export interface ArchitectureCanvasFile {
+  meta: ArchitectureCanvasMeta;
+  dataJson: string;
+}

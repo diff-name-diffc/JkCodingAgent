@@ -728,6 +728,184 @@
     word-break: break-all;
   }
 
+  /* 画板启动加载占位（画板文件/列表读取期间替代画布）。 */
+  .ai-arch-canvas-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-sidebar);
+    color: var(--text-hint);
+    font-size: 13px;
+  }
+
+  /* 画板文件栏：画布右上角悬浮条（Excalidraw 默认 UI 右上角为空，
+     不与内置按钮冲突）——画板列表/新建/重命名/删除/在文件夹中显示。 */
+  .ai-arch-filebar {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 15;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-md);
+    background: var(--bg-sidebar);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .ai-arch-filebar-icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition:
+      background 0.15s var(--motion-ease),
+      color 0.15s var(--motion-ease);
+  }
+
+  .ai-arch-filebar-icon-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .ai-arch-filebar-icon-btn.is-danger:hover {
+    color: var(--danger);
+  }
+
+  .ai-arch-filebar-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 240px;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+      background 0.15s var(--motion-ease),
+      color 0.15s var(--motion-ease);
+  }
+
+  .ai-arch-filebar-name:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .ai-arch-filebar-name-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 画板列表菜单（DropdownMenuContent 追加类）。 */
+  .ai-arch-filebar-menu {
+    min-width: 250px;
+    max-height: 340px;
+    overflow-y: auto;
+  }
+
+  .ai-arch-filebar-empty {
+    padding: 12px;
+    color: var(--text-hint);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .ai-arch-filebar-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .ai-arch-filebar-item-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ai-arch-filebar-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .ai-arch-filebar-item-time {
+    color: var(--text-hint);
+    font-size: 11px;
+  }
+
+  .ai-arch-filebar-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  /* 画板命名/重命名输入弹窗（骨架对齐 ai-set-confirm）。 */
+  .ai-arch-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 400;
+    background: var(--bg-overlay);
+    backdrop-filter: blur(6px);
+    animation: ai-fade-in 120ms ease-out;
+  }
+
+  .ai-arch-dialog {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 401;
+    display: flex;
+    width: min(360px, calc(100vw - 32px));
+    flex-direction: column;
+    gap: 12px;
+    transform: translate(-50%, -50%);
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-xl);
+    padding: 20px 22px 18px;
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
+    animation: ai-fade-in 120ms ease-out;
+  }
+
+  .ai-arch-dialog-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .ai-arch-dialog-input {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+  }
+
+  .ai-arch-dialog-input:focus {
+    border-color: var(--accent);
+  }
+
+  .ai-arch-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
   /* ── 架构设计：画布 + 助手面板分栏 ─────────────────────────────── */
 
   .ai-arch-shell {
@@ -6711,32 +6889,6 @@
     background: rgb(var(--warning-rgb) / 0.1);
   }
 
-  /* 上下文占用指示（容量回路）：随占用率切换令牌色，占用走高时提示
-     历史会被折叠为滚动摘要。 */
-  .ai-chat-header-usage {
-    display: inline-flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 4px;
-    padding: 0 6px;
-    font-size: 11px;
-    line-height: 18px;
-    border-radius: 999px;
-    color: var(--text-secondary);
-    background: var(--bg-hover);
-    cursor: default;
-  }
-
-  .ai-chat-header-usage.is-warning {
-    color: var(--warning);
-    background: rgb(var(--warning-rgb) / 0.1);
-  }
-
-  .ai-chat-header-usage.is-danger {
-    color: var(--danger);
-    background: rgb(var(--danger-rgb) / 0.1);
-  }
-
   .ai-chat-header-runstate-dot {
     width: 6px;
     height: 6px;
@@ -7723,6 +7875,107 @@
 
   .ai-composer-action.is-stop {
     border-radius: var(--radius-full);
+  }
+
+  /* 输入框下方底排：会话统计（速度/输入/输出/上下文占用）+ 快捷键提示。
+     低强调小字（--text-hint），数值用 tabular-nums 避免跳动。 */
+  .ai-composer-footer {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 6px;
+    padding: 0 8px;
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--text-hint);
+  }
+
+  .ai-composer-stats {
+    display: flex;
+    min-width: 0;
+    flex-shrink: 1;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+
+  .ai-composer-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-hint);
+    cursor: default;
+  }
+
+  .ai-composer-stat-value {
+    color: var(--text-muted);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ai-composer-stat.is-warning,
+  .ai-composer-stat.is-warning .ai-composer-stat-value {
+    color: var(--warning);
+  }
+
+  .ai-composer-stat.is-danger,
+  .ai-composer-stat.is-danger .ai-composer-stat-value {
+    color: var(--danger);
+  }
+
+  .ai-composer-stat-divider {
+    width: 1px;
+    height: 10px;
+    flex-shrink: 0;
+    background: var(--border-dim);
+  }
+
+  /* 上下文占用迷你条：随占用率变色（继承项级 is-warning/is-danger）。 */
+  .ai-composer-stat-bar {
+    display: inline-block;
+    width: 28px;
+    height: 3px;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--border-dim);
+  }
+
+  .ai-composer-stat-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: currentColor;
+    transition: width var(--motion-fast) var(--motion-ease);
+  }
+
+  /* 底排右侧快捷键提示：kbd 小键帽 + 细分隔点。 */
+  .ai-composer-hint {
+    margin-left: auto;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-hint);
+  }
+
+  .ai-composer-kbd {
+    padding: 0 4px;
+    border: 1px solid var(--border-dim);
+    border-radius: 4px;
+    background: var(--bg-sidebar);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 14px;
+  }
+
+  .ai-composer-hint-dot {
+    width: 2px;
+    height: 2px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--border-medium);
   }
 
   /* ── Messages ── */

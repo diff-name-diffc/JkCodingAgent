@@ -262,10 +262,16 @@ export function PromptInput({
           )}
         </div>
       </div>
-      <div className="mt-1.5 flex items-center gap-3 px-2 text-[11px] leading-4 text-muted-foreground">
+      <div className="ai-composer-footer">
         {statsBar}
-        <span className="ml-auto shrink-0" aria-hidden="true">
-          Enter 发送 · Shift+Enter 换行 · 支持粘贴截图
+        <span className="ai-composer-hint" aria-hidden="true">
+          <kbd className="ai-composer-kbd">Enter</kbd>
+          发送
+          <span className="ai-composer-hint-dot" />
+          <kbd className="ai-composer-kbd">⇧ Enter</kbd>
+          换行
+          <span className="ai-composer-hint-dot" />
+          可粘贴截图
         </span>
       </div>
     </div>

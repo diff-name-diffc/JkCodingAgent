@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod architecture_canvas;
 mod browser;
 mod chat_images;
 mod mcp;

@@ -1,7 +1,7 @@
 use crate::agent::DispatcherState;
 use crate::{
-    agent, browser, chat_images, mcp, platform, project, python_runner, rag, scm,
-    shared::TaskManager, ssh_tool, task_runtime, workspace,
+    agent, architecture_canvas, browser, chat_images, mcp, platform, project, python_runner, rag,
+    scm, shared::TaskManager, ssh_tool, task_runtime, workspace,
 };
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -153,6 +153,12 @@ pub fn run() {
             agent::commands::architecture_commands::dispatcher_send_architecture_agent_message,
             agent::commands::architecture_commands::architecture_run_complete,
             agent::commands::architecture_commands::architecture_run_claim,
+            architecture_canvas::architecture_canvas_list,
+            architecture_canvas::architecture_canvas_load,
+            architecture_canvas::architecture_canvas_save,
+            architecture_canvas::architecture_canvas_delete,
+            architecture_canvas::architecture_canvas_rename,
+            architecture_canvas::architecture_canvas_reveal_path,
             agent::commands::confirm_commands::tool_confirm_resolve,
             agent::commands::message_commands::dispatcher_list_messages,
             agent::commands::message_commands::dispatcher_get_tool_run_tree,

@@ -15,7 +15,7 @@ import {
 } from "./dispatcher-chat/useLiveSessionState";
 import { useDispatcherActions } from "./dispatcher-chat/useDispatcherActions";
 import { ChatShell } from "./chat/chat-shell";
-import type { SessionStatsData } from "./chat/session-stats-bar";
+import type { ContextUsageSnapshot, SessionStatsData } from "./chat/session-stats-bar";
 import { resolveChatEmptyState } from "./chat/chat-empty-content";
 import { CategoryPickerState } from "./chat/category-picker-state";
 import type { ComposerMode } from "./chat/prompt-input";
@@ -149,30 +149,30 @@ export function ChatPageV2({
 
   const currentSessionIdRef = useRef<string | null>(activeSessionId);
   currentSessionIdRef.current = activeSessionId;
-  // 上下文占用快照（容量回路闭环）：最近一次请求的 prompt 占用 / 窗口容量，
-  // 取 primary 来源里最新的一条；头部指示器据此提示历史折叠行为。
-  const contextUsage = useMemo(() => {
-    const primary = sessionTokenUsageEntries.filter((entry) => entry.sourceKind === "primary");
-    if (primary.length === 0) return null;
-    const latest = primary.reduce((a, b) => (a.updatedAt > b.updatedAt ? a : b));
-    if (latest.contextWindowTokens <= 0 || latest.contextWindowCapacity <= 0) return null;
-    return {
-      usedTokens: latest.contextWindowTokens,
-      capacityTokens: latest.contextWindowCapacity,
-    };
-  }, [sessionTokenUsageEntries]);
-  // 输入框下方会话统计条：累计输入/输出与头部上下文占用同口径（primary、
-  // 跨模型求和，不含摘要模型消耗）；速度回退取最后一条带 usageStats 的
-  // assistant 消息（一轮 run 的最终累计快照），运行中的实时速度由统计条
-  // 自行窄订阅 live state 的 runUsage。
+  // 输入框下方会话统计条：累计输入/输出、上下文占用（容量回路闭环：最近
+  // 一次请求的 prompt 占用 / 窗口容量）同口径——primary 来源、跨模型求和
+  // （不含摘要模型消耗）；速度回退取最后一条带 usageStats 的 assistant
+  // 消息（一轮 run 的最终累计快照），运行中的实时速度由统计条自行窄订阅
+  // live state 的 runUsage。
   const sessionStats = useMemo<SessionStatsData>(() => {
     let inputTokens = 0;
     let outputTokens = 0;
+    let latestPrimary: (typeof sessionTokenUsageEntries)[number] | null = null;
     for (const entry of sessionTokenUsageEntries) {
       if (entry.sourceKind !== "primary") continue;
       inputTokens += entry.promptTokens;
       outputTokens += entry.completionTokens;
+      if (!latestPrimary || entry.updatedAt > latestPrimary.updatedAt) latestPrimary = entry;
     }
+    const contextUsage: ContextUsageSnapshot | null =
+      latestPrimary &&
+      latestPrimary.contextWindowTokens > 0 &&
+      latestPrimary.contextWindowCapacity > 0
+        ? {
+            usedTokens: latestPrimary.contextWindowTokens,
+            capacityTokens: latestPrimary.contextWindowCapacity,
+          }
+        : null;
     let lastRunStats: DispatcherMessageUsageStats | null = null;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -181,7 +181,7 @@ export function ChatPageV2({
         break;
       }
     }
-    return { inputTokens, outputTokens, lastRunStats };
+    return { inputTokens, outputTokens, lastRunStats, contextUsage };
   }, [sessionTokenUsageEntries, messages]);
   // 布局根节点 ref（UI-23a）：把输入框聚焦等 DOM 查询限定在本实例子树内——
   // 多项目保活时页面同时挂载多套聊天 DOM，全局选择器会命中隐藏工作区。
@@ -471,7 +471,6 @@ export function ChatPageV2({
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
-      contextUsage={contextUsage}
       workflowAvailable={workflowPanel.latestPlanId !== null}
       onOpenWorkflowPanel={workflowPanel.open}
       onOpenMcpStatus={onOpenMcpStatus}
@@ -488,7 +487,6 @@ export function ChatPageV2({
       hasMessages={messages.length > 0}
       mcpStatus={mcpStatus}
       mcpChecking={mcpChecking}
-      contextUsage={contextUsage}
       onOpenMcpStatus={onOpenMcpStatus}
       onClearMessages={handleClearMessages}
       onOpenSettings={onOpenSettings}

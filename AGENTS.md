@@ -50,7 +50,7 @@ App
 ├── WelcomePage（主页：聊天 / 项目 / 架构 三视图，AppRail 导航）
 │   ├── HomeChatPage（独立聊天工作区）
 │   ├── 项目网格（打开 / 删除本地仓库）
-│   └── ArchitectureView（Excalidraw 画布 + 助手聊天）
+│   └── ArchitectureView（Excalidraw 画布 + 画板文件栏 + 助手聊天；画板文件经 architecture_canvas_* 命令存 `~/.jkcodingagent/architecture-canvases/`，`use-canvas-document.ts` 管启动回显/防抖自动保存/显式保存（⌘/Ctrl+S，未命名画板先弹命名弹窗）/切换重命名删除，旧 localStorage 单文档场景启动时一次性迁移）
 └── ProjectPage（项目工作区）
     ├── ContextNav（会话 / 文件 / 变更 / 历史四页签）
     ├── SessionPanel（会话列表：搜索 / 新建 / 分页）
@@ -84,6 +84,7 @@ App
 | `ssh_tool/` | SSH 执行 + AI 安全审查门禁。russh 传输；连接池按 `server_id+session_id` 复用 `Handle`，并发命令各走独立 channel；瞬态网络错误（errno 集合见 `connection.rs`）间隔 1.5s 重试一次，认证/密钥失败不重试；TOFU 指纹 = key blob 的 SHA-256 hex。`memo.rs` 每服务器备忘录 `~/.jkcodingagent/ssh-memos/{server_id}.md`（全文 8000 / 单段 4000 字符硬上限），工具 `ssh_memo_read/upsert/delete`；删服务器随 `save_servers` 级联清理（同事务清主机密钥/审计行，提交后删备忘录文件） |
 | `browser.rs` / `browser/` / `resources/browser-sidecar/` | 会话级浏览器宿主与 Python browser-use 执行器；通用工具仅 `browser_open_url`，`browser-agent` 经 `call_sub_agent` 委派；UI 与探索共用执行锁，取消/超时终止进程组 |
 | `chat_images.rs` / `python_runner.rs` | 聊天图片存储 / Python 运行器 |
+| `architecture_canvas.rs` | 架构画板文件管理：画板统一保存 `~/.jkcodingagent/architecture-canvases/`（`{id}.excalidraw` 标准场景 JSON + `index.json` 元数据索引，列表时以文件系统为事实源调和），命令只收白名单画板 id（防目录穿越），`architecture_canvas_{list,load,save,delete,reveal_path}` |
 
 核心约束：
 - 所有接受路径参数的命令必须校验路径位于工作区内，防止目录遍历。

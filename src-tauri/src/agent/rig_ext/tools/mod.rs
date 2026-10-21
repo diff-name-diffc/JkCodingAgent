@@ -3,6 +3,7 @@
 //!
 //! 分组与入口（每组一个文件/目录，组内可再拆子模块）：
 //! - `fs`：read_file / list_dir / glob / grep（只读数据面，编排器也用）；
+//! - `edit`：apply_patch（核心文件编辑能力，apply-patch 补丁格式）；
 //! - `exec`：local_zsh / ssh_* / ssh_memo_* / sync_directory（命令执行面）；
 //! - `media`：generate_image / edit_image / analyze_image / fetch_image / browser_*；
 //! - `program`：run_tool_program（进程内 JavaScript 编排调用方注入的数据面工具）；
@@ -20,6 +21,7 @@
 
 pub(crate) mod common;
 pub(crate) mod deps;
+pub(crate) mod edit;
 pub(crate) mod exec;
 pub(crate) mod fs;
 pub(crate) mod mcp;

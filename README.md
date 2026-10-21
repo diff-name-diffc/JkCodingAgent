@@ -41,7 +41,7 @@ pnpm typecheck        # TypeScript check (separate from build)
 pnpm build            # Vite build
 pnpm tauri dev        # Launch full desktop app (auto-starts dev server)
 pnpm tauri build      # Build production desktop binary
-pnpm app:install      # Install the built .app to /Applications (overwrite)
+pnpm app:install      # Quit the old app, install to /Applications, and reopen (no confirmation; --no-open skips reopening)
 ```
 
 > **⚠️ Upgrading to the v16 schema baseline requires a local data reset.** The

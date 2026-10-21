@@ -37,6 +37,17 @@ impl RigReviewContext {
         }
     }
 
+    /// 普通聊天装配时统一追加目录规则，所有工具与子智能体复用同一份审查快照。
+    pub(crate) fn with_chat_workspace(
+        mut self,
+        workspace: &crate::agent::rig_ext::chat_workspace::ChatWorkspace,
+    ) -> Self {
+        self.review_conversation
+            .get_or_insert_with(String::new)
+            .push_str(&workspace.render_prompt());
+        self
+    }
+
     /// 组装交给审查模型的载荷（对齐旧 `build_review_payload`）。
     pub fn build_payload(
         &self,
@@ -63,6 +74,45 @@ impl RigReviewContext {
             screen_context: None,
             command,
             stdin,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::rig_ext::chat_workspace::ChatWorkspace;
+
+    #[test]
+    fn chat_directory_rules_reach_all_review_payloads_even_without_dialogue() {
+        let workspace = ChatWorkspace {
+            session_root: "/session".into(),
+            project_roots: vec!["/shared/first".into(), "/shared/second".into()],
+        };
+        let boundary = workspace.render_prompt();
+        for dialogue in [None, Some("原始对话".to_string())] {
+            let mut review = RigReviewContext::unconfigured();
+            review.review_conversation = dialogue.clone();
+            let review = review.with_chat_workspace(&workspace);
+            // 子智能体只更新执行者任务，不能丢失父审查上下文的固定目录规则。
+            let mut child_review = review.clone();
+            child_review.executor_task = Some("同步正式成果".into());
+            let payload = child_review.build_payload(
+                "review-shared-directories",
+                None,
+                CommandReviewTarget::Mcp {
+                    workspace_path: "/session".into(),
+                    tool_name: "mcp__files__copy".into(),
+                },
+                "copy deliverable".into(),
+                None,
+            );
+            assert_eq!(
+                payload.conversation,
+                Some(format!("{}{boundary}", dialogue.unwrap_or_default()))
+            );
+            assert_eq!(payload.executor_task.as_deref(), Some("同步正式成果"));
+            assert_eq!(review.review_conversation, payload.conversation);
         }
     }
 }

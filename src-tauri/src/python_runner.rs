@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::agent::config::resolve_home_dir;
 use crate::agent::db::{DispatcherDb, PythonCodeRunRecord};
+use crate::agent::rig_ext::chat_workspace::ChatWorkspace;
 use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
 use crate::agent::DispatcherState;
 use crate::shared::truncate_for_display;
@@ -64,15 +65,18 @@ struct CommandOutput {
     cancelled: bool,
 }
 
+#[derive(Debug)]
 struct RunPaths {
     root: PathBuf,
     venv: PathBuf,
     run_dir: PathBuf,
     main_py: PathBuf,
+    temp_dir: Option<PathBuf>,
 }
 
 mod agent;
 pub(crate) mod commands;
+mod workspace;
 use agent::run_python_agent;
 async fn execute_python_tool(
     paths: &RunPaths,
@@ -208,15 +212,31 @@ async fn explain_result(
         .to_string())
 }
 
-fn build_python_agent_system_prompt() -> String {
-    "你是一个只负责运行 Python Markdown 代码块的教学 agent。\
+fn build_python_agent_system_prompt(
+    chat_workspace: Option<&ChatWorkspace>,
+    paths: &RunPaths,
+) -> String {
+    let mut prompt = "你是一个只负责运行 Python Markdown 代码块的教学 agent。\
      你可以通过工具运行代码、安装依赖，或把 Markdown 中不完整的示例代码补全为可运行脚本。\
      你会看到完整消息上下文和被点击的代码块；补全代码必须忠实于消息意图，不要换题。\
      如果 stderr 显示缺失第三方包，请调用 install_packages 安装最小必要包，然后调用 run_python 重试。\
      如果代码块明显只是片段、伪代码、缺少数据/变量/函数定义，先调用 update_code 写入一个完整可运行的教学示例，再调用 run_python。\
      如果是语法错误、类型错误或逻辑错误，优先基于上下文用 update_code 修正成最小可运行版本；确实无法合理补全时再解释原因。\
-     不要建议使用 shell；不要安装与错误无关的包；不要访问项目文件。"
-        .to_string()
+     不要建议使用 shell；不要安装与错误无关的包；"
+        .to_string();
+    if let Some(workspace) = chat_workspace {
+        prompt.push_str("文件访问遵守下方固定目录规则。");
+        prompt.push_str(&workspace.render_prompt());
+        prompt.push_str(&format!(
+            "\nPython 执行约定：本次 main.py 和默认工作目录位于 {}，Python 相对路径以该目录为基准；\
+             临时脚本、测试生成物和中间文件留在这里。TMPDIR/TMP/TEMP 已指向会话内临时目录，\
+             正式成果仅按用户任务需要使用上列共享工程目录的绝对路径，不切换到工程目录运行临时脚本。",
+            serde_json::Value::String(paths.run_dir.to_string_lossy().into_owned())
+        ));
+    } else {
+        prompt.push_str("不要访问项目文件。");
+    }
+    prompt
 }
 
 fn build_initial_agent_user_prompt(record: &PythonCodeRunRecord, message_context: &str) -> String {
@@ -364,11 +384,21 @@ fn append_line(target: &mut String, line: &str) {
     target.push_str(line);
 }
 
-/// 同步 DB upsert 放进 spawn_blocking 执行，避免阻塞异步任务线程。
-async fn upsert_run_record(db: &DispatcherDb, record: &PythonCodeRunRecord) -> Result<()> {
+/// 后续状态只更新已有且 run_id 匹配的记录，不能复活已清理的消息/结果。
+async fn update_run_record(db: &DispatcherDb, record: &PythonCodeRunRecord) -> Result<()> {
+    if !persist_existing_run_record(db, record).await? {
+        anyhow::bail!("Python 执行记录已被清理或替换，已停止回写");
+    }
+    Ok(())
+}
+
+async fn persist_existing_run_record(
+    db: &DispatcherDb,
+    record: &PythonCodeRunRecord,
+) -> Result<bool> {
     let db = db.clone();
     let record = record.clone();
-    tokio::task::spawn_blocking(move || db.upsert_python_code_run(&record))
+    tokio::task::spawn_blocking(move || db.update_python_code_run(&record))
         .await
         .map_err(|error| anyhow!("spawn_blocking 失败: {error}"))?
 }
@@ -380,7 +410,7 @@ async fn mark_stopped(
 ) -> Result<()> {
     record.status = "stopped".to_string();
     record.updated_at = Utc::now().to_rfc3339();
-    upsert_run_record(db, record).await?;
+    update_run_record(db, record).await?;
     emit_run_event(app, record, "stopped", json!({ "record": record.clone() }));
     Ok(())
 }
@@ -392,7 +422,7 @@ async fn persist_and_emit(
     event: &str,
     data: Value,
 ) -> Result<()> {
-    upsert_run_record(db, record).await?;
+    update_run_record(db, record).await?;
     emit_run_event(app, record, event, data);
     Ok(())
 }
@@ -415,3 +445,7 @@ use runtime::{
     cancellation_requested, code_hash, ensure_uv_available, ensure_venv, install_packages,
     prepare_paths, run_python_file_streaming, PythonRunEventCtx,
 };
+
+#[cfg(test)]
+#[path = "python_runner/tests.rs"]
+mod tests;

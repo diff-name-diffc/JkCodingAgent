@@ -137,6 +137,27 @@ pub(super) static TOOL_POLICY_TABLE: &[ToolPolicyRow] = &[
         ToolPolicyOptions::PARALLEL_READONLY,
         ClaimResource::FilePath,
     ),
+    // ── 文件编辑 ──
+    // apply_patch：apply-patch 补丁式文件编辑（新增/修改/移动/删除）。写效果
+    // 限定在工作区 + 额外授权目录（FsSandbox 沙箱化，越界路径在计算期拒绝），
+    // 因此 Safe（无 AI 审查——命令类才走审查门禁，文件写受路径沙箱与写集
+    // 收窄授权约束）。资源域用 Workspace：FilePath 只允许只读工具（claims 层
+    // per-file 固定只读锁），可写路径工具必须声明 Workspace 与 local_zsh 互斥。
+    policy_row(
+        "apply_patch",
+        ToolCategory::Filesystem,
+        ToolAccess {
+            readonly: false,
+            workspace_bound: true,
+            requires_network: false,
+            mutates_filesystem: true,
+            mutates_external_state: false,
+        },
+        ToolSafety::Safe,
+        30,
+        ToolPolicyOptions::SERIAL,
+        ClaimResource::Workspace,
+    ),
     // ── 命令执行（能力边界按最坏情况声明，强制审查）──
     policy_row(
         "local_zsh",

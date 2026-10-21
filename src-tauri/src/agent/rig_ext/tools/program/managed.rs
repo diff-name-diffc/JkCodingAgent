@@ -111,6 +111,11 @@ async fn execute_managed(
         AppToolPolicyConfig {
             workspace_id: parent.workspace_id.clone(),
             workspace: deps.workspace.clone(),
+            filesystem_roots: deps
+                .chat_workspace
+                .as_ref()
+                .map(|_| deps.extra_allowed_dirs.clone())
+                .unwrap_or_default(),
             review: deps.review.clone(),
             cancel_rx: Some(parent.cancel_rx.clone()),
             trace: crate::agent::db::ToolRunTraceContext {
@@ -163,6 +168,7 @@ mod tests {
         RigToolDeps {
             workspace_id: "managed-leaf-test".to_string(),
             workspace: dir.to_path_buf(),
+            chat_workspace: None,
             mcp_scope: crate::mcp::McpScope::Global,
             exec_timeout_secs: 30,
             restrict_to_workspace: true,

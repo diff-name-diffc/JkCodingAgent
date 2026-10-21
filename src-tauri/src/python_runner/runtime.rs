@@ -1,20 +1,71 @@
 use super::*;
 
-pub(super) fn prepare_paths(root_dir: &Path, run_id: &str) -> Result<RunPaths> {
+fn run_paths(root_dir: &Path, run_id: &str, chat_workspace: Option<&ChatWorkspace>) -> RunPaths {
     let root = root_dir.join("python-runner");
     let venv = root.join("venv");
-    let run_dir = root.join("runs").join(run_id);
-    std::fs::create_dir_all(&run_dir).with_context(|| format!("create {}", run_dir.display()))?;
-    Ok(RunPaths {
+    let run_dir = match chat_workspace {
+        Some(workspace) => workspace.session_root.join("python-runs").join(run_id),
+        None => root.join("runs").join(run_id),
+    };
+    RunPaths {
         root,
         venv,
         main_py: run_dir.join("main.py"),
+        temp_dir: chat_workspace.map(|_| run_dir.join("tmp")),
         run_dir,
-    })
+    }
 }
 
-pub(super) async fn ensure_uv_available(stop_rx: &mut watch::Receiver<bool>) -> Result<()> {
-    let output = run_command("uv", &["--version"], None, Duration::from_secs(10), stop_rx).await?;
+pub(super) fn prepare_paths(
+    root_dir: &Path,
+    run_id: &str,
+    chat_workspace: Option<&ChatWorkspace>,
+) -> Result<RunPaths> {
+    let mut paths = run_paths(root_dir, run_id, chat_workspace);
+    if let Some(workspace) = chat_workspace {
+        // 生产调用在取得会话写租约并重查目标消息后到达这里。
+        std::fs::create_dir_all(&workspace.session_root).with_context(|| {
+            format!(
+                "create Python session directory {}",
+                workspace.session_root.display()
+            )
+        })?;
+        // 已有目录/文件可能是符号链接；临时运行文件只能解析到会话内。
+        let resolve = |path: &Path| {
+            crate::agent::rig_ext::tools::common::resolve_path(
+                &workspace.session_root,
+                true,
+                &[],
+                &path.to_string_lossy(),
+            )
+            .map_err(anyhow::Error::msg)
+        };
+        paths.run_dir = resolve(&paths.run_dir)?;
+        paths.main_py = resolve(&paths.main_py)?;
+        paths.temp_dir = paths.temp_dir.as_deref().map(resolve).transpose()?;
+    }
+    std::fs::create_dir_all(&paths.run_dir)
+        .with_context(|| format!("create {}", paths.run_dir.display()))?;
+    if let Some(temp_dir) = &paths.temp_dir {
+        std::fs::create_dir_all(temp_dir)
+            .with_context(|| format!("create {}", temp_dir.display()))?;
+    }
+    Ok(paths)
+}
+
+pub(super) async fn ensure_uv_available(
+    paths: &RunPaths,
+    stop_rx: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    let output = run_command(
+        "uv",
+        &["--version"],
+        None,
+        paths.temp_dir.as_deref(),
+        Duration::from_secs(10),
+        stop_rx,
+    )
+    .await?;
     if command_succeeded(&output) {
         Ok(())
     } else {
@@ -37,6 +88,7 @@ pub(super) async fn ensure_venv(
         "uv",
         &["venv", &venv_arg],
         Some(&paths.root),
+        paths.temp_dir.as_deref(),
         Duration::from_secs(INSTALL_TIMEOUT_SECS),
         stop_rx,
     )
@@ -67,6 +119,10 @@ pub(super) async fn run_python_file_streaming(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(&paths.run_dir);
+    configure_temp_environment(&mut command, paths.temp_dir.as_deref());
+    if paths.temp_dir.is_some() {
+        command.env("PYTHONPYCACHEPREFIX", paths.run_dir.join("pycache"));
+    }
 
     let mut child = command
         .spawn()
@@ -164,7 +220,11 @@ pub(super) async fn install_packages(
     run_command(
         "uv",
         &refs,
+        // 安装目标经 --python 显式指定；cwd 固定在应用托管目录：run_dir 是
+        // 脚本可写目录，uv 会从 cwd 向上发现 pyproject.toml/uv.toml（如
+        // index-url），不能让脚本生成的配置被依赖安装继承。
         Some(&paths.root),
+        paths.temp_dir.as_deref(),
         Duration::from_secs(INSTALL_TIMEOUT_SECS),
         stop_rx,
     )
@@ -175,6 +235,7 @@ pub(super) async fn run_command(
     program: &str,
     args: &[&str],
     cwd: Option<&Path>,
+    temp_dir: Option<&Path>,
     duration: Duration,
     stop_rx: &mut watch::Receiver<bool>,
 ) -> Result<CommandOutput> {
@@ -186,6 +247,7 @@ pub(super) async fn run_command(
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
+    configure_temp_environment(&mut command, temp_dir);
     let mut child = command
         .spawn()
         .with_context(|| format!("启动命令失败：{program}"))?;
@@ -226,6 +288,14 @@ pub(super) async fn run_command(
     })
 }
 
+fn configure_temp_environment(command: &mut Command, temp_dir: Option<&Path>) {
+    if let Some(temp_dir) = temp_dir {
+        for name in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(name, temp_dir);
+        }
+    }
+}
+
 async fn read_limited<R>(reader: Option<R>) -> Result<String>
 where
     R: AsyncRead + Unpin,
@@ -259,3 +329,6 @@ pub(super) fn code_hash(code: &str) -> String {
 pub(super) fn cancellation_requested(stop_rx: &watch::Receiver<bool>) -> bool {
     *stop_rx.borrow()
 }
+
+#[cfg(test)]
+mod tests;

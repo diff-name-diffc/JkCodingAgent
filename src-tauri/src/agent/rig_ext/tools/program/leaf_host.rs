@@ -195,6 +195,7 @@ mod tests {
         RigToolDeps {
             workspace_id: "leaf-host-test".to_string(),
             workspace: dir.to_path_buf(),
+            chat_workspace: None,
             mcp_scope: crate::mcp::McpScope::Global,
             exec_timeout_secs: 30,
             restrict_to_workspace: true,

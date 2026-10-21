@@ -32,6 +32,7 @@ impl TaskScheduler {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let root = policy.resource_workspace();
+        let filesystem_roots = policy.filesystem_roots().to_vec();
         let claim_inputs = tools
             .iter()
             .cloned()
@@ -41,7 +42,9 @@ impl TaskScheduler {
         let declarations = tokio::task::spawn_blocking(move || {
             claim_inputs
                 .iter()
-                .map(|(tool, call)| claims(tool, call, &workspace, root.as_deref()))
+                .map(|(tool, call)| {
+                    claims(tool, call, &workspace, root.as_deref(), &filesystem_roots)
+                })
                 .collect::<Vec<_>>()
         })
         .await?;

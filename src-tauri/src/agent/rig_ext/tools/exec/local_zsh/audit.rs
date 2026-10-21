@@ -10,7 +10,6 @@ use parking_lot::Mutex;
 
 use super::{
     command_invokes_command, LocalZshAuditEntry, LocalZshAuditLog, AUDIT_FILE_NAME, HISTORY_LIMIT,
-    MAX_RESULT_CHARS,
 };
 
 /// 按 run_dir 粒度的审计写锁：并发调用串行化 audit.json 的读-改-写，避免互相覆盖。
@@ -68,6 +67,7 @@ pub(super) fn append_audit_entry(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_command_result(
     run_dir: &Path,
+    audit_dir: &Path,
     command: &str,
     stdout: &str,
     stderr: &str,
@@ -79,6 +79,7 @@ pub(super) fn render_command_result(
     review: Option<&crate::ssh_tool::SshAuditReview>,
     show_session_history: bool,
     session_history: &[LocalZshAuditEntry],
+    max_output_chars: usize,
 ) -> String {
     let mut result = String::new();
     result.push_str("## local_zsh 执行结果\n\n");
@@ -103,13 +104,13 @@ pub(super) fn render_command_result(
     if !stdout.trim().is_empty() {
         result.push_str("\n### stdout\n\n");
         result.push_str("```text\n");
-        result.push_str(&truncate_chars(stdout, MAX_RESULT_CHARS));
+        result.push_str(&truncate_chars(stdout, max_output_chars));
         result.push_str("\n```\n");
     }
     if !stderr.trim().is_empty() {
         result.push_str("\n### stderr\n\n");
         result.push_str("```text\n");
-        result.push_str(&truncate_chars(stderr, MAX_RESULT_CHARS));
+        result.push_str(&truncate_chars(stderr, max_output_chars));
         result.push_str("\n```\n");
     }
     if review.as_ref().is_some_and(|review| !review.allowed) {
@@ -129,7 +130,10 @@ pub(super) fn render_command_result(
                 escape_table_cell(&truncate_chars(&item.command, 160))
             ));
         }
-        result.push_str("\n审计文件: `audit.json`\n");
+        result.push_str(&format!(
+            "\n审计文件: `{}`\n",
+            audit_dir.join(AUDIT_FILE_NAME).display()
+        ));
     }
 
     result
@@ -187,7 +191,7 @@ pub(super) fn command_contains_ssh(command: &str) -> bool {
     command_invokes_command(&command.to_ascii_lowercase(), "ssh")
 }
 
-fn truncate_chars(value: &str, max_chars: usize) -> String {
+pub(super) fn truncate_chars(value: &str, max_chars: usize) -> String {
     let mut output = String::new();
     for (index, ch) in value.chars().enumerate() {
         if index >= max_chars {

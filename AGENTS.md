@@ -22,7 +22,7 @@ pnpm contract:check # Tauri 命令双向契约检查（后端注册 ↔ 前端�
 pnpm styles:report  # 样式类双向 fail-closed 报告（.ai-* + App.css 遗留类族，含动态拼接 safelist）
 pnpm tauri dev      # 启动完整桌面应用（自动启动开发服务器）
 pnpm tauri build    # 构建生产环境桌面二进制包（bundle 只出 .app，不打 dmg）
-pnpm app:install    # 将构建产物覆盖安装到 /Applications（scripts/install-app.sh，-y/--open 可选）
+pnpm app:install    # 自动退出旧应用、覆盖安装到 /Applications 并启动（install-app.sh，无需 -y；--no-open 跳过启动）
 ```
 
 > 新增功能应同步补单元测试（优先纯函数：路径处理、token 统计、segments 解析、分组/归一化等）；Vitest 用例放在被测模块旁的 `*.test.ts(x)`。Rust 后端位于 `src-tauri/`，修改后需重启 `tauri dev`。
@@ -73,7 +73,7 @@ App
 
 | 模块 | 职责 |
 |------|------|
-| `agent/` | dispatcher 智能体核心（rig-core 0.42 portable contracts）。`rig_ext/`：model（用途槽位→rig 模型）、message（消息桥）、loop/（多轮工具循环+三段式执行+台账+协议拦截）、context（上下文整形）、tool_result（结果落盘/压缩）、summary（标题/关键字）、events（前端事件契约）、agents/（Agent 装配+协议工具+画布 DSL）、sub_agent/（子智能体运行时）、tools/（fs/exec/media/program/mcp/spec 策略表）、review（命令审查）、models；`workflow/`（工作流编排：定义/校验/执行引擎/acp_exec）、`db/`（schema 读写+contract.rs 契约）、`commands/`、`config.rs`（配置+`~/.jkcodingagent` 初始化）、`ssh_review.rs`（命令安全审查）、`sub_agent/{config,manager,db,commands}` |
+| `agent/` | dispatcher 智能体核心（rig-core 0.42 portable contracts）。`rig_ext/`：model（用途槽位→rig 模型）、message（消息桥）、loop/（多轮工具循环+三段式执行+台账+协议拦截）、context（上下文整形）、tool_result（结果落盘/压缩）、summary（标题/关键字）、events（前端事件契约）、agents/（Agent 装配+协议工具+画布 DSL）、sub_agent/（子智能体运行时）、tools/（fs/edit/exec/media/program/mcp/spec 策略表）、review（命令审查）、models；`workflow/`（工作流编排：定义/校验/执行引擎/acp_exec）、`db/`（schema 读写+contract.rs 契约）、`commands/`、`config.rs`（配置+`~/.jkcodingagent` 初始化）、`ssh_review.rs`（命令安全审查）、`sub_agent/{config,manager,db,commands}` |
 | `task_runtime/` | `pty.rs`（PTY 创建/读写） |
 | `project/` | `storage.rs`（受管项目/会话存储）、`config.rs`（项目配置） |
 | `mcp/` | `McpScope{Global, Project}` 作用域：Global = `mcp_servers` 全局注册表（聊天共享单一快照）；Project = 全局 ∪ 项目 `.jkcodingagent/mcp.json`（同名覆盖）。`registry.rs`（缓存/合并/工具执行）、`transport.rs`（stdio/streamable_http/unix_socket_http + 诊断）、`project_file.rs`、`commands.rs`（路径校验） |
@@ -110,7 +110,7 @@ App
   - 子智能体：同层 `compact_history_offline` 规则兜底折叠，不消耗摘要模型，保护头部 2 条（system + 首轮任务）。
 
 **存储 schema 版本策略（桌面应用基线 + 前向迁移）**
-- 当前 **v17**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：保留 v16 工作流基线，新增 v16→v17 浏览器配置迁移（`schema/migration_v17.rs`），迁移前整库快照，清除退役浏览器动作工具并保留模型及用户定制；新库直接建 v17。历史已清除的 v1→v15 仍拒绝打开，v17 同版本也校验关键表列形态以排除旧开发链同版本异构库。
+- 当前 **v18**（`agent/db/schema.rs` 的 `SCHEMA_VERSION`）：保留 v16 工作流基线及 v16→v17 浏览器配置迁移（`schema/migration_v17.rs`，破坏性操作前整库快照）；v17→v18 新增聊天分类共享工程目录（`schema/migration_v18.rs`，旧配置默认空列表、不搬文件、不改变项目绑定）。新库直接建 v18，同版本也校验关键表列形态；历史已清除的 v1→v15 仍拒绝打开。
 - 每次 schema 变更必须同时：① 更新基线 DDL（新装库直接得到新形态）；② 递增 `SCHEMA_VERSION` 并在 `init()` 迁移挂载点追加 `if current_version < N` 事务块（DDL/回填与 `user_version` 同事务、幂等可重试）。**禁止改写或删除历史迁移块**——已发布版本用户升级的唯一路径。
 - 破坏性迁移（DROP/清空数据）前必须整库快照（`VACUUM INTO`），保留「备份失败留痕」兜底。
 - 领域自管表（sub_agent / ssh / projects / mcp_servers / app_config）DDL 放在各领域 `ensure_*_tx` 助手，由 `create_baseline` 统一调用，单一出处。
@@ -122,6 +122,8 @@ App
 ## 项目配置
 
 应用级/项目级配置、智能体系统提示词/工具集、SSH/RAG/子智能体设置统一在 `AppSettingsDialog` 编辑，存全局库。项目目录只留随仓库共享的配置：`.jkcodingagent/config.toml`（`[git].commit_prompt`）与项目级 MCP（`.jkcodingagent/mcp.json`，同名覆盖全局注册表）。
+
+**普通聊天分类目录**：`ChatCategoryAgentConfig.projectDirectories` 支持绑定多个已有绝对目录，保存在 `chat_category_agent_configs.project_directories_json`；同分类所有普通聊天会话共享成果目录，独立临时目录仍是 `~/.jkcodingagent/plain-chat-browser/{session目录名}`。分类配置每轮读取并校验真实路径，失效目录明确报错；禁止绑定应用数据目录及其祖先/子目录。`rig_ext/chat_workspace.rs` 固定注入系统提示：工程目录存正式产物与任务必需修改，临时脚本、一次性测试和中间物放会话目录，不能由分类自定义提示覆盖。`local_zsh.working_directory` 可显式选择授权工程内 cwd，审计及 TMPDIR 仍归会话；子智能体继承目录规则，多根访问纳入既有资源仲裁。浏览器下载/运行产物与 Python 的脚本/cwd/临时环境均归会话目录，Python 共享 venv 保持原位置。目录绑定不关联 `projects`，项目 Agent、项目 MCP 与项目会话行为保持独立；移除绑定不删除文件。删除/清空普通聊天时持会话目录写租约回收临时文件，运行占用时拒绝清理，绝不回收绑定的共享工程。
 
 **聊天图片统一走 `chat-image://{image_id}` 协议**：唯一保存入口 `chat_images::save_image` 落盘 `~/.jkcodingagent/chat-images/{workspace_id}/{image_id}.{ext}` 并登记 `chat_images` 表（用户粘贴、generate_image/edit_image 产物、fetch_image 下载共用）；`<img>` 经 `convertFileSrc(id, "chat-image")` 直出，asset 协议仅兜底旧消息绝对路径。LLM 侧：`rig_ext::message::attach_turn_tool_images` 每次请求前把本轮消息引用的 `chat-image://` 附加为用户消息视觉输入（上限 3 张、跨迭代去重）；`rig_ext::model::PurposeSwitchingModel` 按请求是否含图在 chat/vision 槽位间委托。
 
@@ -205,7 +207,7 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 
 ### 2. 挂进工具面 — 相应组的入口
 
-- 普通聊天 → `rig_ext/tools/exec/`（+ `media/`）→ `rig_ext/agents/plain_chat.rs::build_surface` 汇总；
+- 普通聊天 → `rig_ext/tools/exec/` + `edit/`（apply_patch，apply-patch 补丁式文件编辑，移植自 openai/codex apply-patch 引擎：渐进模糊匹配 + 行尾保真 + 先计算后提交）+ `media/` → `rig_ext/agents/plain_chat.rs::build_surface` 汇总；
 - 编排器数据面（read_file/list_dir/glob/grep）→ `rig_ext/tools/fs/`，并登记 `rig_ext/tools/mod.rs` 的 `ORCHESTRATOR_RUNTIME_TOOL_NAMES`；
 - 子智能体 → `rig_ext/sub_agent/runner.rs::build`（继承普通聊天 profile）；
 - 协议壳（submit_workflow / workflow_plan_report / message / workflow_get / workflow_node_{update,add,delete}）→ `rig_ext/agents/project_tools.rs`（fail-closed 壳，回调只报错）；真实动作由 `RigOrchestratorProtocol` 拦截（`rig_ext/agents/project.rs` 实现 `rig_ext::r#loop::ProtocolToolHandler`，submit 拦截在 `project_submit.rs`，工作流感知 workflow_get 与 draft 工作流节点级 CRUD（update 定点改字段 / add 含 insertBefore 边接管中间插入 / delete 含 force 下游闭包级联）在 `project_workflow_ops.rs`——三者复用 `workflow/commands.rs::apply_draft_definition_update`（前端 `workflow_plan_update` 命令同源：draft 双检 + 整个工作流校验 + 条件更新 + 广播））。
@@ -216,7 +218,7 @@ pub(crate) fn my_tool(deps: &RigToolDeps) -> PortableDynamicTool {
 
 **超时契约（`ToolExecutionPolicy`）**：
 - `unified_timeout=true`：策略层包统一超时；到点发取消 → 宽限收敛（`SETTLE_CEILING`）→ 仍不收敛则移交后台并按「结算未确认」收口（绝不 drop future）。
-- `unified_timeout=false`（自管超时，包括 `browser_open_url`、`call_sub_agent` 和命令执行类等，完整清单以策略表为准）：执行预算工具自管（分阶段超时、交互/静默容忍、优雅终止：杀进程树 / 关 channel / 写审计与台账）；仍以 `settle_ceiling_secs`（= 最坏合法预算，登记在 `self_managed_settle_ceiling_secs`）作最后防线，到点走统一超时同一收口。`cancellable=false` 时兜底到点不发取消、直接交接后台。新增自管工具**必须**登记 settle ceiling（`spec.rs` 的 `self_managed_tools_declare_settle_ceiling` 测试守护）。
+- `unified_timeout=false`（自管超时，包括 `browser_open_url`、`call_sub_agent` 和命令执行类等，完整清单以策略表为准）：执行预算工具自管（分阶段超时、交互/静默容忍、优雅终止：杀进程树 / 关 channel / 写审计与台账）；其中 `local_zsh` 参考 codex shell 的 yield/session 模型重构：`yield_time_ms` 软等待窗口（250-30000ms，默认 10000）内结束走同步渲染，超窗转后台返回 `run_id`（监督器继续收集输出并写审计），后续调用只传 `wait_run_id` 收割；`tty=true` 走 PTY（子进程会话组长，输出合并单流，killpg 整树终止）；`max_output_chars` 声明返回输出预算；硬超时仍为 `exec_timeout_secs`，后台运行到点由监督器强制终止——后台不是无限寿命；审查门禁/审计/黑名单/取消语义全部保留（启动前审查，收割不再审）；仍以 `settle_ceiling_secs`（= 最坏合法预算，登记在 `self_managed_settle_ceiling_secs`）作最后防线，到点走统一超时同一收口。`cancellable=false` 时兜底到点不发取消、直接交接后台。新增自管工具**必须**登记 settle ceiling（`spec.rs` 的 `self_managed_tools_declare_settle_ceiling` 测试守护）。
 - **调用可声明超时白名单**（当前 3 个：`generate_image`/`edit_image`/`fetch_image`，仅限统一超时工具）：schema 经 `common.rs::with_call_timeout_parameters` 暴露 `timeout_secs` 参数（区间 = spec.rs 常量组，schema 校验 + 运行时夹紧双保险；**不设 default 键**以保留「未声明」语义）；deadline = clamp(调用声明 ?? 用户配置默认（`AhaSettingsV2.toolTimeouts`，设置中心「工具」页，越界键归一化剥离）?? 策略表默认)。单一解析出处 `spec.rs::effective_timeout_secs`——策略层 deadline 与工具内 HTTP/下载预算**必须共用**，防「配 300 却被 HTTP 120 掐死」的口径漂移；`call_timeout_tools_are_unified_and_defaulted` 测试守护白名单登记。
 
 ### 4. 工具输出压缩（可选）

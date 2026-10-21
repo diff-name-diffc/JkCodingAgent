@@ -243,9 +243,23 @@ async def test_preview_subscription_during_agent_does_not_change_execution(
 
 
 @pytest.mark.asyncio
-async def test_local_file_ui_and_agent_preserve_workspace_boundary(runtime, tmp_path):
+@pytest.mark.parametrize("shared_roots", [False, True])
+async def test_local_file_ui_and_agent_preserve_workspace_boundary(
+    runtime, tmp_path, shared_roots
+):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+
+    def scope(run_id):
+        if not shared_roots:
+            return {"allowedFileRoot": str(workspace)}
+        return {
+            "allowedFileRoots": [str(session), str(workspace)],
+            "temporaryDirectory": str(session / "browser-runs" / run_id),
+        }
+
     page = workspace / "index.html"
     page.write_text(
         '<html><body><h1>Workspace fixture sentinel</h1><button id="confirm" '
@@ -257,12 +271,17 @@ async def test_local_file_ui_and_agent_preserve_workspace_boundary(runtime, tmp_
     assert "Workspace fixture" in await evaluate(runtime, "document.body.innerText")
     await runtime.manual("open_url", {"url": "about:blank"})
     model = ScriptedModel(runtime, [{"navigate": {"url": page.as_uri()}}, "confirm"])
-    result = await runtime.explore(params(allowedFileRoot=str(workspace)), llm=model)
+    result = await runtime.explore(params(**scope("first")), llm=model)
     assert result["success"]
     assert "Workspace fixture sentinel" in json.dumps(
         [message.model_dump() for message in model.messages]
     )
     assert "Workspace clicked" in await evaluate(runtime, "document.body.innerText")
+    if shared_roots:
+        assert Path(runtime.browser.browser_profile.downloads_path) == (
+            session / "browser-runs" / "first" / "downloads"
+        ).resolve()
+        assert not (Path(runtime.user_data_dir) / "runs").exists()
     model = ScriptedModel(
         runtime,
         [
@@ -271,7 +290,7 @@ async def test_local_file_ui_and_agent_preserve_workspace_boundary(runtime, tmp_
         ],
     )
     result = await runtime.explore(
-        params(runId="outside", allowedFileRoot=str(workspace)), llm=model
+        params(runId="outside", **scope("outside")), llm=model
     )
     assert result["success"] is False
     assert await runtime.browser.get_current_page_url() == page.as_uri()
@@ -281,7 +300,7 @@ async def test_local_file_ui_and_agent_preserve_workspace_boundary(runtime, tmp_
     await runtime.manual("open_url", {"url": outside.as_uri()})
     model = ScriptedModel(runtime, [])
     result = await runtime.explore(
-        params(runId="existing-outside", maxSteps=1, allowedFileRoot=str(workspace)),
+        params(runId="existing-outside", maxSteps=1, **scope("existing-outside")),
         llm=model,
     )
     assert result["success"] is False and not model.called.is_set()

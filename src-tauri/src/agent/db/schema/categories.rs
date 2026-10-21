@@ -51,6 +51,7 @@ pub(super) fn ensure_chat_category_agent_configs_table_tx(
             allowed_tools_json TEXT NOT NULL DEFAULT '[]',
             system_prompt TEXT NOT NULL DEFAULT '',
             sub_agent_ids_json TEXT NOT NULL DEFAULT '[]',
+            project_directories_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (category_id) REFERENCES chat_categories(id) ON DELETE CASCADE
@@ -182,7 +183,7 @@ pub(super) fn scenario_chat_category_agent_config(
 工作方式：
 - 网页探索与检索使用 call_sub_agent(agent_id="browser-agent", task)，先用 list_sub_agents 确认可用；browser_open_url 仅展示网页。
 - 先明确目标、约束和交付物，再选择工具。
-- 本地命令仅在 .jkcodingagent/local_env/zsh 中执行，命令要短小、可审计，避免高风险操作。
+- 本地命令遵守程序注入的目录规则：临时文件留在当前会话目录，用户要求的工程修改与正式成果写入已绑定的共享工程目录；命令要短小、可审计，避免高风险操作。
 - SSH 默认只做服务器列表和只读巡检；执行变更前必须说明影响并等待用户确认。
 - 默认使用简体中文，输出结论优先。
 "#,

@@ -49,13 +49,20 @@ pub async fn dispatcher_clear_messages(
     if state.session_run_is_active(&workspace_id) {
         return Err("会话正在运行中，请先停止生成后再清空消息".to_string());
     }
+    let chat_cleanup =
+        super::chat_cleanup::prepare(state.db(), state.agent_config().root_dir, &workspace_id)
+            .await?;
     let _browser_cleanup = browser_manager
         .remove_session(state.db(), &workspace_id)
         .await?;
     let db = state.db().clone();
     let workspace_for_cleanup = workspace_id.clone();
     let result = run_dispatcher_db("dispatcher_clear_messages", move || {
-        db.clear_messages(&workspace_id)
+        db.clear_messages(&workspace_id)?;
+        if let Some(cleanup) = chat_cleanup {
+            cleanup.after_commit("会话消息清空");
+        }
+        Ok(())
     })
     .await;
     if result.is_ok() {

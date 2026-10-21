@@ -9,11 +9,13 @@ import bootstrap
 import httpx
 import pytest
 from browser_use.llm.messages import SystemMessage, UserMessage
+from browser_use import Tools
+from browser_use.agent.views import ActionResult
 from pydantic import BaseModel
 
 from dialogs import handle_dialog
-from explorer import model_from_config
-from navigation import is_navigation_allowed
+from explorer import ObservedTools, exploration_directory, model_from_config
+from navigation import allowed_file_roots, is_navigation_allowed
 
 
 class Output(BaseModel):
@@ -165,3 +167,105 @@ def test_dependency_version_mismatch_fails_explicitly(monkeypatch):
     monkeypatch.setattr(bootstrap, "version", lambda package: "0.13.10")
     with pytest.raises(RuntimeError, match=r"0\.13\.11.*0\.13\.10"):
         bootstrap.verify_dependency()
+
+
+def test_multiple_file_roots_share_projects_without_exposing_other_sessions(tmp_path):
+    session = tmp_path / "session"
+    project_a = tmp_path / "project a"
+    project_b = tmp_path / "project-b"
+    for root in [session, project_a, project_b]:
+        root.mkdir()
+    outside = tmp_path / "other-session" / "secret.html"
+    outside.parent.mkdir()
+    outside.write_text("private")
+    (project_a / "escape.html").symlink_to(outside)
+    (session / "shared.html").symlink_to(project_b / "index.html")
+    roots = allowed_file_roots(
+        {
+            "allowedFileRoots": [str(session), str(project_a), str(project_b)],
+            "allowedFileRoot": str(tmp_path),
+        }
+    )
+    for root in [session, project_a, project_b]:
+        assert is_navigation_allowed((root / "index.html").as_uri(), roots)
+    assert is_navigation_allowed((session / "shared.html").as_uri(), roots)
+    for url in [
+        outside.as_uri(),
+        (project_a / "escape.html").as_uri(),
+        f"{session.as_uri()}/%2e%2e/other-session/secret.html",
+        (tmp_path / "project-b-sibling" / "index.html").as_uri(),
+    ]:
+        assert not is_navigation_allowed(url, roots), url
+
+
+def test_new_file_root_list_never_falls_back_to_legacy_authority(tmp_path):
+    url = (tmp_path / "index.html").as_uri()
+    assert is_navigation_allowed(url, allowed_file_roots({"allowedFileRoot": str(tmp_path)}))
+    assert not is_navigation_allowed(
+        url,
+        allowed_file_roots({"allowedFileRoots": [], "allowedFileRoot": str(tmp_path)}),
+    )
+    for invalid in [None, str(tmp_path), ["relative"], [None]]:
+        with pytest.raises(ValueError):
+            allowed_file_roots({"allowedFileRoots": invalid})
+
+
+def test_host_temporary_directory_stays_in_session_and_preserves_project_default(tmp_path):
+    session = tmp_path / "session"
+    project = tmp_path / "project"
+    session.mkdir()
+    project.mkdir()
+    (session / "escape").symlink_to(project, target_is_directory=True)
+    roots = {"allowedFileRoots": [str(session), str(project)]}
+    temporary = session / ".jkcodingagent" / "browser-runs" / "run-a"
+    assert exploration_directory(
+        tmp_path / "profile", {**roots, "temporaryDirectory": str(temporary)}
+    ) == temporary.resolve()
+    for directory in [project / "run", session / "escape" / "run", session, "relative"]:
+        with pytest.raises(ValueError):
+            exploration_directory(
+                tmp_path / "profile", {**roots, "temporaryDirectory": str(directory)}
+            )
+    with pytest.raises(ValueError):
+        exploration_directory(
+            tmp_path / "profile",
+            {"allowedFileRoot": str(session), "temporaryDirectory": str(temporary)},
+        )
+    assert exploration_directory(
+        tmp_path / "profile", {"allowedFileRoot": str(project)}
+    ).parent == tmp_path / "profile" / "runs"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action_name", ["go_back", "switch"])
+async def test_indirect_navigation_rechecks_destination(
+    tmp_path, monkeypatch, action_name
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    current_url = (workspace / "index.html").as_uri()
+
+    async def page_url():
+        return current_url
+
+    async def navigate(*args, **kwargs):
+        nonlocal current_url
+        current_url = (tmp_path / "other-session" / "private.html").as_uri()
+        return ActionResult(extracted_content="navigated")
+
+    monkeypatch.setattr(Tools, "act", navigate)
+    events = []
+    owner = SimpleNamespace(
+        params={"allowedFileRoots": [str(workspace)]},
+        cancelled=asyncio.Event(),
+        action_count=0,
+        run_id="indirect-navigation",
+        emit=lambda kind, **data: events.append((kind, data)),
+        safe=str,
+    )
+    result = await ObservedTools(owner).act(
+        SimpleNamespace(model_dump=lambda **kwargs: {action_name: {}}),
+        SimpleNamespace(get_current_page_url=page_url),
+    )
+    assert "授权目录" in result.error
+    assert events[-1][1]["success"] is False

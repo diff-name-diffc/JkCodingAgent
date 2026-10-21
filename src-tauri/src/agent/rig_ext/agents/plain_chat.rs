@@ -1,4 +1,4 @@
-//! 普通聊天 Agent：不绑定项目，按聊天分类配置装配模型槽位与工具面。
+//! 普通聊天 Agent：按分类配置共享成果目录、模型槽位与工具面。
 //!
 //! 每轮 run 由命令层现建现用（设置变更下一轮即生效），本结构只负责装配：
 //! 1. 设置 → 用途槽位规格（`resolve_purpose_specs`）→ rig 模型；
@@ -7,6 +7,12 @@
 //!    + SSH 备忘录纪律 + 运行工作目录块；
 //! 4. 历史（DB 最近若干轮对话）→ rig 消息；
 //! 5. 运行 `rig_ext::r#loop::run_rig_loop`（三段式策略：审查门禁 + 台账 + 超时）。
+
+mod assembly;
+mod prompt;
+
+pub(crate) use prompt::render_runtime_workspace;
+use prompt::{chat_image_dir, SSH_MEMO_GUIDANCE};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +26,7 @@ use crate::agent::config::{DispatcherAgentConfig, DEFAULT_PLAIN_CHAT_SYSTEM_PROM
 use crate::agent::db::{
     AgentContext, AhaSettingsV2, ChatCategoryAgentConfig, DispatcherDb, DispatcherMessageRecord,
 };
+use crate::agent::rig_ext::chat_workspace::ChatWorkspace;
 use crate::agent::rig_ext::events::AgentEvent;
 use crate::agent::rig_ext::message::{apply_stored_session_summary, chat_history_to_rig_with_ids};
 use crate::agent::rig_ext::model::{
@@ -33,6 +40,7 @@ use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::rig_ext::sub_agent::{call_sub_agent_tool, list_sub_agents_tool};
 use crate::agent::rig_ext::tool_result::RigSummaryModel;
 use crate::agent::rig_ext::tools::deps::{ImageToolConfig, RigToolDeps, ToolTimeoutDefaults};
+use crate::agent::rig_ext::tools::edit::edit_tools;
 use crate::agent::rig_ext::tools::exec::exec_tools;
 use crate::agent::rig_ext::tools::mcp::mcp_tools;
 use crate::agent::rig_ext::tools::media::media_tools;
@@ -41,7 +49,7 @@ use crate::agent::sub_agent::SubAgentManager;
 use crate::mcp::{tool_definitions_from_snapshot, McpRegistry, McpScope, ResolvedMcpTool};
 use crate::ssh_tool::SshSessionManager;
 
-use super::{retain_allowed_tools, session_workspace_dir_name, tool_result_policies_from_specs};
+use super::{retain_allowed_tools, tool_result_policies_from_specs};
 
 /// 一轮聊天运行的输入（与命令层 `run_agent_turn_skeleton` 的契约一致）。
 pub struct ChatTurnRequest<'a> {
@@ -67,6 +75,7 @@ pub struct RigPlainChatAgent {
     /// 工具允许列表（内置空列表 = 全部放行；MCP 显式名单制）。
     allowed_tools: Mutex<Vec<String>>,
     category_context: Mutex<Option<(String, String)>>,
+    project_directories: Mutex<Vec<String>>,
     /// 审查配置（settings.review；未配置 → None，命令类工具 fail-closed）。
     review_config: Mutex<Option<crate::agent::db::settings::SshReviewConfig>>,
     image_credentials: Mutex<crate::agent::db::settings::ImageModelCredentials>,
@@ -104,6 +113,7 @@ impl RigPlainChatAgent {
             system_prompt: Mutex::new(DEFAULT_PLAIN_CHAT_SYSTEM_PROMPT.to_string()),
             allowed_tools: Mutex::new(Vec::new()),
             category_context: Mutex::new(None),
+            project_directories: Mutex::new(Vec::new()),
             review_config: Mutex::new(None),
             image_credentials: Mutex::new(Default::default()),
             tool_timeouts: Mutex::new(Default::default()),
@@ -137,6 +147,7 @@ impl RigPlainChatAgent {
             crate::agent::config::effective_max_tool_iterations(settings.max_tool_iterations);
         // 基础设置重应用时同步清除分类叠加（对齐旧实现的顺序契约）。
         *self.category_context.lock() = None;
+        self.project_directories.lock().clear();
     }
 
     /// 叠加聊天分类级配置（系统提示 + 允许列表）。
@@ -145,6 +156,7 @@ impl RigPlainChatAgent {
         *self.system_prompt.lock() = config.system_prompt.clone();
         *self.category_context.lock() =
             Some((config.category_id.clone(), config.category_name.clone()));
+        *self.project_directories.lock() = config.project_directories.clone();
     }
 
     pub fn is_configured(&self) -> bool {
@@ -153,11 +165,7 @@ impl RigPlainChatAgent {
 
     /// 每个会话独立的文件沙箱：`root_dir/plain-chat-browser/<会话子目录>`。
     pub async fn session_workspace(&self, workspace_id: &str) -> anyhow::Result<PathBuf> {
-        let workspace = self
-            .config
-            .root_dir
-            .join("plain-chat-browser")
-            .join(session_workspace_dir_name(workspace_id));
+        let workspace = ChatWorkspace::session_directory(&self.config.root_dir, workspace_id);
         tokio::task::spawn_blocking({
             let workspace = workspace.clone();
             move || std::fs::create_dir_all(&workspace)
@@ -266,6 +274,7 @@ impl RigPlainChatAgent {
     /// 装配本轮工具面（含按允许列表过滤）。
     async fn build_surface(&self, deps: &RigToolDeps, workspace_id: &str) -> RigToolSurface {
         let mut tools = exec_tools(deps);
+        tools.extend(edit_tools(deps));
         tools.extend(media_tools(deps));
         tools.extend(mcp_tools(deps).await);
 
@@ -325,6 +334,13 @@ impl RigPlainChatAgent {
 
         // 工作区准备 + MCP 全局注册表新鲜度刷新（聊天恒为全局作用域）。
         let workspace = self.session_workspace(workspace_id).await?;
+        let directories = self.project_directories.lock().clone();
+        let chat_workspace = tokio::task::spawn_blocking({
+            let workspace = workspace.clone();
+            move || ChatWorkspace::resolve(&workspace, &directories)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("解析聊天目录任务失败：{error}"))??;
         self.mcp_registry
             .ensure_recent(&McpScope::Global)
             .await
@@ -344,7 +360,7 @@ impl RigPlainChatAgent {
 
         // 工具依赖（构造期快照：会话沙箱、审查输入、凭据、取消信号）。
         let deps = self
-            .build_deps(db, workspace_id, &workspace, &request.cancel_rx)
+            .build_deps(db, workspace_id, &chat_workspace, &request.cancel_rx)
             .await;
         let surface = self.build_surface(&deps, workspace_id).await;
 
@@ -366,17 +382,12 @@ impl RigPlainChatAgent {
             temperature: self.specs.summary.temperature,
         };
 
-        let extra_dirs_for_prompt = chat_image_dir(workspace_id);
-        let surface_for_prompt = surface.definitions();
-        let has_local_zsh = surface_for_prompt
-            .iter()
-            .any(|definition| definition.name == "local_zsh");
         // 系统提示：静态部分（配置提示/分类/子智能体/MCP/备忘录/工作目录）在本轮
         // 装配期渲染一次；系统时间逐轮重建（G9-17：时间不随 run 陈旧）。
         let base_preamble = format!(
             "{}{}",
             self.base_system_prompt(workspace_id),
-            render_runtime_workspace(&workspace, true, &extra_dirs_for_prompt, has_local_zsh)
+            chat_workspace.render_prompt()
         );
         let mut hooks = RigLoopHooks::from_chat_spec(&self.specs.chat);
         hooks.max_iterations = *self.max_tool_iterations.lock();
@@ -390,19 +401,18 @@ impl RigPlainChatAgent {
             ))
         }));
 
-        // 先取出锁内值再进字面量（与 build_deps 同法）：review 字段携带 await，
-        // MutexGuard 临时值若留在字面量内，后续新增 await 字段会静默跨锁。
-        let tool_timeouts = self.tool_timeouts.lock().clone();
+        // 工具回调与统一策略共用同一份运行快照，包括固定目录审查规则。
         let policy = AppToolExecutionPolicy::new(
             db,
             &on_event,
             AppToolPolicyConfig {
                 workspace_id: workspace_id.to_string(),
                 workspace: workspace.clone(),
-                review: self.review_context(db, workspace_id, None).await,
+                filesystem_roots: deps.extra_allowed_dirs.clone(),
+                review: deps.review.clone(),
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
-                tool_timeouts,
+                tool_timeouts: deps.tool_timeouts.clone(),
                 app_handle: self.app_handle.clone(),
             },
         );
@@ -424,228 +434,4 @@ impl RigPlainChatAgent {
         )
         .await
     }
-
-    /// 构造工具依赖快照。
-    async fn build_deps(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        workspace: &std::path::Path,
-        cancel_rx: &watch::Receiver<bool>,
-    ) -> RigToolDeps {
-        // 先取出锁内值再进字面量：review 字段的 await 不能跨越 MutexGuard。
-        let tool_timeouts = self.tool_timeouts.lock().clone();
-        RigToolDeps {
-            workspace_id: workspace_id.to_string(),
-            workspace: workspace.to_path_buf(),
-            // 普通聊天没有项目语境：MCP 一律走全局注册表。
-            mcp_scope: McpScope::Global,
-            exec_timeout_secs: self.config.exec_timeout_secs,
-            restrict_to_workspace: true,
-            // 只放行当前会话的图片目录（chat-images/{workspace_id}）。
-            extra_allowed_dirs: chat_image_dir(workspace_id),
-            app_handle: self.app_handle.clone(),
-            db: db.clone(),
-            ssh_manager: self.ssh_manager.clone(),
-            term_registry: self.term_registry.clone(),
-            mcp_registry: self.mcp_registry.clone(),
-            sub_agent_manager: self.sub_agent_manager.clone(),
-            cancel_rx: Some(cancel_rx.clone()),
-            vision_spec: self.specs.vision.clone(),
-            image: self.image_tool_config(),
-            tool_timeouts,
-            review: self.review_context(db, workspace_id, None).await,
-        }
-    }
-
-    fn image_tool_config(&self) -> ImageToolConfig {
-        let credentials = self.image_credentials.lock().clone();
-        ImageToolConfig {
-            url: credentials.url,
-            api_key: credentials.api_key,
-            model: credentials.model,
-            edit_model: credentials.edit_model,
-        }
-    }
-
-    /// 审查上下文：会话标题 + 用户任务 + 最近对话（读取失败降级为 None）。
-    async fn review_context(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-        executor_task: Option<String>,
-    ) -> RigReviewContext {
-        let session_title = db
-            .get_session_title_async(workspace_id)
-            .await
-            .unwrap_or_else(|_| "untitled".to_string());
-        let user_task = db
-            .get_latest_user_message_content_async(workspace_id)
-            .await
-            .ok()
-            .flatten();
-        let review_conversation = match db
-            .get_recent_review_dialogue_async(
-                workspace_id,
-                crate::agent::ssh_review::REVIEW_DIALOGUE_FETCH_LIMIT,
-            )
-            .await
-        {
-            Ok(messages) => crate::agent::ssh_review::render_dialogue_for_review(&messages),
-            Err(error) => {
-                eprintln!(
-                    "读取审查对话上下文失败，降级为无对话上下文（workspace_id={workspace_id}）：{error:#}"
-                );
-                None
-            }
-        };
-        RigReviewContext {
-            config: self.review_config.lock().clone(),
-            session_title,
-            user_task,
-            executor_task,
-            review_conversation,
-        }
-    }
-
-    /// 供事件/诊断：本轮渲染后的基础系统提示（未含运行工作目录块）。
-    /// 子智能体工具清单（子智能体保存校验与选择列表用）：与
-    /// `RigSubAgentRuntime` 实际继承的 execution profile 同源——exec + media
-    /// 加子智能体专用 `notify_user_progress`；**不含**嵌套子智能体工具
-    /// （call_sub_agent / list_sub_agents 不得递归派生）。
-    pub fn sub_agent_tool_catalog(&self) -> Vec<(String, String)> {
-        let deps = self.catalog_deps();
-        let mut tools = exec_tools(&deps);
-        tools.extend(media_tools(&deps));
-        tools.push(crate::agent::rig_ext::sub_agent::notify_user_progress_tool(
-            "tool-catalog".to_string(),
-            "tool-catalog".to_string(),
-            "tool-catalog".to_string(),
-            None,
-            Arc::new(parking_lot::Mutex::new(Vec::new())),
-            "tool-catalog".to_string(),
-        ));
-        let mut infos = tools
-            .into_iter()
-            .map(|tool| {
-                let definition = tool.definition();
-                (definition.name, definition.description)
-            })
-            .collect::<Vec<_>>();
-        infos.sort();
-        infos.dedup();
-        infos
-    }
-
-    /// 清单枚举用的占位依赖（只构造不执行）。
-    fn catalog_deps(&self) -> RigToolDeps {
-        RigToolDeps {
-            workspace_id: "tool-catalog".to_string(),
-            workspace: self.config.root_dir.clone(),
-            mcp_scope: McpScope::Global,
-            exec_timeout_secs: self.config.exec_timeout_secs,
-            restrict_to_workspace: true,
-            extra_allowed_dirs: Vec::new(),
-            app_handle: None,
-            db: crate::agent::db::DispatcherDb::new(self.config.db_path.clone())
-                .expect("打开工具清单用数据库句柄"),
-            ssh_manager: self.ssh_manager.clone(),
-            term_registry: self.term_registry.clone(),
-            mcp_registry: self.mcp_registry.clone(),
-            sub_agent_manager: self.sub_agent_manager.clone(),
-            cancel_rx: None,
-            vision_spec: self.specs.vision.clone(),
-            image: self.image_tool_config(),
-            // 清单枚举只取名称/描述不执行，超时默认不影响结果，但保持与
-            // 真实装配同源，避免清单面与执行面出现两套配置口径。
-            tool_timeouts: self.tool_timeouts.lock().clone(),
-            review: RigReviewContext::unconfigured(),
-        }
-    }
-
-    /// 工具清单（设置页/分类允许列表的枚举来源）：按「占位依赖」装配同一份
-    /// 工具面并取名称与描述——清单与实际授权集同源，避免两份清单漂移。
-    pub async fn tool_catalog(
-        &self,
-        db: &DispatcherDb,
-        workspace_id: &str,
-    ) -> Vec<crate::agent::sub_agent::db::ToolInfo> {
-        let mut deps = self.catalog_deps();
-        deps.workspace_id = workspace_id.to_string();
-        deps.db = db.clone();
-        let surface = self.build_surface(&deps, workspace_id).await;
-        surface
-            .definitions()
-            .into_iter()
-            .map(|definition| crate::agent::sub_agent::db::ToolInfo {
-                name: definition.name,
-                description: definition.description,
-            })
-            .collect()
-    }
-}
-
-/// SSH 运维备忘录纪律（仅在备忘录工具可用时注入）。
-const SSH_MEMO_GUIDANCE: &str = "\n\n## SSH 运维备忘录\n\n\
-- 备忘录是下一次运维的「环境索引 + 高频易踩坑提醒」，不是排障日志或工作报告。每台 SSH 服务器一份，用 ssh_memo_read / ssh_memo_upsert / ssh_memo_delete 读取与更新。\n\
-- 对不熟悉的服务器执行运维操作前，先调用 ssh_memo_read，优先复用已有部署/目录索引与注意事项，避免重复探索和再次踩坑。\n\
-- 写入默认克制，宁可不写：只有信息已在目标服务器核实、长期稳定、下一次会话大概率能直接复用，且不写就会导致重复探索或再次踩坑时才写；说不清未来用途和复用场景就不要写。不要因为执行过命令、完成排查或解决故障而例行写入。\n\
-- 值得写入的内容：①部署与目录索引——部署程序、服务、容器的名称与用途，以及安装/工作目录和配置、日志、数据、脚本等关键目录，必要时附稳定端口与依赖；②非通用且会复用的启停、发布、备份等操作方式；③注意事项——仅记录环境特有、下次仍很容易再犯且会导致返工或风险的坑，浓缩为「触发条件或误区 → 正确做法」，必要时补一句根因。\n\
-- 禁止写入：冗长报错或堆栈全文、原始日志与命令输出、JAR 反编译等排障步骤和次要命令、一次性探索/安装/修复过程与临时状态、通用软件知识、未验证猜测、密码/密钥/令牌等凭据。错误信息只有揭示上述高频坑时才可浓缩为一行提醒，不保留报错全文和排障过程。\n\
-- 写入前必须 ssh_memo_read 并合并去重；优先补充既有索引，避免为每次任务新建段落。修正单行或增删个别条目用局部替换（title+old_text+new_text，new_text 留空即删除），较大改动才用 title+content 整段重写；主动删除重复、过时和琐碎条目，写入被上限拒绝时先精简再重试。段落正文不要写 `## ` 开头的行（子标题用 `### `）。";
-
-/// 会话图片目录（构造失败按空白名单收紧，fail-closed）。
-fn chat_image_dir(workspace_id: &str) -> Vec<PathBuf> {
-    match crate::chat_images::workspace_image_dir(workspace_id) {
-        Ok(dir) => vec![dir],
-        Err(error) => {
-            eprintln!(
-                "构造会话图片目录失败（workspace_id={workspace_id}），按空白名单收紧：{error}"
-            );
-            Vec::new()
-        }
-    }
-}
-
-/// 运行工作目录与路径权限块（迁移自 `prompt/runtime_workspace.rs::render`）。
-pub(crate) fn render_runtime_workspace(
-    workspace: &std::path::Path,
-    restricted: bool,
-    extra: &[PathBuf],
-    local_zsh: bool,
-) -> String {
-    let mut prompt = format!(
-        "\n\n## 本次运行的工作目录与路径权限\n\n\
-         - 当前文件工作区（绝对路径）：{}\n\
-         - 文件工具与 sync_directory.source 的相对路径均以该工作区为基准；exec 默认在该工作区执行。\n",
-        workspace.display()
-    );
-    if restricted {
-        prompt.push_str("- 文件路径限制：只允许当前工作区及下列额外授权路径；上级目录、其他项目目录不会自动获得授权。\n");
-    } else {
-        prompt.push_str("- 工作区边界限制已关闭；应用敏感路径保护与命令安全审查仍生效。\n");
-    }
-    if extra.is_empty() {
-        prompt.push_str("- 额外授权路径：无。\n");
-    } else {
-        prompt.push_str("- 额外授权路径（目录内或精确文件）：\n");
-        for path in extra {
-            prompt.push_str(&format!("  - {}\n", path.display()));
-        }
-    }
-    if local_zsh {
-        if let Ok(directory) = crate::agent::rig_ext::tools::exec::local_zsh_dir(workspace) {
-            prompt.push_str(&format!(
-                "- local_zsh 实际命令工作目录：{}。它与文件工作区不同，且不能使用 cd。命令内的相对路径以此目录为基准。\n\
-                 - 上传 local_zsh 生成的文件时，使用该执行目录下产物子目录的绝对路径作为 source，不要将相对路径误当成文件工作区下的路径。\n",
-                directory.display()
-            ));
-        }
-    }
-    prompt.push_str(
-        "- sync_directory.destination 是远端目录，不受本地工作区前缀约束；source 必须是本地已有的产物目录。\n\
-         - 不要上传整个 .jkcodingagent 配置根目录或 .git 元数据目录；会话工作区和 local_zsh 的产物子目录可按现有路径权限使用。\n\
-         - 不要猜测 /Users、用户主目录、/releases 等目录。路径越界时说明当前工作区和所需路径，让用户在对应项目会话操作或将文件放入允许目录；不要换工具绕过限制或重复尝试同一个被拒绝路径。\n"
-    );
-    prompt
 }

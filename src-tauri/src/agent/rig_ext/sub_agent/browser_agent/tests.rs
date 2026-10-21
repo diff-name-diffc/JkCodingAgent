@@ -15,6 +15,7 @@ fn runtime() -> BrowserAgentRuntime {
             enable_thinking: false,
         },
         workspace: String::new(),
+        chat_workspace: None,
         cancel_rx: None,
         trace: BrowserTrace::for_test(),
         status: Mutex::new("running"),
@@ -140,4 +141,36 @@ fn lifecycle_errors_require_explicit_protocol_marker() {
 fn incomplete_protocol_is_not_a_success() {
     assert!(serde_json::from_value::<BrowserResult>(json!({"result":"ok"})).is_err());
     assert!(!result(false, "步数耗尽").success);
+}
+
+#[test]
+fn directory_params_preserve_project_protocol_and_bind_chat_temporaries_to_session() {
+    let mut runtime = runtime();
+    runtime.workspace = "/workspace/project".into();
+    let project = runtime.exploration_params("任务");
+    assert_eq!(project["allowedFileRoot"], "/workspace/project");
+    assert!(project.get("allowedFileRoots").is_none());
+    assert!(project.get("temporaryDirectory").is_none());
+
+    let temp = crate::test_util::TempDirGuard::new("browser-agent-directory-params");
+    let session_root = temp.path().join("session");
+    let project_root = temp.path().join("project");
+    runtime.chat_workspace = Some(ChatWorkspace {
+        session_root: session_root.clone(),
+        project_roots: vec![project_root.clone()],
+    });
+    let chat = runtime.exploration_params("任务");
+    assert_eq!(
+        chat["allowedFileRoots"],
+        json!([session_root, project_root])
+    );
+    let temporary = std::path::Path::new(chat["temporaryDirectory"].as_str().unwrap());
+    assert_eq!(
+        temporary.parent().unwrap(),
+        session_root.join(".jkcodingagent/browser-runs")
+    );
+    assert_ne!(
+        chat["temporaryDirectory"],
+        runtime.exploration_params("下一次运行")["temporaryDirectory"]
+    );
 }

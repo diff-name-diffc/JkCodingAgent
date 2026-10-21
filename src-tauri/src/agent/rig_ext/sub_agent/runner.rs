@@ -45,7 +45,7 @@ use crate::agent::rig_ext::context::{compact_history_offline, context_budget_cha
 use crate::agent::rig_ext::model::{build_completion_request, completions_model, PurposeModelSpec};
 use crate::agent::rig_ext::tools::deps::RigToolDeps;
 use crate::agent::rig_ext::tools::MAX_TOOL_CALLS_PER_BATCH;
-use crate::agent::rig_ext::tools::{exec::exec_tools, media::media_tools};
+use crate::agent::rig_ext::tools::{edit::edit_tools, exec::exec_tools, media::media_tools};
 use crate::agent::sub_agent::config::SubAgentConfig;
 
 /// 返回父循环前的结果截断上限。
@@ -121,11 +121,12 @@ impl RigSubAgentRuntime {
         let (tool_cancel_tx, tool_cancel_rx) = watch::channel(false);
         deps.cancel_rx = Some(tool_cancel_rx);
 
-        // 工具面 = 普通聊天 execution profile（exec + media）+ 子智能体专用的
+        // 工具面 = 普通聊天 execution profile（exec + edit + media）+ 子智能体专用的
         // 进度通知工具（携带子智能体身份与父调用关联，见 `notify_user_progress_tool`）。
         // 不混入编排器工具与嵌套子智能体工具。
         let trace_events = Arc::new(Mutex::new(Vec::with_capacity(SUB_AGENT_TRACE_EVENT_LIMIT)));
         let mut surface = exec_tools(&deps);
+        surface.extend(edit_tools(&deps));
         surface.extend(media_tools(&deps));
         surface.push(notify_user_progress_tool(
             config.agent_id.clone(),
@@ -165,6 +166,11 @@ impl RigSubAgentRuntime {
             crate::agent::rig_ext::r#loop::AppToolPolicyConfig {
                 workspace_id: request.session_id.into(),
                 workspace: deps.workspace.clone(),
+                filesystem_roots: deps
+                    .chat_workspace
+                    .as_ref()
+                    .map(|_| deps.extra_allowed_dirs.clone())
+                    .unwrap_or_default(),
                 review: deps.review.clone(),
                 cancel_rx: deps.cancel_rx.clone(),
                 trace: Default::default(),
@@ -174,11 +180,15 @@ impl RigSubAgentRuntime {
                 app_handle: request.app_handle.clone(),
             },
         );
+        let mut config = config.clone();
+        if let Some(workspace) = &deps.chat_workspace {
+            config.system_prompt.push_str(&workspace.render_prompt());
+        }
         Ok(Self {
             db: deps.db.clone(),
             policy,
             loop_events,
-            config: config.clone(),
+            config,
             spec,
             surface,
             session_id: request.session_id.to_string(),

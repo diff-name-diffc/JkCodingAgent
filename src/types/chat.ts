@@ -174,6 +174,8 @@ export interface ChatCategoryAgentConfig {
   allowedTools: string[];
   systemPrompt: string;
   subAgentIds: string[];
+  /** 当前普通聊天分类共享的工程/成果目录；会话临时目录仍独立。 */
+  projectDirectories: string[];
   createdAt: string;
   updatedAt: string;
 }

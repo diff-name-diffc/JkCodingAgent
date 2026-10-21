@@ -74,6 +74,11 @@ pub trait ToolExecutionPolicy: Send + Sync {
         None
     }
 
+    /// 宿主授权的额外本地根；与工作区一起参与资源仲裁，模型不能自行扩大。
+    fn filesystem_roots(&self) -> &[std::path::PathBuf] {
+        &[]
+    }
+
     fn registration_trace(&self) -> crate::agent::db::ToolRunTraceContext {
         Default::default()
     }

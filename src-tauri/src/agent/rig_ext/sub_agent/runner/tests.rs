@@ -7,6 +7,7 @@ fn test_deps(temp_dir: &std::path::Path) -> RigToolDeps {
     let mut deps = RigToolDeps {
         workspace_id: "sub-agent-test".to_string(),
         workspace: temp_dir.to_path_buf(),
+        chat_workspace: None,
         mcp_scope: crate::mcp::McpScope::Global,
         exec_timeout_secs: 30,
         restrict_to_workspace: true,
@@ -49,6 +50,48 @@ fn config(allowed_tools: Vec<&str>) -> crate::agent::sub_agent::config::SubAgent
         enabled: true,
         created_at: 0,
         updated_at: 0,
+    }
+}
+
+#[test]
+fn chat_directory_rules_are_injected_after_custom_sub_agent_prompt() {
+    let temp = crate::test_util::TempDirGuard::new("sub-agent-chat-directories");
+    let mut deps = test_deps(temp.path());
+    let workspace = crate::agent::rig_ext::chat_workspace::ChatWorkspace {
+        session_root: temp.path().join("session"),
+        project_roots: vec![temp.path().join("result-a"), temp.path().join("result-b")],
+    };
+    let parent_spec = PurposeModelSpec {
+        api_key: "test".into(),
+        api_base: "http://127.0.0.1:1/v1".into(),
+        model: "mock".into(),
+        max_tokens: None,
+        context_window: None,
+        temperature: 0.0,
+        enable_thinking: true,
+    };
+    let cfg = config(vec!["local_zsh"]);
+    for chat in [None, Some(workspace.clone())] {
+        deps.chat_workspace = chat.clone();
+        let runtime = RigSubAgentRuntime::build(&RigSubAgentRequest {
+            config: &cfg,
+            parent_spec: &parent_spec,
+            deps: &deps,
+            task: "生成正式文档",
+            parent_tool_call_id: "call",
+            app_handle: None,
+            session_id: "session",
+            cancel_rx: None,
+        })
+        .unwrap();
+        if chat.is_some() {
+            assert_eq!(
+                runtime.config.system_prompt,
+                format!("{}{}", cfg.system_prompt, workspace.render_prompt())
+            );
+        } else {
+            assert_eq!(runtime.config.system_prompt, cfg.system_prompt);
+        }
     }
 }
 

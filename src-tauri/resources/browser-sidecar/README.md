@@ -43,7 +43,11 @@ Tauri 的 `browser_preview_set` 只登记观察租约，不启动浏览器或取
 关闭并重开轨迹可恢复尚未淘汰的画面，应用重启后不保留。
 
 Agent 仅暴露浏览器动作白名单，不暴露任意 JavaScript、Shell、Python、上传或文件读写。
-截图、内容抽取和下载产物存入 profile 的 `runs/<随机ID>/`。自动确认弹窗仅在探索期间启用；
+项目探索的截图、内容抽取和下载产物仍存入 profile 的 `runs/<随机ID>/`。
+普通聊天由宿主通过 `temporaryDirectory` 分配会话临时目录内的独立运行子目录；
+截图、内容抽取、browser-use 文件系统和 downloads 均使用该目录，不写入共享工程。
+该参数不向模型开放，必须与 `allowedFileRoots` 一起使用，解析符号链接后仍须位于首项会话根内。
+自动确认弹窗仅在探索期间启用；
 prompt、普通 UI confirm 以及取消开始后的弹窗均拒绝。处理结果进入 progress 事件。
 遥测、云同步、自动扩展与版本检查均关闭。模型明确使用宿主传来的 OpenAI-compatible
 Chat Completions 配置，API key 在协议与 stderr 日志边界脱敏。
@@ -55,8 +59,10 @@ Chat Completions 配置，API key 在协议与 stderr 日志边界脱敏。
 本地结构化输出校验失败明确标示为解析/校验错误，不把 SDK 的默认 502 当成真实 HTTP 状态。
 `explore.useVision` 默认为 `false`，DOM 浏览仍可工作；只有用户明确启用才向模型发送截图，
 因此开启视觉时配置的模型必须支持图片输入。
-自动化只接受 http(s)、about:blank 及宿主 `allowedFileRoot` 内的 file URL；解码并解析
-符号链接后校验路径，感知前也检查当前页面，内部协议和工作区外文件均拒绝。
+自动化只接受 http(s)、about:blank 及宿主授权目录内的 file URL。普通聊天使用
+`allowedFileRoots`（首项为本会话临时根，其后为分类共享工程根）；未传该字段时继续使用
+项目的 `allowedFileRoot`。显式空列表不回退到旧单根。解码并解析符号链接后校验路径；
+导航、后退/切换后的目的地和感知前的已有页面使用同一目录边界，内部协议和未授权文件均拒绝。
 
 `dialogs.py` / `navigation.py` 扩展固定版本上游 watchdog，`PersistentAgent` 明确将浏览器生命周期
 交回宿主；升级依赖必须重跑真实浏览器集成测试，不能直接修改版本号。

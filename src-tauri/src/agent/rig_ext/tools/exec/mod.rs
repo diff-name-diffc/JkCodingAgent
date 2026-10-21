@@ -20,6 +20,7 @@ pub(crate) use local_zsh::local_zsh_dir;
 pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     let mut tools = vec![local_zsh::local_zsh_tool(
         deps.workspace.clone(),
+        deps.chat_workspace.clone(),
         deps.workspace_id.clone(),
         deps.exec_timeout_secs,
         deps.cancel_rx.clone(),

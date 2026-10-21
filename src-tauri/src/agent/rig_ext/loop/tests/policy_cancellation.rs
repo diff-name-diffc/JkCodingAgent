@@ -14,6 +14,7 @@ async fn unified_timeout_signals_callback_and_waits_for_actual_settlement() {
         AppToolPolicyConfig {
             workspace_id: fixture.workspace_id.clone(),
             workspace: fixture.temp_dir.clone(),
+            filesystem_roots: Vec::new(),
             review: crate::agent::rig_ext::review::RigReviewContext::unconfigured(),
             cancel_rx: None,
             trace: Default::default(),

@@ -10,7 +10,7 @@ from browser_use import Agent, Tools
 from browser_use.agent.views import ActionResult
 from diagnostics import RunDiagnostics, exception_diagnostic
 from model import model_from_config
-from navigation import require_navigation_allowed
+from navigation import allowed_file_roots, require_navigation_allowed
 
 
 ALLOWED_ACTIONS = frozenset(
@@ -51,6 +51,27 @@ class ExplorationCancelled(RuntimeError):
 
 class ExplorationTimeout(RuntimeError):
     pass
+
+
+def exploration_directory(user_data_dir, params):
+    """普通聊天运行目录仅由宿主分配；旧项目执行仍沿用 profile/runs。"""
+    if "temporaryDirectory" not in params:
+        return Path(user_data_dir) / "runs" / str(uuid4())
+    raw = params["temporaryDirectory"]
+    roots = allowed_file_roots(params)
+    if (
+        "allowedFileRoots" not in params
+        or not roots
+        or not isinstance(raw, str)
+        or not Path(raw).is_absolute()
+    ):
+        raise ValueError("temporaryDirectory 必须为宿主分配的会话内绝对目录")
+    # 多根协议的首项固定为会话临时根，工程目录不能承载浏览器中间产物。
+    session_root = roots[0].resolve()
+    directory = Path(raw).resolve()
+    if directory == session_root or not directory.is_relative_to(session_root):
+        raise ValueError("浏览器临时运行目录必须位于本会话临时目录内")
+    return directory
 
 
 class PersistentAgent(Agent):
@@ -100,15 +121,17 @@ class ObservedTools(Tools):
             "action_started", taskId=task_id, toolName=name, arguments=arguments
         )
         try:
+            roots = allowed_file_roots(self.owner.params)
             if name == "navigate":
-                require_navigation_allowed(
-                    arguments.get("url"), self.owner.params.get("allowedFileRoot")
-                )
+                require_navigation_allowed(arguments.get("url"), roots)
             require_navigation_allowed(
-                await browser_session.get_current_page_url(),
-                self.owner.params.get("allowedFileRoot"),
+                await browser_session.get_current_page_url(), roots
             )
             result = await super().act(action, browser_session, **kwargs)
+            # 后退、切换标签和点击导航也必须重新确认目的地。
+            require_navigation_allowed(
+                await browser_session.get_current_page_url(), roots
+            )
         except asyncio.CancelledError:
             self.owner.emit(
                 "action_finished",
@@ -199,7 +222,7 @@ class Explorer:
         use_vision = self.params.get("useVision", False)
         if not isinstance(use_vision, bool):
             raise ValueError("useVision 必须为布尔值")
-        directory = Path(self.runtime.user_data_dir) / "runs" / str(uuid4())
+        directory = exploration_directory(self.runtime.user_data_dir, self.params)
         directory.mkdir(parents=True, exist_ok=True)
         downloads = directory / "downloads"
         downloads.mkdir()

@@ -1,6 +1,6 @@
 //! 数据库 schema 初始化与版本管理（PRAGMA user_version 方案）。
 //!
-//! 当前版本 v17，保留 v16 工作流基线并前向迁移浏览器配置。
+//! 当前版本 v18，保留 v16 工作流基线并前向迁移浏览器配置与聊天分类共享目录。
 //! 全新库直接创建当前形态；v16 库先备份再事务迁移；低于 v16 的旧开发库
 //! 没有迁移路径，仍拒绝打开。旧链重用过版本号，同版本也必须校验领域形态。
 //!
@@ -17,11 +17,13 @@ use anyhow::{Context, Result};
 /// 当前 schema 版本号（PRAGMA user_version）。
 ///
 /// v16：工作流口径基线；v17：browser-use 专用运行时与退役工具配置迁移。
-pub(crate) const SCHEMA_VERSION: i32 = 17;
+/// v18：普通聊天分类可绑定多个共享工程目录。
+pub(crate) const SCHEMA_VERSION: i32 = 18;
 
 mod baseline;
 mod categories;
 mod migration_v17;
+mod migration_v18;
 mod runtime;
 mod v16_prompts;
 
@@ -50,7 +52,7 @@ impl DispatcherDb {
             .context("read PRAGMA user_version（数据库可能已损坏）")?;
 
         if current_version == SCHEMA_VERSION {
-            return migration_v17::verify_shape(&conn);
+            return migration_v18::verify_shape(&conn);
         }
         if current_version > SCHEMA_VERSION {
             // 版本号更高有两种来源：应用降级打开了新版写入的库，或（当前开发阶段
@@ -107,6 +109,13 @@ impl DispatcherDb {
             for id in disabled {
                 eprintln!("子智能体 {id} 的旧浏览器工具已退役，当前工具列表为空；已禁用并保留配置，请重新选择工具后启用。");
             }
+        }
+        if current_version < 18 {
+            migration_v17::verify_shape(&conn)?;
+            let tx = conn.transaction().context("begin schema v18 migration")?;
+            migration_v18::migrate(&tx)?;
+            tx.pragma_update(None, "user_version", 18)?;
+            tx.commit().context("commit schema v18 migration")?;
         }
         Ok(())
     }

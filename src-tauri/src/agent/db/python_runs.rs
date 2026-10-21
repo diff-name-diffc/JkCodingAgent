@@ -97,14 +97,59 @@ impl DispatcherDb {
     }
 
     pub fn upsert_python_code_run(&self, record: &PythonCodeRunRecord) -> Result<()> {
+        if !self.write_python_code_run(record, false)? {
+            anyhow::bail!("Python 执行目标不存在：会话或所属消息已被清理");
+        }
+        Ok(())
+    }
+
+    /// 用单条 SQL 原子校验父资源和本次 run 身份；清理或被新 run 替换后不再写回。
+    pub(crate) fn update_python_code_run(&self, record: &PythonCodeRunRecord) -> Result<bool> {
+        self.write_python_code_run(record, true)
+    }
+
+    pub(crate) fn python_code_run_is_current(&self, record: &PythonCodeRunRecord) -> Result<bool> {
+        self.conn()?
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM python_code_runs r
+                    JOIN dispatcher_sessions s ON s.id = r.workspace_id
+                    JOIN dispatcher_messages m ON m.id = r.message_id AND m.workspace_id = s.id
+                    WHERE r.workspace_id = ?1 AND r.message_id = ?2
+                      AND r.code_block_index = ?3 AND r.run_id = ?4
+                 )",
+                params![
+                    record.workspace_id,
+                    record.message_id,
+                    i64::from(record.code_block_index),
+                    record.run_id
+                ],
+                |row| row.get(0),
+            )
+            .context("check Python run target is current")
+    }
+
+    fn write_python_code_run(
+        &self,
+        record: &PythonCodeRunRecord,
+        only_existing_run: bool,
+    ) -> Result<bool> {
         let conn = self.conn()?;
-        conn.execute(
+        let changed = conn.execute(
             "INSERT INTO python_code_runs (
                 run_id, workspace_id, message_id, code_block_index, code_hash, code, status,
                 stdout, stderr, installed_packages_json, tool_events_json, explanation_markdown,
                 error_reason, created_at, updated_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+             WHERE EXISTS (
+                SELECT 1 FROM dispatcher_sessions s
+                JOIN dispatcher_messages m ON m.workspace_id = s.id
+                WHERE s.id = ?2 AND m.id = ?3
+             ) AND (?16 = 0 OR EXISTS (
+                SELECT 1 FROM python_code_runs
+                WHERE workspace_id = ?2 AND message_id = ?3 AND code_block_index = ?4 AND run_id = ?1
+             ))
              ON CONFLICT(workspace_id, message_id, code_block_index) DO UPDATE SET
                 run_id = excluded.run_id,
                 code_hash = excluded.code_hash,
@@ -133,10 +178,11 @@ impl DispatcherDb {
                 &record.error_reason,
                 &record.created_at,
                 &record.updated_at,
+                only_existing_run,
             ],
         )
         .context("upsert python code run")?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     pub fn clear_python_code_run(
@@ -272,5 +318,67 @@ mod tests {
             .expect("list python runs for message");
         let indices: Vec<u32> = runs.iter().map(|run| run.code_block_index).collect();
         assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn clearing_messages_prevents_startup_and_late_updates_from_recreating_runs() {
+        let (db, _dir) = test_db();
+        let (session_id, messages) = setup_session_with_messages(&db, 1);
+        let run = record(&session_id, &messages[0], 0, "2026-10-16T00:00:00Z");
+        db.upsert_python_code_run(&run).unwrap();
+        assert!(db.python_code_run_is_current(&run).unwrap());
+        db.clear_messages(&session_id).unwrap();
+        assert!(!db.python_code_run_is_current(&run).unwrap());
+        assert!(!db.update_python_code_run(&run).unwrap());
+        assert!(db.upsert_python_code_run(&run).is_err());
+        assert!(db
+            .list_python_code_runs(&session_id, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn late_updates_do_not_restore_cleared_results_or_overwrite_a_newer_run() {
+        let (db, _dir) = test_db();
+        let (session_id, messages) = setup_session_with_messages(&db, 1);
+        let old = record(&session_id, &messages[0], 0, "2026-10-16T00:00:00Z");
+        db.upsert_python_code_run(&old).unwrap();
+        db.clear_python_code_run(&session_id, &messages[0], 0)
+            .unwrap();
+        assert!(!db.update_python_code_run(&old).unwrap());
+        assert!(db
+            .list_python_code_runs(&session_id, None)
+            .unwrap()
+            .is_empty());
+
+        let mut newer = old.clone();
+        newer.run_id = uuid::Uuid::new_v4().to_string();
+        newer.status = "running".to_string();
+        db.upsert_python_code_run(&newer).unwrap();
+        assert!(!db.python_code_run_is_current(&old).unwrap());
+        assert!(!db.update_python_code_run(&old).unwrap());
+        newer.status = "done".to_string();
+        assert!(db.update_python_code_run(&newer).unwrap());
+        let runs = db.list_python_code_runs(&session_id, None).unwrap();
+        assert_eq!(runs[0].run_id, newer.run_id);
+        assert_eq!(runs[0].status, "done");
+    }
+
+    #[test]
+    fn starting_python_requires_the_message_to_belong_to_the_existing_session() {
+        let (db, _dir) = test_db();
+        let (session_id, messages) = setup_session_with_messages(&db, 1);
+        let other = db.create_chat_session("other", None).unwrap();
+        let wrong = record(&other.id, &messages[0], 0, "2026-10-16T00:00:00Z");
+        assert!(db.upsert_python_code_run(&wrong).is_err());
+        assert!(db
+            .list_python_code_runs(&other.id, None)
+            .unwrap()
+            .is_empty());
+        let run = record(&session_id, &messages[0], 0, "2026-10-16T00:00:00Z");
+        db.upsert_python_code_run(&run).unwrap();
+        db.delete_session(&session_id).unwrap();
+        assert!(!db.update_python_code_run(&run).unwrap());
+        assert!(db.upsert_python_code_run(&run).is_err());
     }
 }

@@ -32,7 +32,6 @@ use super::deps::RigToolDeps;
 pub(crate) async fn mcp_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     let registry = deps.mcp_registry.clone();
     let scope = deps.mcp_scope.clone();
-    let review_context = deps.review.clone();
     let workspace = deps.workspace.clone();
     let workspace_id = deps.workspace_id.clone();
 
@@ -45,7 +44,7 @@ pub(crate) async fn mcp_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
     };
 
     let review = McpReviewInputs {
-        context: review_context,
+        context: deps.review.clone(),
         workspace,
         workspace_id,
         app_handle: deps.app_handle.clone(),

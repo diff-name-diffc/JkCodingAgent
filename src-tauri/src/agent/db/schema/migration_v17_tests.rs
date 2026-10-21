@@ -153,7 +153,7 @@ fn upgrade_preserves_models_custom_fields_and_disabled_state() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
             .unwrap(),
-        17
+        super::super::SCHEMA_VERSION
     );
     assert!(std::fs::read_dir(dir.path()).unwrap().any(|entry| entry
         .unwrap()
@@ -239,7 +239,7 @@ fn failed_migration_rolls_back_all_changes_and_can_retry() {
 #[test]
 fn malformed_config_is_skipped_not_replaced_and_does_not_block_startup() {
     let (path, _dir) = legacy_db("corrupt");
-    let mut conn = Connection::open(&path).unwrap();
+    let conn = Connection::open(&path).unwrap();
     conn.execute(
         "UPDATE dispatcher_settings SET settings_json = '{broken'",
         [],

@@ -17,6 +17,7 @@
 //! 随 DB 类型一起迁移归位。
 
 pub(crate) mod agents;
+pub(crate) mod chat_workspace;
 pub(crate) mod context;
 pub(crate) mod events;
 pub(crate) mod r#loop;

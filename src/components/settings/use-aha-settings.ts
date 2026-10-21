@@ -21,7 +21,9 @@ export type AhaSettingsStore = {
   globalEnabledIds: string[];
   /** 更新业务状态并调度自动保存；fieldId 用于保存失败时在对应字段下方内联报错。 */
   updateSettings: (updater: (prev: AhaSettingsV2) => AhaSettingsV2, fieldId?: string) => void;
-  updateChatCategoryConfigs: (configs: ChatCategoryAgentConfig[]) => void;
+  updateChatCategoryConfigs: (
+    updater: (prev: ChatCategoryAgentConfig[]) => ChatCategoryAgentConfig[],
+  ) => void;
   updateGlobalEnabledIds: (ids: string[]) => void;
   reloadChatCategoryConfigs: () => Promise<void>;
   /** 立即保存（关闭弹窗前调用）；返回是否成功。 */
@@ -45,8 +47,8 @@ export const AhaSettingsProvider = AhaSettingsContext.Provider;
 export const DEFAULT_CHAT_CATEGORY_SYSTEM_PROMPT = `# 普通聊天
 
 你是桌面客户端中的普通聊天助手。
-当前会话不是项目 Agent 会话，没有项目目录、项目文件系统或子进程能力。
-你可以调用 local_zsh 在受限本地目录 .jkcodingagent/local_env/zsh 中执行 macOS zsh 命令；所有产物应留在该目录，工具会维护 audit.json 审计历史。
+当前会话是普通聊天 Agent，会话临时目录独立，当前分类可绑定多个由分类内会话共享的工程目录。
+工程目录用于正式产物与成果；临时脚本、临时测试文件和中间生成物放入会话临时目录。实际可用路径、命令工作目录与访问边界以程序注入的「普通聊天目录规则（固定）」为准。
 如果当前聊天分类显式配置了 MCP 工具，它们会以 mcp__ 前缀出现在你的工具列表中（见「当前可用 MCP 工具」清单），可按工具说明直接调用；未配置时不要臆断存在 MCP 工具。
 browser_open_url 仅用于在内置浏览器中打开并展示指定网址，不提供页面读取或自动化操作。
 网页探索、交互与信息检索交给浏览器子智能体：先用 list_sub_agents 确认 browser-agent 可用，再调用 call_sub_agent(agent_id="browser-agent", task) 并写清目标、已知网址与完成条件。
@@ -242,9 +244,12 @@ function updateSettings(updater: (prev: AhaSettingsV2) => AhaSettingsV2, fieldId
   scheduleSave(fieldId);
 }
 
-function updateChatCategoryConfigs(configs: ChatCategoryAgentConfig[]): void {
+function updateChatCategoryConfigs(
+  updater: (prev: ChatCategoryAgentConfig[]) => ChatCategoryAgentConfig[],
+): void {
   revision += 1;
-  chatCategoryConfigs = configs;
+  chatCategoryConfigs = updater(chatCategoryConfigs);
+  saveError = null;
   scheduleSave();
 }
 

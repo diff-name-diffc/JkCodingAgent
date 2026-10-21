@@ -122,6 +122,8 @@ pub(crate) struct RigToolDeps {
     /// 工作区根目录（构造方须已完成 canonicalize 规范化，语义对齐旧
     /// `ToolContext::normalize_paths`；plain chat 的虚拟工作区保留原值）。
     pub workspace: PathBuf,
+    /// 仅普通聊天使用：分类共享成果目录与会话临时目录的本轮快照。
+    pub chat_workspace: Option<super::super::chat_workspace::ChatWorkspace>,
     pub mcp_scope: McpScope,
     pub exec_timeout_secs: u64,
     pub restrict_to_workspace: bool,

@@ -51,12 +51,22 @@ pub async fn session_delete(
     if state.session_run_is_active(&session_id) {
         return Err("会话正在运行中，请先停止生成后再删除".to_string());
     }
+    let chat_cleanup =
+        super::chat_cleanup::prepare(state.db(), state.agent_config().root_dir, &session_id)
+            .await?;
     let _browser_cleanup = browser_manager
         .remove_session(state.db(), &session_id)
         .await?;
     let db = state.db().clone();
     let session_for_cleanup = session_id.clone();
-    let result = run_dispatcher_db("session_delete", move || db.delete_session(&session_id)).await;
+    let result = run_dispatcher_db("session_delete", move || {
+        db.delete_session(&session_id)?;
+        if let Some(cleanup) = chat_cleanup {
+            cleanup.after_commit("会话删除");
+        }
+        Ok(())
+    })
+    .await;
     if result.is_ok() {
         // 会话资源清理规范：会话级内存状态（命令执行台账）同步回收；
         // 该会话打开的交互终端一并关闭（tmux 会话随之 kill，远端不残留）。

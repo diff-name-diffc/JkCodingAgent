@@ -373,6 +373,7 @@ impl RigArchitectureAgent {
             AppToolPolicyConfig {
                 workspace_id: workspace_id.to_string(),
                 workspace: workspace.clone(),
+                filesystem_roots: Vec::new(),
                 review: RigReviewContext::unconfigured(),
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),

@@ -11,24 +11,30 @@ pub(super) async fn run_python_agent(
     match result {
         Ok(()) => {}
         Err(error) => {
+            let error = format!("{error:#}");
             record.status = if cancellation_requested(&stop_rx) {
                 "stopped".to_string()
             } else {
                 "failed".to_string()
             };
-            record.error_reason = Some(error.to_string());
+            record.error_reason = Some(error.clone());
             record.updated_at = Utc::now().to_rfc3339();
-            upsert_run_record(&db, &record).await?;
-            emit_run_event(
-                &app,
-                &record,
-                if record.status == "stopped" {
-                    "stopped"
-                } else {
-                    "failed"
-                },
-                json!({ "error": error.to_string() }),
-            );
+            // 租约可能已经释放，清理可能刚完成；只更新仍属于本 run 的行，不复活记录。
+            // 记录已不存在时不再广播：前端没有可归属的行，事件只会留下幽灵 running。
+            if persist_existing_run_record(&db, &record).await? {
+                emit_run_event(
+                    &app,
+                    &record,
+                    if record.status == "stopped" {
+                        "stopped"
+                    } else {
+                        "failed"
+                    },
+                    // 前端仅在 data.record 存在时才更新记录：失败事件必须带上，
+                    // 否则抽屉里的 run 会一直停留在 running。
+                    json!({ "error": error, "record": record.clone() }),
+                );
+            }
         }
     }
     Ok(())
@@ -43,25 +49,39 @@ async fn run_python_agent_inner(
 ) -> Result<()> {
     // DB 读取与目录创建是同步阻塞操作，统一放进 spawn_blocking，
     // 不在 tokio 任务线程上直接执行（项目规范：重操作不阻塞异步运行时）。
-    let (spec, message_context, paths) = {
+    let (spec, message_context, chat_workspace) = {
         let db = db.clone();
         let root_dir = root_dir.to_path_buf();
         let workspace_id = record.workspace_id.clone();
         let message_id = record.message_id.clone();
-        let run_id = record.run_id.clone();
         let code = record.code.clone();
         tokio::task::spawn_blocking(move || -> Result<_> {
             let spec = resolve_summary_spec(&db)?;
             let message_context = db
                 .get_visible_message_content(&workspace_id, &message_id)?
                 .unwrap_or(code);
-            let paths = prepare_paths(&root_dir, &run_id)?;
-            Ok((spec, message_context, paths))
+            let chat_workspace = workspace::resolve_chat_workspace(&db, &root_dir, &workspace_id)?;
+            Ok((spec, message_context, chat_workspace))
         })
         .await
         .map_err(|error| anyhow!("spawn_blocking 失败: {error}"))??
     };
-    ensure_uv_available(&mut stop_rx).await?;
+    // Python 可通过绝对路径访问共享工程；整个运行持有同一资源仲裁器的写租约。
+    // 排队期间不写运行文件、不启动进程，取消信号直接终止等待。
+    let _workspace_lease =
+        workspace::acquire_chat_workspace(chat_workspace.as_ref(), stop_rx.clone()).await?;
+    let paths = {
+        let root_dir = root_dir.to_path_buf();
+        let db = db.clone();
+        let record = record.clone();
+        let chat_workspace = chat_workspace.clone();
+        tokio::task::spawn_blocking(move || {
+            workspace::prepare_current_run_paths(&db, &root_dir, &record, chat_workspace.as_ref())
+        })
+        .await
+        .context("准备 Python 运行目录任务失败")??
+    };
+    ensure_uv_available(&paths, &mut stop_rx).await?;
     ensure_venv(&paths, &mut stop_rx).await?;
     tokio::fs::write(&paths.main_py, &record.code)
         .await
@@ -95,7 +115,7 @@ async fn run_python_agent_inner(
         record.explanation_markdown = explain_result(&spec, record, None).await?;
         record.status = "done".to_string();
         record.updated_at = Utc::now().to_rfc3339();
-        upsert_run_record(db, record).await?;
+        update_run_record(db, record).await?;
         emit_run_event(app, record, "final", json!({ "record": record.clone() }));
         return Ok(());
     }
@@ -113,7 +133,7 @@ async fn run_python_agent_inner(
             )
             .await?;
             record.updated_at = Utc::now().to_rfc3339();
-            upsert_run_record(db, record).await?;
+            update_run_record(db, record).await?;
             emit_run_event(app, record, "final", json!({ "record": record.clone() }));
             return Ok(());
         }
@@ -130,7 +150,10 @@ async fn run_python_agent_inner(
         }
 
         let request = build_completion_request(
-            Some(build_python_agent_system_prompt()),
+            Some(build_python_agent_system_prompt(
+                chat_workspace.as_ref(),
+                &paths,
+            )),
             messages.clone(),
             tool_definitions.clone(),
             spec.max_tokens,
@@ -156,7 +179,7 @@ async fn run_python_agent_inner(
             }
             record.error_reason = Some(first_non_empty(&record.stderr, "代码执行失败"));
             record.updated_at = Utc::now().to_rfc3339();
-            upsert_run_record(db, record).await?;
+            update_run_record(db, record).await?;
             emit_run_event(app, record, "final", json!({ "record": record.clone() }));
             return Ok(());
         }
@@ -196,7 +219,7 @@ async fn run_python_agent_inner(
             record.installed_packages_json = serde_json::to_string(&installed_packages)?;
             record.tool_events_json = serde_json::to_string(&tool_events)?;
             record.updated_at = Utc::now().to_rfc3339();
-            upsert_run_record(db, record).await?;
+            update_run_record(db, record).await?;
             emit_run_event(
                 app,
                 record,
@@ -213,7 +236,7 @@ async fn run_python_agent_inner(
             if record.status == "done" {
                 record.explanation_markdown = explain_result(&spec, record, None).await?;
                 record.updated_at = Utc::now().to_rfc3339();
-                upsert_run_record(db, record).await?;
+                update_run_record(db, record).await?;
                 emit_run_event(app, record, "final", json!({ "record": record.clone() }));
                 return Ok(());
             }
@@ -229,7 +252,7 @@ async fn run_python_agent_inner(
     )
     .await?;
     record.updated_at = Utc::now().to_rfc3339();
-    upsert_run_record(db, record).await?;
+    update_run_record(db, record).await?;
     emit_run_event(app, record, "final", json!({ "record": record.clone() }));
     Ok(())
 }

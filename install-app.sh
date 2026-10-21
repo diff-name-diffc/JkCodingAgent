@@ -2,17 +2,16 @@
 # install-app.sh — 将 cargo tauri build 的产物 JKCodingAgent.app 覆盖安装到 /Applications。
 #
 # 用法：
-#   scripts/install-app.sh           # 交互确认后安装
-#   scripts/install-app.sh -y        # 跳过确认，适合串联：
-#                                     #   cargo tauri build && scripts/install-app.sh -y --open
-#   scripts/install-app.sh --open    # 安装完成后立即启动应用
-#   scripts/install-app.sh -h        # 查看帮助
+#   ./install-app.sh                # 自动退出旧应用、覆盖安装并启动新应用，无需确认
+#   ./install-app.sh --no-open      # 安装后不启动应用
+#   ./install-app.sh -y --open      # 兼容旧用法，与默认行为相同
+#   ./install-app.sh -h             # 查看帮助
 #
 # 行为细节：
 # - ditto 拷贝（保留 ad-hoc 签名与扩展属性），先删旧 .app 再拷，避免残留混入；
 # - 应用数据都在 ~/.jkcodingagent，覆盖 .app 不影响任何用户数据；
 # - 若应用正在运行，先温和退出（AppleScript quit，不强杀）再覆盖；
-# - 安装后清理 quarantine 属性兜底（本地构建一般没有，幂等无害），并弹系统通知。
+# - 安装后清理 quarantine 属性兜底（本地构建一般没有，幂等无害），弹系统通知并自动启动。
 #
 # 编码注意：本机 bash 3.2 会把紧跟变量的多字节字符（全角括号等）并入变量名，
 # set -u 下误报 unbound——所有变量引用一律用 ${VAR} 花括号形式。
@@ -23,8 +22,7 @@ APP_NAME="JKCodingAgent.app"
 DEST="/Applications/${APP_NAME}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="${ROOT}/src-tauri/target/release/bundle/macos/${APP_NAME}"
-ASSUME_YES=0
-OPEN_AFTER=0
+OPEN_AFTER=1
 
 usage() {
   # 帮助文本 = 头部注释第 2 行起、到「编码注意」段之前——按标记截取而非
@@ -34,8 +32,9 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -y|--yes) ASSUME_YES=1 ;;
+    -y|--yes) : ;; # 兼容旧调用：默认已跳过确认。
     --open) OPEN_AFTER=1 ;;
+    --no-open) OPEN_AFTER=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "未知参数：$1" >&2; usage; exit 1 ;;
   esac
@@ -65,11 +64,6 @@ if is_running; then
   echo "提示：JKCodingAgent 正在运行，安装时会先温和退出（未保存状态由应用自身退出流程处理）。"
 fi
 
-if [[ "$ASSUME_YES" -eq 0 ]]; then
-  read -r -p "覆盖安装到 ${DEST} ？[y/N] "
-  [[ "$REPLY" == [yY] || "$REPLY" == [yY][eE][sS] ]] || { echo "已取消。"; exit 0; }
-fi
-
 if is_running; then
   osascript -e 'tell application "JKCodingAgent" to quit' >/dev/null 2>&1 || true
   for _ in 1 2 3 4 5 6 7 8; do
@@ -89,9 +83,9 @@ xattr -rd com.apple.quarantine "${DEST}" 2>/dev/null || true
 echo "已安装：${DEST}"
 osascript -e "display notification \"JKCodingAgent v${SRC_VERSION} 已安装到 /Applications\" with title \"JKCodingAgent 安装完成\"" >/dev/null 2>&1 || true
 
-if [[ "$OPEN_AFTER" -eq 1 ]]; then
+if [[ "${OPEN_AFTER}" -eq 1 ]]; then
   open "${DEST}"
   echo "已启动 JKCodingAgent。"
 else
-  echo "启动：open ${DEST}（或给本脚本加 --open 安装后直接启动）"
+  echo "已按 --no-open 跳过启动；可执行：open \"${DEST}\""
 fi

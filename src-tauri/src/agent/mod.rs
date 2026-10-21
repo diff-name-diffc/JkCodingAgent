@@ -1,3 +1,4 @@
+pub(crate) mod chat_directories;
 pub(crate) mod command_history;
 pub mod commands;
 pub(crate) mod common;

@@ -3,6 +3,11 @@ import type { ChatCategoryAgentConfig } from "../../../types";
 import { ToolsTab } from "./ToolsTab";
 import { SubAgentPicker } from "../sub-agents/SubAgentPicker";
 import { DEFAULT_CHAT_CATEGORY_SYSTEM_PROMPT } from "../use-aha-settings";
+import { ChatCategoryDirectoriesSection } from "./ChatCategoryDirectoriesSection";
+
+type CategoryConfigPatch =
+  | Partial<ChatCategoryAgentConfig>
+  | ((config: ChatCategoryAgentConfig) => Partial<ChatCategoryAgentConfig>);
 
 export function ChatCategoryToolsTab({
   configs,
@@ -15,7 +20,7 @@ export function ChatCategoryToolsTab({
   activeCategoryId: string | null;
   onActiveCategoryChange: (categoryId: string) => void;
   onReload: () => void;
-  onChange: (categoryId: string, patch: Partial<ChatCategoryAgentConfig>) => void;
+  onChange: (categoryId: string, patch: CategoryConfigPatch) => void;
 }) {
   const activeConfig =
     configs.find((config) => config.categoryId === activeCategoryId) ?? configs[0] ?? null;
@@ -71,10 +76,27 @@ export function ChatCategoryToolsTab({
         </div>
       </section>
 
+      <ChatCategoryDirectoriesSection
+        key={activeConfig.categoryId}
+        categoryName={activeConfig.categoryName}
+        directories={activeConfig.projectDirectories}
+        onAdd={(directories) =>
+          onChange(activeConfig.categoryId, (config) => ({
+            projectDirectories: [...new Set([...config.projectDirectories, ...directories])],
+          }))
+        }
+        onRemove={(directory) =>
+          onChange(activeConfig.categoryId, (config) => ({
+            projectDirectories: config.projectDirectories.filter((path) => path !== directory),
+          }))
+        }
+      />
+
       <section className="ai-aha-section">
         <div className="ai-aha-section-title">{activeConfig.categoryName} · 系统提示词</div>
         <div className="ai-aha-section-description">
           该提示词只影响当前分类下的普通聊天会话；运行时会追加分类名称、分类 ID 和系统时间。
+          目录边界由程序固定注入，不受自定义提示词覆盖。
         </div>
         <div className="ai-aha-field">
           <textarea

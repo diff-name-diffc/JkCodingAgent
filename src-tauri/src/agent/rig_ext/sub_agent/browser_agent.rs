@@ -11,6 +11,7 @@ use tauri::Manager;
 use super::browser_events::{bounded, BrowserTrace, BrowserUsage};
 use super::events::SubAgentEvent;
 use super::runner::{resolve_sub_agent_spec, RigSubAgentRequest};
+use crate::agent::rig_ext::chat_workspace::ChatWorkspace;
 use crate::agent::rig_ext::model::PurposeModelSpec;
 use crate::agent::sub_agent::{config::SubAgentConfig, manager::SubAgentManager};
 use crate::browser::BrowserManager;
@@ -19,6 +20,7 @@ pub(super) struct BrowserAgentRuntime {
     config: SubAgentConfig,
     spec: PurposeModelSpec,
     workspace: String,
+    chat_workspace: Option<ChatWorkspace>,
     cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
     trace: BrowserTrace,
     status: Mutex<&'static str>,
@@ -37,10 +39,15 @@ struct BrowserResult {
 
 impl BrowserAgentRuntime {
     pub fn build(request: &RigSubAgentRequest<'_>) -> Self {
+        let mut config = request.config.clone();
+        if let Some(workspace) = &request.deps.chat_workspace {
+            config.system_prompt.push_str(&workspace.render_prompt());
+        }
         Self {
-            config: request.config.clone(),
+            config,
             spec: resolve_sub_agent_spec(request.config, request.parent_spec),
             workspace: request.deps.workspace.to_string_lossy().into_owned(),
+            chat_workspace: request.deps.chat_workspace.clone(),
             cancel_rx: request.cancel_rx.clone(),
             trace: BrowserTrace::new(request),
             status: Mutex::new("running"),
@@ -89,17 +96,7 @@ impl BrowserAgentRuntime {
             .ok_or("浏览器探索需要桌面应用运行环境")?;
         self.checkpoint(manager.clone()).await?;
         let browser = app.state::<BrowserManager>();
-        let params = json!({
-            "task": self.config.user_prompt_template.replace("{{task}}", task),
-            "systemPrompt": self.config.system_prompt,
-            "maxSteps": self.config.max_iterations,
-            "useVision": self.config.browser_use_vision,
-            "timeoutSecs": self.config.timeout_secs,
-            "allowedFileRoot": self.workspace,
-            "model": { "apiBase":self.spec.api_base, "apiKey":self.spec.api_key,
-                "model":self.spec.model, "apiType":"openai", "maxTokens":self.spec.max_tokens,
-                "temperature":self.spec.temperature },
-        });
+        let params = self.exploration_params(task);
         let trace = self.trace.clone();
         let run_app = app.clone();
         let session_id = self.trace.session_id.clone();
@@ -144,6 +141,30 @@ impl BrowserAgentRuntime {
                 }
             }
         }
+    }
+
+    fn exploration_params(&self, task: &str) -> Value {
+        let mut params = json!({
+            "task": self.config.user_prompt_template.replace("{{task}}", task),
+            "systemPrompt": self.config.system_prompt,
+            "maxSteps": self.config.max_iterations,
+            "useVision": self.config.browser_use_vision,
+            "timeoutSecs": self.config.timeout_secs,
+            "allowedFileRoot": self.workspace,
+            "model": { "apiBase":self.spec.api_base, "apiKey":self.spec.api_key,
+                "model":self.spec.model, "apiType":"openai", "maxTokens":self.spec.max_tokens,
+                "temperature":self.spec.temperature },
+        });
+        if let Some(workspace) = &self.chat_workspace {
+            params["allowedFileRoots"] = json!(std::iter::once(&workspace.session_root)
+                .chain(workspace.project_roots.iter())
+                .collect::<Vec<_>>());
+            params["temporaryDirectory"] = json!(workspace
+                .session_root
+                .join(".jkcodingagent/browser-runs")
+                .join(uuid::Uuid::new_v4().to_string()));
+        }
+        params
     }
 
     async fn checkpoint(&self, manager: Arc<SubAgentManager>) -> Result<(), String> {

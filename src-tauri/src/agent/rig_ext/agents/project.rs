@@ -277,6 +277,7 @@ impl RigOrchestratorAgent {
             AppToolPolicyConfig {
                 workspace_id: workspace_id.to_string(),
                 workspace: workspace.clone(),
+                filesystem_roots: Vec::new(),
                 review: self.review_context(db, workspace_id).await,
                 cancel_rx: Some(request.cancel_rx.clone()),
                 trace: Default::default(),
@@ -361,6 +362,7 @@ impl RigOrchestratorAgent {
         RigToolDeps {
             workspace_id: "tool-catalog".to_string(),
             workspace: self.config.root_dir.clone(),
+            chat_workspace: None,
             mcp_scope: McpScope::Project(self.config.root_dir.clone()),
             exec_timeout_secs: self.config.exec_timeout_secs,
             restrict_to_workspace: true,
@@ -395,6 +397,7 @@ impl RigOrchestratorAgent {
         RigToolDeps {
             workspace_id: workspace_id.to_string(),
             workspace: workspace.to_path_buf(),
+            chat_workspace: None,
             // 项目编排器运行在受管项目工作区：MCP 走「全局 ∪ 项目」合并作用域。
             mcp_scope: McpScope::Project(workspace.to_path_buf()),
             exec_timeout_secs: self.config.exec_timeout_secs,

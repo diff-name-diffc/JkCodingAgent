@@ -50,7 +50,10 @@ export function ToolsPage() {
           />
         </Section>
       ) : (
-        <Section title="聊天分类工具" description="按聊天分类配置可用工具与子智能体。">
+        <Section
+          title="聊天分类工具"
+          description="按聊天分类配置共享工程目录、可用工具与子智能体。"
+        >
           <ChatCategoryToolsTab
             configs={store.chatCategoryConfigs}
             activeCategoryId={store.activeChatCategoryId}
@@ -62,9 +65,11 @@ export function ToolsPage() {
               });
             }}
             onChange={(categoryId, patch) =>
-              store.updateChatCategoryConfigs(
-                store.chatCategoryConfigs.map((config) =>
-                  config.categoryId === categoryId ? { ...config, ...patch } : config,
+              store.updateChatCategoryConfigs((configs) =>
+                configs.map((config) =>
+                  config.categoryId === categoryId
+                    ? { ...config, ...(typeof patch === "function" ? patch(config) : patch) }
+                    : config,
                 ),
               )
             }

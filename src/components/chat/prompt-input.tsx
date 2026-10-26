@@ -8,6 +8,7 @@ import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { MarkdownImage } from "../markdown/MarkdownImage";
 import { ModelSelector } from "./model-selector";
+import { clipboardFiles, dispatchAttachmentFiles } from "./file-attachments";
 
 /**
  * Composer mode mirrors the existing send/stop pipeline contract.
@@ -26,6 +27,9 @@ export interface PromptInputProps {
   attachments?: ImageSegment[];
   /** Receive image Files from paste / file picker; parent persists them. */
   onAttachImages?: (files: File[]) => void;
+  /** 提供时回形针可选任意文件：非图片文件交父级拷贝到会话临时目录；
+   * 缺省时选择器仍只收图片（accept=image/*）。 */
+  onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
   models?: ModelLibraryEntry[];
   activeEntryId?: string;
@@ -48,18 +52,6 @@ const LINE_HEIGHT = 24;
 const MAX_ROWS = 8;
 const MAX_HEIGHT = LINE_HEIGHT * MAX_ROWS + 12;
 
-function imageFilesFromClipboard(data: DataTransfer | null): File[] {
-  if (!data) return [];
-  const files: File[] = [];
-  for (const item of Array.from(data.items)) {
-    if (item.kind === "file" && item.type.startsWith("image/")) {
-      const file = item.getAsFile();
-      if (file) files.push(file);
-    }
-  }
-  return files;
-}
-
 /**
  * Bottom-anchored prompt input for the refactored chat surface.
  *
@@ -70,6 +62,8 @@ function imageFilesFromClipboard(data: DataTransfer | null): File[] {
  *
  * Images can be staged by pasting from the clipboard or via the paperclip
  * picker; staged images render as a thumbnail strip above the editor.
+ * With `onAttachFiles` the picker also accepts non-image files, which the
+ * parent copies into the session's temporary directory.
  */
 export function PromptInput({
   value,
@@ -80,6 +74,7 @@ export function PromptInput({
   stopping = false,
   attachments = [],
   onAttachImages,
+  onAttachFiles,
   onRemoveAttachment,
   models,
   activeEntryId,
@@ -118,16 +113,20 @@ export function PromptInput({
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = imageFilesFromClipboard(e.clipboardData);
+    const files = clipboardFiles(e.clipboardData);
     if (files.length === 0) return; // plain-text paste keeps default behavior
+    // 未启用文件上传时，非图片剪贴板内容（可能是富文本伪装的 file 项）不拦截。
+    const hasConsumable =
+      files.some((file) => file.type.startsWith("image/")) || Boolean(onAttachFiles);
+    if (!hasConsumable) return;
     e.preventDefault();
-    onAttachImages?.(files);
+    dispatchAttachmentFiles(files, { onAttachImages, onAttachFiles });
   };
 
   const handleFilePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []).filter((f) => f.type.startsWith("image/"));
+    const files = Array.from(e.target.files ?? []);
     e.target.value = ""; // allow picking the same file again
-    if (files.length > 0) onAttachImages?.(files);
+    if (files.length > 0) dispatchAttachmentFiles(files, { onAttachImages, onAttachFiles });
   };
 
   const canSend = mode === "send" && hasContent && !disabled;
@@ -188,7 +187,7 @@ export function PromptInput({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept={onAttachFiles ? undefined : "image/*"}
             multiple
             hidden
             onChange={handleFilePicked}
@@ -199,14 +198,18 @@ export function PromptInput({
                 variant="ghost"
                 size="icon"
                 className="ai-attachment-button"
-                aria-label="添加图片"
+                aria-label={onAttachFiles ? "添加图片或上传文件" : "添加图片"}
                 onClick={() => fileInputRef.current?.click()}
                 type="button"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>添加图片（也可直接粘贴截图）</TooltipContent>
+            <TooltipContent>
+              {onAttachFiles
+                ? "添加图片或上传文件到会话临时目录（也可直接粘贴截图）"
+                : "添加图片（也可直接粘贴截图）"}
+            </TooltipContent>
           </Tooltip>
           {models && onSelectModel && (
             <ModelSelector

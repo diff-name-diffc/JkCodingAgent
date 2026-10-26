@@ -25,6 +25,11 @@ import { useWorkflowPanelController } from "./chat-page-v2/useWorkflowPanelContr
 import { usePythonRunController } from "./chat-page-v2/usePythonRunController";
 import { useChatSessionController } from "./chat-page-v2/useChatSessionController";
 import { useChatMessages } from "./chat-page-v2/useChatMessages";
+import {
+  appendUploadedFileReferences,
+  formatUploadSizeLimit,
+  MAX_UPLOAD_FILE_BYTES,
+} from "./chat-page-v2/upload-files";
 import { ChatPageOverlays } from "./chat-page-v2/ChatPageOverlays";
 import { useCurrentGitBranch } from "../hooks/use-current-git-branch";
 import { useProjectSessionTitle } from "../hooks/use-project-session-title";
@@ -352,6 +357,47 @@ export function ChatPageV2({
     setAttachedImages((prev) => prev.filter((image) => image.id !== id));
   }, []);
 
+  // 非图片文件上传：拷贝到会话临时目录（chat_upload_file），把返回的绝对
+  // 路径作为引用行追加进草稿，随消息发给模型。仅普通聊天会话有会话临时
+  // 目录；项目会话不提供该回调，回形针保持只收图片。
+  const handleAttachFiles = useCallback(
+    (files: File[]) => {
+      void (async () => {
+        if (!activeSessionId) {
+          toast.warning("请先选择分类开始新对话，再上传文件。");
+          return;
+        }
+        const uploaded: string[] = [];
+        for (const file of files) {
+          if (file.size > MAX_UPLOAD_FILE_BYTES) {
+            toast.error(`文件超过大小上限（${formatUploadSizeLimit()}），未上传：${file.name}`);
+            continue;
+          }
+          const base64 = await readFileAsBase64(file);
+          if (!base64) {
+            toast.error(`读取文件失败：${file.name}`);
+            continue;
+          }
+          try {
+            const saved = await invoke<{ path: string }>("chat_upload_file", {
+              workspaceId: activeSessionId,
+              fileName: file.name,
+              dataBase64: base64,
+            });
+            uploaded.push(saved.path);
+          } catch (err) {
+            console.error("上传文件失败:", err);
+            toast.error(`文件上传失败（${file.name}）：${String(err)}`);
+          }
+        }
+        if (uploaded.length > 0) {
+          setInput((prev) => appendUploadedFileReferences(prev, uploaded));
+        }
+      })();
+    },
+    [activeSessionId],
+  );
+
   const handleStop = useCallback(async () => {
     if (!activeSessionId || isStopping) return;
     setIsStopping(true);
@@ -528,6 +574,7 @@ export function ChatPageV2({
           isStopping={isStopping}
           attachments={attachedImages}
           onAttachImages={handleAttachImages}
+          onAttachFiles={isPlainChat ? handleAttachFiles : undefined}
           onRemoveAttachment={handleRemoveAttachment}
           onRegenerateFromMessage={handleRegenerateFromMessage}
           onEditMessage={handleEditMessage}

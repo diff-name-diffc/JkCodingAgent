@@ -98,6 +98,8 @@ export interface ChatShellProps {
   isStopping?: boolean;
   attachments?: ImageSegment[];
   onAttachImages?: (files: File[]) => void;
+  /** 普通聊天提供：非图片文件拷贝到会话临时目录；项目会话缺省（选择器只收图片）。 */
+  onAttachFiles?: (files: File[]) => void;
   onRemoveAttachment?: (id: string) => void;
   onRegenerateFromMessage?: (message: DispatcherMessage) => void;
   onEditMessage?: (message: DispatcherMessage) => void;
@@ -173,6 +175,7 @@ export function ChatShell({
   isStopping = false,
   attachments,
   onAttachImages,
+  onAttachFiles,
   onRemoveAttachment,
   onRegenerateFromMessage,
   onEditMessage,
@@ -397,6 +400,7 @@ export function ChatShell({
             stopping={isStopping}
             attachments={attachments}
             onAttachImages={onAttachImages}
+            onAttachFiles={onAttachFiles}
             onRemoveAttachment={onRemoveAttachment}
             editing={Boolean(editingMessageId)}
             onCancelEdit={onCancelEdit}

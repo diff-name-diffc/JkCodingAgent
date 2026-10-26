@@ -9,6 +9,7 @@ import { useAhaSettingsStore } from "./settings/use-aha-settings";
 import { MarkdownLinkProvider } from "./markdown/MarkdownLinkContext";
 import { ChatPageV2 } from "./chat-page-v2";
 import { useGlobalMcpStatus } from "../hooks/use-mcp-status";
+import { useChatFilesStore } from "../stores/chat-files-store";
 
 const AppSettingsDialog = lazy(() =>
   import("./AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })),
@@ -18,6 +19,11 @@ const McpStatusDialog = lazy(() =>
 );
 const BrowserPanel = lazy(() =>
   import("./browser/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
+);
+const ChatCategoryFilesDialog = lazy(() =>
+  import("./chat-files/ChatCategoryFilesDialog").then((module) => ({
+    default: module.ChatCategoryFilesDialog,
+  })),
 );
 function ChatPaneFallback({ label = "加载中..." }: { label?: string }) {
   return <div className="ai-home-chat-fallback">{label}</div>;
@@ -87,6 +93,9 @@ export function HomeChatPage() {
     projectPath: null,
     onOpen: useCallback(() => setShowBrowserPanel(true), []),
   });
+  // 「分类文件」面板（入口在侧栏分类会话列表的文件夹行）。
+  const chatFilesCategoryId = useChatFilesStore((state) => state.openCategoryId);
+  const closeChatFiles = useChatFilesStore((state) => state.close);
 
   return (
     <div className="ai-home-chat nezha-chat-home">
@@ -142,6 +151,16 @@ export function HomeChatPage() {
               setShowSettings(true);
             }}
             onClose={() => setShowMcpStatus(false)}
+          />
+        </Suspense>
+      )}
+
+      {chatFilesCategoryId && (
+        <Suspense fallback={null}>
+          <ChatCategoryFilesDialog
+            categoryId={chatFilesCategoryId}
+            activeSessionId={activeSessionId}
+            onClose={closeChatFiles}
           />
         </Suspense>
       )}

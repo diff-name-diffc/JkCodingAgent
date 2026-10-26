@@ -167,6 +167,7 @@ pub fn run() {
             agent::commands::message_commands::dispatcher_truncate_messages_from,
             agent::commands::message_commands::dispatcher_get_tool_artifact,
             agent::commands::chat_uploads::chat_upload_file,
+            agent::commands::chat_workspace_commands::chat_workspace_overview,
             agent::commands::session_commands::chat_list_sessions,
             agent::commands::session_commands::session_create,
             agent::commands::session_commands::session_delete,

@@ -6,10 +6,11 @@
  */
 
 import * as React from "react";
-import { ChevronDown, ChevronRight, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderOpen, Plus } from "lucide-react";
 import type { ChatCategory, ChatSession } from "../../../types";
 import { useChatCategorySessionsQuery } from "../../../hooks/use-chat-queries";
 import { useDispatcherSessionRunningSet } from "../../../hooks/useDispatcherSessionRunningSet";
+import { useChatFilesStore } from "../../../stores/chat-files-store";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { ChatCategoryContextMenu } from "../../ChatCategoryContextMenu";
 import { resolveCategoryIcon } from "./sidebar-state";
@@ -94,6 +95,9 @@ export function SidebarCategoryGroup({
   }, [expanded, fetchNextPage, hasNextPage, isFetchNextPageError, isFetchingNextPage]);
 
   const Icon = resolveCategoryIcon(icon);
+  // 「分类文件」入口直接读写全局开合 store：避免把回调穿透 Sidebar /
+  // ChatShell / ChatPageV2 等两侧共用组件（面板本体挂在 HomeChatPage）。
+  const openChatFiles = useChatFilesStore((state) => state.open);
   const header = (
     <div
       className="ai-category-header w-full items-center gap-1 rounded-md px-1.5 py-1"
@@ -152,6 +156,19 @@ export function SidebarCategoryGroup({
 
       {expanded && (
         <ul className="ai-category-sessions mt-1 space-y-0.5">
+          {category && (
+            <li>
+              <button
+                type="button"
+                className="ai-category-files-entry"
+                onClick={() => openChatFiles(category.id)}
+                title={`查看「${label}」的共享工程目录与会话临时目录`}
+              >
+                <FolderOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-left">分类文件</span>
+              </button>
+            </li>
+          )}
           {categorySessionsQuery.isLoading && sessions.length === 0 ? (
             <li className="px-7 py-2 text-xs text-muted-foreground">正在加载会话…</li>
           ) : categorySessionsQuery.isError && sessions.length === 0 ? (

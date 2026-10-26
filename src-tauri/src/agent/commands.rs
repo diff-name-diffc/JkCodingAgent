@@ -43,6 +43,7 @@ pub(crate) mod architecture_commands;
 pub(crate) mod category_commands;
 mod chat_cleanup;
 pub(crate) mod chat_uploads;
+pub(crate) mod chat_workspace_commands;
 pub(crate) mod confirm_commands;
 pub(crate) mod message_commands;
 pub(crate) mod model_commands;

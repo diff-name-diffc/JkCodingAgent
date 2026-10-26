@@ -52,6 +52,8 @@ export function FileTabPane({
   );
   const isImage = presentation.isPreviewableImage;
   const isMarkdown = presentation.isMarkdown;
+  // 多根场景（普通聊天「分类文件」面板）tab 自带授权根；缺省回退外层 projectPath。
+  const effectiveRoot = tab.root ?? projectPath;
 
   const isLargeFile = fileMeta !== null && fileMeta.sizeBytes >= LARGE_FILE_THRESHOLD;
   /** 脏定义：防抖保存中/保存失败；saved 短暂回显不算。大文件为只读查看，恒不脏。 */
@@ -91,7 +93,7 @@ export function FileTabPane({
         await invoke("write_file_content", {
           path: tab.path,
           content: contentToSave,
-          projectPath,
+          projectPath: effectiveRoot,
         });
 
         savedContentRef.current = contentToSave;
@@ -110,7 +112,7 @@ export function FileTabPane({
         void flushQueuedSave();
       }
     }
-  }, [projectPath, tab.path]);
+  }, [effectiveRoot, tab.path]);
 
   useEffect(() => {
     if (isImage) {
@@ -127,7 +129,7 @@ export function FileTabPane({
     queuedSaveContentRef.current = null;
     saveInFlightRef.current = false;
 
-    invoke<FileMeta>("get_file_meta", { path: tab.path, projectPath })
+    invoke<FileMeta>("get_file_meta", { path: tab.path, projectPath: effectiveRoot })
       .then((meta) => {
         if (cancelled) {
           return;
@@ -139,7 +141,7 @@ export function FileTabPane({
           return;
         }
 
-        invoke<string>("read_file_content", { path: tab.path, projectPath })
+        invoke<string>("read_file_content", { path: tab.path, projectPath: effectiveRoot })
           .then((nextContent) => {
             if (cancelled) {
               return;
@@ -168,7 +170,7 @@ export function FileTabPane({
     return () => {
       cancelled = true;
     };
-  }, [isImage, projectPath, tab.path]);
+  }, [isImage, effectiveRoot, tab.path]);
 
   const handleChange = useCallback(
     (value: string) => {
@@ -201,13 +203,13 @@ export function FileTabPane({
   );
 
   if (isImage) {
-    return <ImageFilePane filePath={tab.path} fileName={tab.name} projectPath={projectPath} />;
+    return <ImageFilePane filePath={tab.path} fileName={tab.name} projectPath={effectiveRoot} />;
   }
 
   return (
     <div className="ai-file-pane">
       <FilePaneHeader
-        projectPath={projectPath}
+        projectPath={effectiveRoot}
         filePath={tab.path}
         saveStatus={saveStatus}
         isMarkdown={isMarkdown}
@@ -230,7 +232,7 @@ export function FileTabPane({
             active={active}
             sessionId={tab.id}
             filePath={tab.path}
-            projectPath={projectPath}
+            projectPath={effectiveRoot}
             meta={fileMeta}
           />
         )}

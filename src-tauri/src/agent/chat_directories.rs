@@ -13,7 +13,7 @@ pub(crate) fn normalize_project_directories(raw: &[String]) -> Result<Vec<PathBu
     normalize_with_app_root(raw, &app_root)
 }
 
-fn normalize_with_app_root(raw: &[String], app_root: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn normalize_with_app_root(raw: &[String], app_root: &Path) -> Result<Vec<PathBuf>> {
     let protected_root = match app_root.canonicalize() {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

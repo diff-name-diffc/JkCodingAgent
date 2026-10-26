@@ -18,7 +18,15 @@ export type WorkflowPanelView = "canvas" | "result";
 export const DEFAULT_WORKFLOW_PANEL_VIEW: WorkflowPanelView = "canvas";
 
 export type EditorTab =
-  | { id: string; kind: "file"; path: string; name: string }
+  | {
+      id: string;
+      kind: "file";
+      path: string;
+      name: string;
+      /** 该文件的授权根（多根场景如普通聊天「分类文件」面板）；缺省用
+       * 外层传入的 projectPath，项目页行为不变。 */
+      root?: string;
+    }
   | { id: string; kind: "diff"; diff: OpenDiff }
   /** 工作流工作视图（UI-13）：每会话单例标签，两级视图——planId 为 null 是
    * 会话工作流列表态，非 null 是该工作流详情态；标签 id 稳定于 sessionId。详情态内
@@ -59,13 +67,20 @@ export function workflowTabId(sessionId: string): string {
   return `workflow:${sessionId}`;
 }
 
-/** 打开/激活文件标签（已存在则仅激活）。 */
-export function openFileTab(state: EditorTabsState, path: string, name: string): EditorTabsState {
+/** 打开/激活文件标签（已存在则仅激活）。root 为该文件的授权根（可选）。 */
+export function openFileTab(
+  state: EditorTabsState,
+  path: string,
+  name: string,
+  root?: string,
+): EditorTabsState {
   const id = fileTabId(path);
   const existing = state.tabs.find((tab) => tab.id === id);
   const tabs = existing
-    ? state.tabs.map((tab) => (tab.id === id ? { ...tab, name } : tab))
-    : [...state.tabs, { id, kind: "file" as const, path, name }];
+    ? state.tabs.map((tab) =>
+        tab.id === id && tab.kind === "file" ? { ...tab, name, root: root ?? tab.root } : tab,
+      )
+    : [...state.tabs, { id, kind: "file" as const, path, name, root }];
   return { tabs, activeTabId: id };
 }
 

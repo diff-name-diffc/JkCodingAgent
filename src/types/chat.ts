@@ -180,6 +180,24 @@ export interface ChatCategoryAgentConfig {
   updatedAt: string;
 }
 
+/** 「分类文件」面板的工程目录条目（chat_workspace_overview）：逐条校验回报。 */
+export interface ChatWorkspaceProjectDir {
+  /** 设置中心写入的原始路径串。 */
+  raw: string;
+  /** 校验通过后的 canonical 绝对路径；失效为 null。 */
+  canonical: string | null;
+  /** 失效原因（canonical 为 null 时非空）。 */
+  error: string | null;
+}
+
+/** 「分类文件」面板的目录总览（chat_workspace_overview）。 */
+export interface ChatWorkspaceOverview {
+  /** 会话临时目录绝对路径（目录可能尚未创建）；未传会话时为 null。 */
+  sessionDir: string | null;
+  sessionDirExists: boolean;
+  projectDirs: ChatWorkspaceProjectDir[];
+}
+
 export interface AhaSharedModels {
   visionModelConfigs: DispatcherModelConfig[];
   imageModelConfigs: DispatcherModelConfig[];

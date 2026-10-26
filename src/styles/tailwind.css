@@ -11487,6 +11487,310 @@
       margin-left: 0;
     }
   }
+
+  /* ── 普通聊天「分类文件」入口与面板 ── */
+
+  .ai-category-files-entry {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-left: 24px;
+    width: calc(100% - 24px);
+    padding: 6px 10px;
+    border-radius: 7px;
+    color: var(--text-hint);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition:
+      background 0.14s ease,
+      color 0.14s ease;
+  }
+
+  .ai-category-files-entry:hover {
+    background: rgb(var(--accent-rgb) / 0.08);
+    color: var(--text-primary);
+  }
+
+  .ai-chat-files-overlay {
+    z-index: 300;
+  }
+
+  .ai-chat-files-shell {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 301;
+    display: flex;
+    width: min(1180px, calc(100vw - 48px));
+    height: min(760px, calc(100vh - 56px));
+    min-height: 0;
+    transform: translate(-50%, -50%);
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-xl);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .ai-chat-files-header {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+
+  .ai-chat-files-title {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .ai-chat-files-category {
+    overflow: hidden;
+    padding: 2px 8px;
+    border: 1px solid var(--border-dim);
+    border-radius: 999px;
+    max-width: 220px;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-chat-files-actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .ai-chat-files-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    transition:
+      background 0.14s ease,
+      color 0.14s ease;
+  }
+
+  .ai-chat-files-action:hover {
+    background: rgb(var(--accent-rgb) / 0.1);
+    color: var(--text-primary);
+  }
+
+  .ai-chat-files-body {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+  }
+
+  .ai-chat-files-side {
+    display: flex;
+    width: 300px;
+    flex-shrink: 0;
+    min-height: 0;
+    flex-direction: column;
+    border-right: 1px solid var(--border-dim);
+  }
+
+  .ai-chat-files-nav {
+    display: flex;
+    max-height: 46%;
+    flex-shrink: 0;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+    padding: 10px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+
+  .ai-chat-files-section-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-hint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .ai-chat-files-section-count {
+    margin-left: auto;
+    color: var(--text-hint);
+    font-weight: 500;
+  }
+
+  .ai-chat-files-hint {
+    padding: 10px 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .ai-chat-files-dir-item {
+    display: flex;
+    width: 100%;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background 0.14s ease,
+      color 0.14s ease;
+  }
+
+  .ai-chat-files-dir-item:hover:not(:disabled) {
+    background: rgb(var(--accent-rgb) / 0.07);
+  }
+
+  .ai-chat-files-dir-item.is-active {
+    background: rgb(var(--accent-rgb) / 0.12);
+    box-shadow: inset 2px 0 0 rgb(var(--accent-rgb) / 0.76);
+  }
+
+  .ai-chat-files-dir-item:disabled {
+    cursor: not-allowed;
+  }
+
+  .ai-chat-files-dir-icon {
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--text-hint);
+  }
+
+  .ai-chat-files-dir-item.is-active .ai-chat-files-dir-icon {
+    color: var(--accent);
+  }
+
+  .ai-chat-files-dir-item.is-invalid .ai-chat-files-dir-icon {
+    color: var(--danger);
+  }
+
+  .ai-chat-files-dir-text {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .ai-chat-files-dir-name {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-chat-files-dir-item.is-invalid .ai-chat-files-dir-name {
+    color: var(--danger);
+  }
+
+  .ai-chat-files-dir-path {
+    overflow: hidden;
+    color: var(--text-hint);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-chat-files-dir-error {
+    overflow: hidden;
+    color: var(--danger);
+    font-size: 10.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-chat-files-dir-badge {
+    align-self: flex-start;
+    margin-top: 1px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+  }
+
+  .ai-chat-files-dir-badge.is-ready {
+    border: 1px solid var(--border-dim);
+    color: var(--text-muted);
+  }
+
+  .ai-chat-files-dir-badge.is-pending {
+    border: 1px solid rgb(var(--danger-rgb) / 0.3);
+    background: rgb(var(--danger-rgb) / 0.06);
+    color: var(--danger);
+  }
+
+  .ai-chat-files-session-select {
+    width: 100%;
+    height: 30px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+
+  .ai-chat-files-session-time {
+    margin-left: auto;
+    padding-left: 10px;
+    color: var(--text-hint);
+    font-size: 10.5px;
+  }
+
+  .ai-chat-files-tree {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-sidebar);
+  }
+
+  .ai-chat-files-tree .ai-chat-files-hint {
+    padding: 16px 12px;
+  }
+
+  .ai-chat-files-viewer {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+  }
+
+  .ai-chat-files-empty {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    line-height: 1.7;
+    text-align: center;
+  }
 }
 
 /* ── Streamdown 渲染引擎兼容修复 ──

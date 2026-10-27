@@ -220,7 +220,7 @@ pub struct ToolSpec {
     /// 该工具在内部自管安全审查（携带完整目标环境上下文做 fail-closed 判定）。
     /// CapabilityBroker 对这类工具不再做通用 JSON 参数审查——否则同一调用会
     /// 出现两套审查标准互相覆盖（例如 per-server 审查开关会被 broker 的通用
-    /// 结论短路）。目前为 local_zsh / ssh_exec / sync_directory（策略表）与
+    /// 结论短路）。目前为 local_zsh / ssh_exec / sync_directory / SSH 日志远程工具（策略表）与
     /// 全部 MCP 动态工具（ToolSpec::mcp）。
     pub review_self_managed: bool,
     pub execution: ToolExecutionPolicy,

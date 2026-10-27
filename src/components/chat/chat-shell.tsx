@@ -23,7 +23,7 @@ import {
 } from "../settings/providers/model-library";
 import { useChatShortcuts } from "../../hooks/use-chat-shortcuts";
 import { useSessionRequestGuard } from "../../hooks/useSessionRequestGuard";
-import { AppLayout } from "../layout/app-layout";
+import { ChatCategoryFilesLayout } from "../chat-files/ChatCategoryFilesLayout";
 import { Sidebar } from "../layout/sidebar";
 import { MessageList } from "./message-list";
 import type { ChatEmptyStateContent } from "./chat-empty-content";
@@ -363,7 +363,8 @@ export function ChatShell({
 
   return (
     <SessionScopeContext.Provider value={sessionId}>
-      <AppLayout
+      <ChatCategoryFilesLayout
+        chatFilesEnabled={isPlainChat && !embedded}
         containerRef={shellRef}
         chatHeader={projectHeader}
         artifactOverlay={embedded}
@@ -475,7 +476,7 @@ export function ChatShell({
             onOpenSettings={onOpenSettings}
           />
         )}
-      </AppLayout>
+      </ChatCategoryFilesLayout>
     </SessionScopeContext.Provider>
   );
 }

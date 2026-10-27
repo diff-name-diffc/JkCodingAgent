@@ -24,6 +24,7 @@ pub(crate) mod deps;
 pub(crate) mod edit;
 pub(crate) mod exec;
 pub(crate) mod fs;
+pub(crate) mod log;
 pub(crate) mod mcp;
 pub(crate) mod media;
 pub(crate) mod program;

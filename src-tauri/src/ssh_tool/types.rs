@@ -99,6 +99,12 @@ pub struct SshExecResult {
     pub elevated: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct SshStreamResult {
+    pub execution: SshExecResult,
+    pub bytes_written: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SshAuditLog {

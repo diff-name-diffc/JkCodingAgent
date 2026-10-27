@@ -126,6 +126,7 @@ async fn chat_turn_streams_answer_and_persists_messages() {
         config,
         McpRegistry::new(db.clone()),
         SshSessionManager::new(db.pool()),
+        crate::agent::log_snapshot::LogSnapshotManager::new(),
         crate::ssh_tool::term::TermSessionRegistry::new(),
         None,
     );
@@ -213,8 +214,21 @@ async fn chat_turn_streams_answer_and_persists_messages() {
     }
     assert_eq!(deltas.lock().as_str(), "你好，这是一个端到端回答。");
 
-    // 用量落库（primary 来源）。
-    let usage_rows = db.list_session_token_usage(&session.id).expect("读取用量");
+    // 用量落库（primary 来源）是 fire-and-forget；高并发套件下等待真实写入完成。
+    let usage_rows = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let rows = db.list_session_token_usage(&session.id).expect("读取用量");
+            if rows
+                .iter()
+                .any(|row| row.model == "mock-chat" && row.prompt_tokens == 7)
+            {
+                break rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("等待模型用量落库");
     assert!(
         usage_rows
             .iter()
@@ -235,6 +249,7 @@ async fn static_catalog_lists_candidate_tools() {
         config,
         McpRegistry::new(db.clone()),
         SshSessionManager::new(db.pool()),
+        crate::agent::log_snapshot::LogSnapshotManager::new(),
         crate::ssh_tool::term::TermSessionRegistry::new(),
         None,
     );

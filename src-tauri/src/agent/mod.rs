@@ -5,6 +5,7 @@ pub(crate) mod common;
 pub(crate) mod config;
 pub(crate) mod db;
 pub(crate) mod debug;
+pub(crate) mod log_snapshot;
 pub(crate) mod prompt;
 pub(crate) mod rig_ext;
 pub(crate) mod ssh_review;

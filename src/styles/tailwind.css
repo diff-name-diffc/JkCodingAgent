@@ -1378,6 +1378,18 @@
     padding: 8px 6px;
   }
 
+  /* 树容器可聚焦（⌘C/⌘V 的落点）：鼠标点击不出描边，键盘 Tab 进入时给
+     一圈极细 accent 提示，避免「焦点在哪」完全不可见。 */
+  .ai-file-explorer-tree:focus {
+    outline: none;
+  }
+
+  .ai-file-explorer-tree:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: -2px;
+    border-radius: var(--radius-md);
+  }
+
   .ai-file-explorer-empty {
     display: flex;
     min-height: 120px;
@@ -7485,6 +7497,7 @@
     font-weight: 700;
   }
 
+  .ai-session-files-trigger,
   .ai-session-menu-trigger {
     display: inline-flex;
     flex-shrink: 0;
@@ -7492,17 +7505,20 @@
     justify-content: center;
     width: 24px;
     height: 24px;
-    margin-right: 6px;
     border: 0;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-muted);
     cursor: pointer;
-    opacity: 0;
     transition:
       opacity var(--motion-fast) var(--motion-ease),
       background var(--motion-fast) var(--motion-ease),
       color var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-session-menu-trigger {
+    margin-right: 6px;
+    opacity: 0;
   }
 
   .ai-session-item:hover .ai-session-menu-trigger,
@@ -7511,10 +7527,21 @@
     opacity: 1;
   }
 
+  .ai-session-files-trigger:hover,
   .ai-session-menu-trigger:hover,
   .ai-session-menu-trigger[data-state="open"] {
     background: var(--bg-subtle);
     color: var(--text-primary);
+  }
+
+  .ai-session-files-trigger.is-active {
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .ai-session-files-trigger.is-active:hover {
+    background: rgb(var(--accent-rgb) / 0.16);
+    color: var(--accent-strong);
   }
 
   .ai-session-category-tag {
@@ -11488,275 +11515,394 @@
     }
   }
 
-  /* ── 普通聊天「分类文件」入口与面板 ── */
+  /* ── 普通聊天「分类文件」内联侧栏 ──
+     信息层级（自上而下）：面板身份（文件 · 分类 chip）→ 位置列表（共享工程
+     目录 + 会话临时目录同构单行）→ 树区（当前根面包屑 + 唯一刷新入口 + 树）。
+     宽度约束：AppLayout 侧栏默认 264px、可拖至 200px、最大 480px，所有行都
+     按「图标固定 + 文本 truncate + 尾部固定」布局，200px 下不横向溢出。
+     颜色一律走 App.css 令牌，亮/暗同一套规则（accent 用 --accent-rgb 合成
+     低透明度底，暗色下自然变浅、不显脏）。 */
 
-  .ai-category-files-entry {
+  .ai-chat-files-inline-sidebar {
     display: flex;
-    align-items: center;
-    gap: 7px;
-    margin-left: 24px;
-    width: calc(100% - 24px);
-    padding: 6px 10px;
-    border-radius: 7px;
-    color: var(--text-hint);
-    font-size: 12.5px;
-    cursor: pointer;
-    transition:
-      background 0.14s ease,
-      color 0.14s ease;
-  }
-
-  .ai-category-files-entry:hover {
-    background: rgb(var(--accent-rgb) / 0.08);
-    color: var(--text-primary);
-  }
-
-  .ai-chat-files-overlay {
-    z-index: 300;
-  }
-
-  .ai-chat-files-shell {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    z-index: 301;
-    display: flex;
-    width: min(1180px, calc(100vw - 48px));
-    height: min(760px, calc(100vh - 56px));
+    width: 100%;
+    height: 100%;
+    min-width: 0;
     min-height: 0;
-    transform: translate(-50%, -50%);
     flex-direction: column;
     overflow: hidden;
-    border: 1px solid var(--border-dim);
-    border-radius: var(--radius-xl);
-    background: var(--bg-elevated);
-    box-shadow: var(--shadow-lg);
+    background: var(--bg-sidebar);
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    line-height: 1.35;
   }
+
+  /* ── 头部：主标题 + 分类 chip（truncate）+ 关闭 ── */
 
   .ai-chat-files-header {
     display: flex;
+    min-height: 34px;
     flex-shrink: 0;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 14px;
+    gap: 8px;
+    padding: 5px 6px 5px 10px;
     border-bottom: 1px solid var(--border-dim);
   }
 
-  .ai-chat-files-title {
+  .ai-chat-files-head-main {
     display: flex;
     min-width: 0;
+    flex: 1;
     align-items: center;
-    gap: 8px;
-    color: var(--text-primary);
-    font-size: 14px;
-    font-weight: 600;
+    gap: 6px;
   }
 
-  .ai-chat-files-category {
+  .ai-chat-files-head-icon {
+    flex-shrink: 0;
+    color: var(--text-hint);
+  }
+
+  .ai-chat-files-head-title {
+    flex-shrink: 0;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .ai-chat-files-head-chip {
+    min-width: 0;
+    max-width: 54%;
     overflow: hidden;
-    padding: 2px 8px;
+    padding: 1px 7px;
     border: 1px solid var(--border-dim);
-    border-radius: 999px;
-    max-width: 220px;
+    border-radius: var(--radius-full);
+    background: var(--bg-subtle);
     color: var(--text-secondary);
-    font-size: 11.5px;
+    font-size: 10.5px;
     font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .ai-chat-files-actions {
-    display: flex;
+  /* 通用图标按钮：header 关闭、树区刷新共用；hover/active/focus 三态齐备。 */
+  .ai-chat-files-icon-button {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
     flex-shrink: 0;
     align-items: center;
-    gap: 4px;
-  }
-
-  .ai-chat-files-action {
-    display: inline-flex;
-    align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    padding: 0;
     border: none;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     background: transparent;
-    color: var(--text-muted);
-    font-size: 14px;
+    color: var(--text-hint);
     cursor: pointer;
     transition:
-      background 0.14s ease,
-      color 0.14s ease;
+      background var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease);
   }
 
-  .ai-chat-files-action:hover {
-    background: rgb(var(--accent-rgb) / 0.1);
+  .ai-chat-files-icon-button:hover {
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 
-  .ai-chat-files-body {
-    display: flex;
-    min-height: 0;
-    flex: 1;
+  .ai-chat-files-icon-button:active {
+    background: var(--bg-selected);
   }
 
-  .ai-chat-files-side {
-    display: flex;
-    width: 300px;
-    flex-shrink: 0;
-    min-height: 0;
-    flex-direction: column;
-    border-right: 1px solid var(--border-dim);
+  .ai-chat-files-icon-button:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: 1px;
   }
 
-  .ai-chat-files-nav {
+  /* ── 位置列表 ── */
+
+  .ai-chat-files-locations {
     display: flex;
-    max-height: 46%;
+    max-height: 44%;
     flex-shrink: 0;
     flex-direction: column;
-    gap: 12px;
+    gap: 2px;
     overflow-y: auto;
-    padding: 10px;
-    border-bottom: 1px solid var(--border-dim);
+    padding: 7px 6px 8px;
+    /* 供行尾父目录做容器查询：窄侧栏（<212px）整段隐藏，只留主名称。 */
+    container-type: inline-size;
   }
 
-  .ai-chat-files-section-label {
+  .ai-chat-files-locations-head {
     display: flex;
     align-items: center;
     gap: 6px;
+    padding: 0 8px 3px;
+  }
+
+  .ai-chat-files-section-label {
     color: var(--text-hint);
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 600;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.06em;
   }
 
   .ai-chat-files-section-count {
     margin-left: auto;
     color: var(--text-hint);
-    font-weight: 500;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
   }
 
-  .ai-chat-files-hint {
-    padding: 10px 4px;
-    color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.6;
-  }
-
-  .ai-chat-files-dir-item {
-    display: flex;
-    width: 100%;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 7px 8px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    text-align: left;
-    cursor: pointer;
-    transition:
-      background 0.14s ease,
-      color 0.14s ease;
-  }
-
-  .ai-chat-files-dir-item:hover:not(:disabled) {
-    background: rgb(var(--accent-rgb) / 0.07);
-  }
-
-  .ai-chat-files-dir-item.is-active {
-    background: rgb(var(--accent-rgb) / 0.12);
-    box-shadow: inset 2px 0 0 rgb(var(--accent-rgb) / 0.76);
-  }
-
-  .ai-chat-files-dir-item:disabled {
-    cursor: not-allowed;
-  }
-
-  .ai-chat-files-dir-icon {
-    flex-shrink: 0;
-    margin-top: 1px;
+  .ai-chat-files-loc-empty {
+    margin: 0;
+    padding: 1px 8px 5px;
     color: var(--text-hint);
+    font-size: 11px;
+    line-height: 1.65;
   }
 
-  .ai-chat-files-dir-item.is-active .ai-chat-files-dir-icon {
-    color: var(--accent);
+  .ai-chat-files-loc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
-  .ai-chat-files-dir-item.is-invalid .ai-chat-files-dir-icon {
-    color: var(--danger);
+  /* 位置行：28px 单行。选中态 = 低透明度 accent 底 + 左侧 2px accent 竖条，
+     不整块重色（深色主题下 0.09 的 accent 叠在 --bg-sidebar 上仍是柔和提亮）。 */
+  .ai-chat-files-loc-row {
+    position: relative;
+    display: flex;
+    min-height: 28px;
+    align-items: center;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    transition:
+      background var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease);
   }
 
-  .ai-chat-files-dir-text {
+  .ai-chat-files-loc-row:hover {
+    background: var(--bg-hover);
+  }
+
+  .ai-chat-files-loc-row.is-active {
+    background: rgb(var(--accent-rgb) / 0.09);
+  }
+
+  .ai-chat-files-loc-row.is-active::before {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    left: 0;
+    width: 2px;
+    border-radius: var(--radius-full);
+    background: rgb(var(--accent-rgb) / 0.88);
+    content: "";
+  }
+
+  .ai-chat-files-loc-main {
     display: flex;
     min-width: 0;
     flex: 1;
-    flex-direction: column;
-    gap: 2px;
+    align-self: stretch;
+    align-items: center;
+    gap: 7px;
+    padding: 0 8px;
+    border: none;
+    border-radius: inherit;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: color var(--motion-fast) var(--motion-ease);
   }
 
-  .ai-chat-files-dir-name {
+  .ai-chat-files-loc-main.is-static {
+    cursor: default;
+  }
+
+  .ai-chat-files-loc-main[aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+  .ai-chat-files-loc-main:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: -1px;
+  }
+
+  .ai-chat-files-loc-icon {
+    flex-shrink: 0;
+    color: var(--text-hint);
+    transition: color var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-chat-files-loc-row:hover .ai-chat-files-loc-icon {
+    color: var(--text-secondary);
+  }
+
+  .ai-chat-files-loc-row.is-active .ai-chat-files-loc-icon {
+    color: var(--accent);
+  }
+
+  .ai-chat-files-loc-row.is-invalid .ai-chat-files-loc-icon {
+    color: var(--warning);
+  }
+
+  .ai-chat-files-loc-name {
+    min-width: 0;
     overflow: hidden;
-    color: var(--text-primary);
+    color: inherit;
     font-size: 12.5px;
     font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .ai-chat-files-dir-item.is-invalid .ai-chat-files-dir-name {
-    color: var(--danger);
+  .ai-chat-files-loc-row.is-active .ai-chat-files-loc-name {
+    color: var(--text-primary);
   }
 
-  .ai-chat-files-dir-path {
-    overflow: hidden;
-    color: var(--text-hint);
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ai-chat-files-dir-error {
-    overflow: hidden;
-    color: var(--danger);
-    font-size: 10.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ai-chat-files-dir-badge {
-    align-self: flex-start;
-    margin-top: 1px;
-    padding: 1px 7px;
-    border-radius: 999px;
-    font-size: 10.5px;
-  }
-
-  .ai-chat-files-dir-badge.is-ready {
-    border: 1px solid var(--border-dim);
+  .ai-chat-files-loc-row.is-invalid .ai-chat-files-loc-name {
     color: var(--text-muted);
   }
 
-  .ai-chat-files-dir-badge.is-pending {
-    border: 1px solid rgb(var(--danger-rgb) / 0.3);
-    background: rgb(var(--danger-rgb) / 0.06);
-    color: var(--danger);
+  /* 行尾常显父目录：主名称优先占位，它只占剩余空间并在过窄时截断；
+     侧栏窄于 212px 时整段隐藏（此时名称与树区面包屑已足够定位）。 */
+  .ai-chat-files-loc-parent {
+    max-width: 46%;
+    min-width: 0;
+    margin-left: auto;
+    overflow: hidden;
+    padding-left: 8px;
+    color: var(--text-hint);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: -0.01em;
+    opacity: 0.9;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .ai-chat-files-session-select {
-    width: 100%;
-    height: 30px;
-    margin-bottom: 6px;
-    font-size: 12px;
+  .ai-chat-files-loc-row.is-active .ai-chat-files-loc-parent {
+    color: var(--text-secondary);
+    opacity: 0.85;
+  }
+
+  @container (max-width: 212px) {
+    .ai-chat-files-loc-parent {
+      display: none;
+    }
+  }
+
+  /* 行尾极小状态：失效提示 / 会话目录「未创建」微点，不再用大胶囊。 */
+  .ai-chat-files-loc-meta {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    padding-left: 6px;
+    color: var(--text-hint);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .ai-chat-files-loc-meta.is-warning,
+  .ai-chat-files-loc-meta.is-pending {
+    color: var(--warning);
+  }
+
+  .ai-chat-files-loc-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: var(--radius-full);
+    background: currentColor;
+    opacity: 0.85;
+  }
+
+  /* 会话切换器：嵌在会话目录行右端的 ghost 触发（仅 chevron），
+     不再通栏 Select；hover 时行内浮出，静息态压到 0.7 透明度避免抢眼。 */
+  .ai-chat-files-loc-switch {
+    display: inline-flex;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    margin-right: 3px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-hint);
+    cursor: pointer;
+    opacity: 0.7;
+    transition:
+      background var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease),
+      opacity var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-chat-files-loc-row:hover .ai-chat-files-loc-switch {
+    opacity: 1;
+  }
+
+  .ai-chat-files-loc-switch:hover,
+  .ai-chat-files-loc-switch[data-state="open"] {
+    background: rgb(var(--accent-rgb) / 0.12);
+    color: var(--text-primary);
+  }
+
+  .ai-chat-files-loc-switch:focus-visible {
+    color: var(--text-secondary);
+    opacity: 1;
+    outline: 1px solid var(--border-focus);
+    outline-offset: 1px;
+  }
+
+  /* 工程目录组与会话目录组之间的细分隔（缩进 8px，比通栏线轻）。 */
+  .ai-chat-files-loc-sep {
+    height: 1px;
+    margin: 4px 8px;
+    background: var(--border-dim);
+  }
+
+  .ai-chat-files-session-menu {
+    min-width: 136px;
+    max-width: 240px;
+  }
+
+  .ai-chat-files-session-menu-item {
+    min-width: 0;
+  }
+
+  .ai-chat-files-session-menu-item.is-current {
+    background: rgb(var(--accent-rgb) / 0.1);
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .ai-chat-files-session-menu-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .ai-chat-files-session-time {
+    flex-shrink: 0;
     margin-left: auto;
     padding-left: 10px;
     color: var(--text-hint);
-    font-size: 10.5px;
+    font-size: 10px;
   }
+
+  /* ── 树区 ── */
 
   .ai-chat-files-tree {
     display: flex;
@@ -11764,32 +11910,153 @@
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-    background: var(--bg-sidebar);
   }
 
-  .ai-chat-files-tree .ai-chat-files-hint {
-    padding: 16px 12px;
-  }
-
-  .ai-chat-files-viewer {
+  /* 当前根面包屑行：名称（不易被挤）+ muted 父路径（先让位）+ 唯一刷新按钮。 */
+  .ai-chat-files-tree-head {
     display: flex;
+    min-height: 26px;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    padding: 0 4px 0 10px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+
+  .ai-chat-files-tree-head-icon {
+    flex-shrink: 0;
+    color: var(--accent);
+    opacity: 0.8;
+  }
+
+  .ai-chat-files-tree-crumb {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: baseline;
+    font-family: var(--font-mono);
+  }
+
+  .ai-chat-files-tree-crumb-path {
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    color: var(--text-hint);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-chat-files-tree-crumb-name {
+    max-width: 62%;
+    min-width: 0;
+    flex-shrink: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-chat-files-tree-refresh {
+    margin-left: auto;
+  }
+
+  .ai-chat-files-tree-body {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* 树体是自定义容器，给 FileExplorer 补满剩余高度（它自带 height:100%，
+     这里再显式 flex 一把，避免容器高度解析差异导致树区塌成一条）。 */
+  .ai-chat-files-tree-body > .ai-file-explorer {
+    min-height: 0;
+    flex: 1;
+  }
+
+  /* 空/加载/错误态统一版式：居中留白 + 小图标 + 一句淡提示（可带轻按钮）。 */
+  .ai-chat-files-empty {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 20px 16px 30px;
+    text-align: center;
+  }
+
+  .ai-chat-files-empty-icon {
+    color: var(--text-hint);
+    opacity: 0.6;
+  }
+
+  .ai-chat-files-empty-icon.is-danger {
+    color: var(--danger);
+    opacity: 0.85;
+  }
+
+  .ai-chat-files-empty-text {
+    max-width: 26ch;
+    margin: 0;
+    color: var(--text-hint);
+    font-size: 11px;
+    line-height: 1.7;
+  }
+
+  .ai-chat-files-empty-action {
+    padding: 3px 10px;
+    border: 1px solid var(--border-dim);
+    border-radius: var(--radius-full);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    cursor: pointer;
+    transition:
+      background var(--motion-fast) var(--motion-ease),
+      border-color var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease);
+  }
+
+  .ai-chat-files-empty-action:hover {
+    border-color: var(--border-accent);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* 底部极淡快捷键提示：22px 高，200px 宽下也能整行放下。 */
+  .ai-chat-files-hintbar {
+    display: flex;
+    min-height: 22px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 8px;
+    border-top: 1px solid var(--border-dim);
+    color: var(--text-hint);
+    font-size: 10px;
+    letter-spacing: 0.01em;
+    opacity: 0.78;
+  }
+
+  .ai-chat-files-hintbar-sep {
+    opacity: 0.5;
+  }
+
+  .ai-chat-files-inline-viewer {
+    display: flex;
+    width: 100%;
     min-width: 0;
     min-height: 0;
     flex: 1;
     flex-direction: column;
-  }
-
-  .ai-chat-files-empty {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 8px;
-    color: var(--text-muted);
-    font-size: 12.5px;
-    line-height: 1.7;
-    text-align: center;
+    overflow: hidden;
+    background: var(--bg-panel);
   }
 }
 

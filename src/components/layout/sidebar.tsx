@@ -2,6 +2,7 @@ import * as React from "react";
 import { PanelLeftClose, PanelLeftOpen, Plus, Search, Settings } from "lucide-react";
 import type { ChatCategory, ChatSession } from "../../types";
 import { useUIStore } from "../../stores/ui-store";
+import { useChatFilesStore } from "../../stores/chat-files-store";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
@@ -19,8 +20,8 @@ import { SidebarConversationItem } from "./sidebar/SidebarConversationItem";
 import { SidebarCategoryGroup } from "./sidebar/SidebarCategoryGroup";
 import { moveListFocus } from "../../lib/list-focus";
 
-/** 会话行主按钮（排除「更多」菜单触发器）；↑↓ 导航焦点目标（UI-23d）。 */
-const SIDEBAR_ROW_SELECTOR = ".ai-session-item > button:not(.ai-session-menu-trigger)";
+/** 会话行主按钮；文件夹与「更多」操作不参与 ↑↓ 会话导航（UI-23d）。 */
+const SIDEBAR_ROW_SELECTOR = ".ai-session-item > button:first-child";
 const LIST_NAV_KEYS = new Set(["ArrowUp", "ArrowDown", "Home", "End"]);
 
 export interface SidebarProps {
@@ -77,6 +78,8 @@ export function Sidebar({
 }: SidebarProps) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const openChatFiles = useChatFilesStore((state) => state.open);
+  const filesTarget = useChatFilesStore((state) => state.target);
   const persistedExpandedCategoriesRef = React.useRef(loadExpandedCategories());
   const [expandedCategories, setExpandedCategories] = React.useState<Set<string>>(
     () => persistedExpandedCategoriesRef.current ?? new Set(),
@@ -255,6 +258,19 @@ export function Sidebar({
                     categories={categories}
                     onMoveSessionToCategory={onMoveSessionToCategory}
                     onDeleteSession={onDeleteSession}
+                    filesActive={filesTarget?.sessionId === session.id}
+                    onOpenFiles={
+                      session.category
+                        ? () => {
+                            // 仅跨会话时切换：selectSession 会无条件清空输入草稿/
+                            // 附件/编辑态，对当前会话的重复选择是意外丢失。
+                            if (session.id !== activeSessionId) {
+                              onActiveSessionChange(session.id);
+                            }
+                            openChatFiles(session.category, session.id);
+                          }
+                        : undefined
+                    }
                   />
                 ))}
               </ul>

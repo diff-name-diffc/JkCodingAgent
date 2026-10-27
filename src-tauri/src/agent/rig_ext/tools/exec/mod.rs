@@ -48,5 +48,6 @@ pub(crate) fn exec_tools(deps: &RigToolDeps) -> Vec<PortableDynamicTool> {
         deps.cancel_rx.clone(),
         deps.review.clone(),
     ));
+    tools.extend(super::log::log_tools(deps));
     tools
 }

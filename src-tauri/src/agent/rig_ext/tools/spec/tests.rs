@@ -250,6 +250,10 @@ fn command_tools_manage_their_own_review() {
         // 两者必须自管，否则裸 open 也会被 broker 通用审查 fail-closed。
         "ssh_term_open",
         "ssh_term_send",
+        // ssh_log_*：远程发现/更新在工具内经 authorize_ssh_command 送审，
+        // 必须自管，否则 broker 通用审查会 fail-closed 拦截。
+        "ssh_log_discover",
+        "ssh_log_snapshot_update",
     ] {
         let spec = spec_for(name);
 

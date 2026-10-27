@@ -12,6 +12,8 @@ use tokio::time::timeout;
 
 use crate::agent::db::settings::{SshReviewConfig, DEFAULT_REVIEW_SYSTEM_PROMPT};
 
+pub(crate) mod command_gate;
+
 const REVIEW_TIMEOUT_SECS: u64 = 30;
 /// 待审查命令送入 prompt 的最大字符数（防止超长命令撑爆审查请求）。
 /// 执行侧命令上限（ssh_tool::validate_command）为 8192 字符，低于该值，

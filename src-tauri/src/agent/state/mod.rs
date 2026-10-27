@@ -51,6 +51,7 @@ struct AgentServices {
     config: DispatcherAgentConfig,
     mcp_registry: McpRegistry,
     ssh_manager: SshSessionManager,
+    log_snapshots: crate::agent::log_snapshot::LogSnapshotManager,
     term_registry: crate::ssh_tool::term::TermSessionRegistry,
     db: DispatcherDb,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
@@ -108,6 +109,7 @@ impl DispatcherState {
                 config,
                 mcp_registry,
                 ssh_manager,
+                log_snapshots: crate::agent::log_snapshot::LogSnapshotManager::new(),
                 term_registry,
                 db,
                 sub_agent_manager,
@@ -141,6 +143,10 @@ impl DispatcherState {
         self.services.ssh_manager.clone()
     }
 
+    pub(crate) fn log_snapshots(&self) -> crate::agent::log_snapshot::LogSnapshotManager {
+        self.services.log_snapshots.clone()
+    }
+
     /// SSH 交互终端会话表（工具面与级联清理共用同一单例）。
     pub(crate) fn term_registry(&self) -> crate::ssh_tool::term::TermSessionRegistry {
         self.services.term_registry.clone()
@@ -154,6 +160,7 @@ impl DispatcherState {
             self.services.config.clone(),
             self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
+            self.services.log_snapshots.clone(),
             self.services.term_registry.clone(),
             self.services.sub_agent_manager.clone(),
         );
@@ -212,6 +219,7 @@ impl DispatcherState {
             self.services.config.clone(),
             self.services.mcp_registry.clone(),
             self.services.ssh_manager.clone(),
+            self.services.log_snapshots.clone(),
             self.services.term_registry.clone(),
             self.services.sub_agent_manager.clone(),
         );
@@ -360,6 +368,7 @@ impl DispatcherState {
                 self.services.config.clone(),
                 self.services.mcp_registry.clone(),
                 self.services.ssh_manager.clone(),
+                self.services.log_snapshots.clone(),
                 self.services.term_registry.clone(),
                 self.services.sub_agent_manager.clone(),
             );

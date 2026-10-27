@@ -17,6 +17,7 @@ export function FileViewer({
   onCloseTabsToRight,
   onCloseAllTabs,
   onHide,
+  hideLabel = "隐藏文件编辑器",
 }: {
   tabs: OpenFileTab[];
   activeTabId: string | null;
@@ -27,6 +28,7 @@ export function FileViewer({
   onCloseTabsToRight: (tabId: string) => void;
   onCloseAllTabs: () => void;
   onHide: () => void;
+  hideLabel?: string;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   /** 未保存 tab 集合（UI-16）：由各 pane 经 onDirtyChange 上报。 */
@@ -177,8 +179,8 @@ export function FileViewer({
 
         <button
           type="button"
-          title="隐藏文件编辑器"
-          aria-label="隐藏文件编辑器"
+          title={hideLabel}
+          aria-label={hideLabel}
           onClick={onHide}
           className="ai-file-viewer-tool-button"
         >

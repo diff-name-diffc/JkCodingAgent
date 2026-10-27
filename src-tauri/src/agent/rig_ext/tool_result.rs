@@ -47,7 +47,7 @@ const ARTIFACT_REMAINDER_NOTE: &str =
     "被截掉的部分不会回到上下文；完整原始结果见工具产物（仅供界面查看，无法经工具再读）。";
 const PROGRAM_REMAINDER_NOTE: &str = "编排器读不到工具产物，被截掉的部分不会回到上下文。请把 return 收成更短的摘录，或分成下一次程序。";
 /// 读取类工具的截断恢复指引：分页 / 缩范围参数是它们的重取通道。
-const READ_REMAINDER_NOTE: &str = "被截掉的部分不会回到上下文；完整原始结果见工具产物（仅供界面查看，无法经工具再读）。请缩小范围后重读：read_file 用 path:start-end 或 offset/limit；grep 降低 max_files / max_matches_per_file；glob 降低 max_results；list_dir 指定更小的目录。";
+const READ_REMAINDER_NOTE: &str = "被截掉的部分不会回到上下文；完整原始结果见工具产物（仅供界面查看，无法经工具再读）。请缩小范围后重读：read_file 用 path:start-end 或 offset/limit；grep 降低 max_files / max_matches_per_file；glob 降低 max_results；list_dir 指定更小的目录；ssh_log_search 缩小 file_ids / max_matches 或改用游标；ssh_log_read 用 next_line / next_byte_offset 分页。";
 /// 命令执行类工具的截断恢复指引：重取通道是「更窄的命令」与声明式压缩。
 const EXEC_REMAINDER_NOTE: &str = "被截掉的部分不会回到上下文；完整原始结果见工具产物（仅供界面查看，无法经工具再读）。请缩小输出后重试：head/-n 限制行数、grep 加 -I/--include/-m 收敛匹配、cut -c1-300 限制行宽、缩小扫描目录；只关心特定信息时设 compress=true 并用 compress_intent 写明要提取什么。";
 
@@ -65,6 +65,9 @@ const INLINE_READ_TOOLS: &[&str] = &[
     "list_dir",
     "workflow_plan_report",
     "ssh_memo_read",
+    "ssh_log_discover",
+    "ssh_log_search",
+    "ssh_log_read",
 ];
 
 /// 命令执行类工具：输出常混有超长的无信息行（base64 数据行、minified 产物、
@@ -82,6 +85,9 @@ fn inline_max_chars(tool_name: &str, args: &serde_json::Value) -> usize {
     }
     if !INLINE_READ_TOOLS.contains(&tool_name) {
         return TOOL_RESULT_INLINE_MAX_CHARS;
+    }
+    if matches!(tool_name, "ssh_log_search" | "ssh_log_read") {
+        return TOOL_RESULT_INLINE_MAX_CHARS_PAGED;
     }
     if args.get("offset").is_some() || args.get("limit").is_some() {
         TOOL_RESULT_INLINE_MAX_CHARS_PAGED

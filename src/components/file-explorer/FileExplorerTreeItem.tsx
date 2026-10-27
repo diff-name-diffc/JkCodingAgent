@@ -43,7 +43,13 @@ export const FileExplorerTreeItem = memo(function FileExplorerTreeItem({
 
   return (
     <div
-      onClick={() => (node.is_dir ? onNodeToggle(node.path) : onNodeSelect(node))}
+      onClick={() => {
+        // 目录也参与选中（⌘C 复制目录、⌘V 以该目录为落点），点击同时展开/收起。
+        onNodeSelect(node);
+        if (node.is_dir) {
+          onNodeToggle(node.path);
+        }
+      }}
       className={cn(
         "ai-file-explorer-row",
         selected && "is-selected",

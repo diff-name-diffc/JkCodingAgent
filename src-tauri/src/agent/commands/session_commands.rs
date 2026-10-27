@@ -51,6 +51,7 @@ pub async fn session_delete(
     if state.session_run_is_active(&session_id) {
         return Err("会话正在运行中，请先停止生成后再删除".to_string());
     }
+    let log_cleanup = state.log_snapshots().block_workspace(&session_id)?;
     let chat_cleanup =
         super::chat_cleanup::prepare(state.db(), state.agent_config().root_dir, &session_id)
             .await?;
@@ -75,6 +76,7 @@ pub async fn session_delete(
             .term_registry()
             .close_session_terms(&state.ssh_manager(), &session_for_cleanup)
             .await;
+        log_cleanup.finish(true);
     }
     result
 }

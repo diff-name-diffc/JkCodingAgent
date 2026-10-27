@@ -132,6 +132,8 @@ pub(crate) struct RigToolDeps {
     pub app_handle: Option<AppHandle>,
     pub db: DispatcherDb,
     pub ssh_manager: SshSessionManager,
+    /// 普通聊天共享的日志快照任务与代次管理；项目编排器不暴露该工具面。
+    pub log_snapshots: Option<crate::agent::log_snapshot::LogSnapshotManager>,
     /// SSH 交互终端会话表（ssh_term_* 工具组）。共享单例由应用状态注入；
     /// 编排器侧仅构造空表占位（无 SSH 工具面）。
     pub term_registry: crate::ssh_tool::term::TermSessionRegistry,

@@ -1,18 +1,22 @@
 import { create } from "zustand";
 
 /**
- * 「分类文件」面板（普通聊天侧）的开合状态：入口在侧栏分类会话列表的
- * 文件夹行，弹层挂在 HomeChatPage。走 store 而非 props 链，避免穿透
- * Sidebar / ChatShell / ChatPageV2 等两侧共用组件（项目聊天无此功能）。
+ * 普通聊天「分类文件」内联区的打开目标。入口在每个已分类会话行，
+ * sessionId 用于定位该会话的临时目录；布局由 ChatShell 接入。
  */
+export interface ChatFilesTarget {
+  categoryId: string;
+  sessionId: string;
+}
+
 interface ChatFilesState {
-  openCategoryId: string | null;
-  open: (categoryId: string) => void;
+  target: ChatFilesTarget | null;
+  open: (categoryId: string, sessionId: string) => void;
   close: () => void;
 }
 
 export const useChatFilesStore = create<ChatFilesState>((set) => ({
-  openCategoryId: null,
-  open: (categoryId) => set({ openCategoryId: categoryId }),
-  close: () => set({ openCategoryId: null }),
+  target: null,
+  open: (categoryId, sessionId) => set({ target: { categoryId, sessionId } }),
+  close: () => set({ target: null }),
 }));

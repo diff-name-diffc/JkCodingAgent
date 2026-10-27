@@ -15,6 +15,8 @@ mod list_dir;
 mod read_file;
 mod search;
 
+pub(crate) use search::resolve_tool;
+
 /// 只读文件工具的路径沙箱（构造期从 `RigToolDeps` 提取，clone 进各工具闭包）。
 /// `edit` 组（apply_patch）同样用它做写侧路径校验。
 #[derive(Clone)]

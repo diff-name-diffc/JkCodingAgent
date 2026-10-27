@@ -24,6 +24,8 @@ const SELF_REVIEWED_TOOLS: &[&str] = &[
     "sync_directory",
     "ssh_term_open",
     "ssh_term_send",
+    "ssh_log_discover",
+    "ssh_log_snapshot_update",
 ];
 
 fn lookup_policy(name: &str) -> Option<&'static ToolPolicyRow> {
@@ -164,6 +166,9 @@ pub(crate) fn self_managed_settle_ceiling_secs(name: &str) -> u64 {
         "local_zsh" => 600,
         // 单命令参数上限 300 + 交互/静默容忍与 channel drain
         "ssh_exec" | "ssh_tmux_install" => 600,
+        // 单次发现最多 1 条 docker ps + 8 条 remote_files stat，每条 schema 允许
+        // 300s：兜底上限不得低于该工具最坏合法预算，否则正常推进的调用会被误杀。
+        "ssh_log_discover" => 2_700,
         // rsync 无硬上限
         "sync_directory" => 900,
         // 多图批量 × 单图超时（声明 1500），留 2× 余量

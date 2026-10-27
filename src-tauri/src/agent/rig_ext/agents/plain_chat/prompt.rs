@@ -10,6 +10,13 @@ pub(super) const SSH_MEMO_GUIDANCE: &str = "\n\n## SSH 运维备忘录\n\n\
 - 禁止写入：冗长报错或堆栈全文、原始日志与命令输出、JAR 反编译等排障步骤和次要命令、一次性探索/安装/修复过程与临时状态、通用软件知识、未验证猜测、密码/密钥/令牌等凭据。错误信息只有揭示上述高频坑时才可浓缩为一行提醒，不保留报错全文和排障过程。\n\
 - 写入前必须 ssh_memo_read 并合并去重；优先补充既有索引，避免为每次任务新建段落。修正单行或增删个别条目用局部替换（title+old_text+new_text，new_text 留空即删除），较大改动才用 title+content 整段重写；主动删除重复、过时和琐碎条目，写入被上限拒绝时先精简再重试。段落正文不要写 `## ` 开头的行（子标题用 `### `）。";
 
+pub(super) const LOG_SEARCH_GUIDANCE: &str = "\n\n## 大日志调查\n\n\
+- 多轮排障优先使用日志快照：ssh_log_discover 先确认容器/文件和大小，ssh_log_snapshot_update 同步并自动建索引，ssh_log_snapshot_status 等待 ready，再 ssh_log_search 与 ssh_log_read。不要用全量 docker logs/cat 代替快照流程。\n\
+- 先发现后精读：搜索先用 files/count 收敛来源，再用 matches 获取 file_id、line_number、byte_offset，最后 read 读取有限上下文；不要把整份日志放入上下文。\n\
+- 同一快照可重复 update 获取最新日志，省略 sources 会复用上一代来源。更新后 generation 改变，旧 cursor 作废，必须重新搜索。\n\
+- scan_complete 表示是否完成扫描，results_truncated 表示结果是否被限量；不完整时不得断言没有错误或只有这些错误。需要完整性证明时使用 engine=scan 并缩小范围直至完成。\n\
+- 超长行按 byte_offset 和 next_byte_offset 精读；普通上下文按 next_line 分页。远程或本地日志都可能含敏感信息，只提取与问题相关的证据。";
+
 /// 会话图片目录（构造失败按空白名单收紧，fail-closed）。
 pub(super) fn chat_image_dir(workspace_id: &str) -> Vec<PathBuf> {
     match crate::chat_images::workspace_image_dir(workspace_id) {

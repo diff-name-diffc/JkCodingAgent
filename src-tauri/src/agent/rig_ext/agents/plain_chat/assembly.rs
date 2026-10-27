@@ -30,6 +30,7 @@ impl RigPlainChatAgent {
             app_handle: self.app_handle.clone(),
             db: db.clone(),
             ssh_manager: self.ssh_manager.clone(),
+            log_snapshots: Some(self.log_snapshots.clone()),
             term_registry: self.term_registry.clone(),
             mcp_registry: self.mcp_registry.clone(),
             sub_agent_manager: self.sub_agent_manager.clone(),
@@ -137,6 +138,7 @@ impl RigPlainChatAgent {
             db: crate::agent::db::DispatcherDb::new(self.config.db_path.clone())
                 .expect("打开工具清单用数据库句柄"),
             ssh_manager: self.ssh_manager.clone(),
+            log_snapshots: Some(self.log_snapshots.clone()),
             term_registry: self.term_registry.clone(),
             mcp_registry: self.mcp_registry.clone(),
             sub_agent_manager: self.sub_agent_manager.clone(),

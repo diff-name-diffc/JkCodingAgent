@@ -4,6 +4,7 @@ import { isSameOrChildPath, replacePathPrefix } from "../../utils/filePaths";
 import {
   findNode,
   flattenVisible,
+  isSystemGroupNode,
   loadTreeNodes,
   updateNode,
   type FsEntry,
@@ -159,8 +160,16 @@ export function useFileExplorerTree({
 
   const handleSelect = useCallback(
     (node: TreeNode) => {
+      // 系统分组是纯视觉容器（伪路径），不参与选中，避免变成 ⌘V 的非法落点。
+      if (isSystemGroupNode(node)) {
+        return;
+      }
+
       setSelectedPath(node.path);
-      onFileSelect(node.path, node.name);
+      // 目录只记录选中（作为粘贴落点）；点击展开/收起仍由 onNodeToggle 负责。
+      if (!node.is_dir) {
+        onFileSelect(node.path, node.name);
+      }
     },
     [onFileSelect],
   );

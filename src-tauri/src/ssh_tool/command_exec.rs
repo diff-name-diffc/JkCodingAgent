@@ -242,7 +242,7 @@ pub(super) async fn run_command_on_connection(
 /// 远端 shell 展开的最外层只看到固定前缀与一个单引号参数，原命令的一切
 /// 元字符（含 `;`、`|`、`$()`、换行）都留在参数内部，不会被提前解释。
 /// 单引号转义用 `super::shell_single_quote`（与目录同步共享的注入面关键函数）。
-fn build_sudo_wrapped_command(command: &str) -> String {
+pub(super) fn build_sudo_wrapped_command(command: &str) -> String {
     format!(
         "sudo -k -S -p '' -- sh -c {}",
         super::shell_single_quote(command)

@@ -4,9 +4,11 @@ pub(crate) mod term;
 
 mod audit;
 mod command_exec;
+mod command_stream;
 pub(crate) mod commands;
 pub(crate) mod config_import;
 mod connection;
+mod stream;
 pub(crate) mod sync;
 mod types;
 mod validation;
@@ -30,6 +32,7 @@ pub use command_exec::MAX_STDIN_CHARS;
 pub(crate) use command_exec::{CommandFailure, CommandFailureKind};
 use connection::{connect, SshClientHandler};
 pub use db::{SharedPool, SshDb};
+pub(crate) use types::SshStreamResult;
 pub use types::{
     SshAuditLog, SshAuditRecord, SshAuditReview, SshAuthMethod, SshExecResult, SshMemoPayload,
     SshServerConfig, SshServerSummary, SshToolsConfig,

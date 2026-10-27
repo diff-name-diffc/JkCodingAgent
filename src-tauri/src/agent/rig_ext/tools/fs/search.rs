@@ -49,7 +49,7 @@ use grep_render::*;
 /// Linux 的 execvp/posix_spawnp 却按**调用进程**的 PATH 解析，Windows 同样
 /// 用父进程 PATH。因此在 spawn 前于父进程侧显式探测候选目录，命中即以绝对
 /// 路径启动；未命中原样返回名字，由 spawn 抛 NotFound 触发 grep 回退。
-fn resolve_tool(name: &str) -> std::path::PathBuf {
+pub(crate) fn resolve_tool(name: &str) -> std::path::PathBuf {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(existing) = std::env::var("PATH") {
         dirs.extend(std::env::split_paths(&existing));

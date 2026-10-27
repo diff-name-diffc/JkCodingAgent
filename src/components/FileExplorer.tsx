@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -15,6 +15,8 @@ import { FileExplorerTreeItem, ROW_HEIGHT } from "./file-explorer/FileExplorerTr
 import { FileExplorerContextMenu } from "./file-explorer/FileExplorerContextMenu";
 import { buildFileContextActionGroups } from "./file-explorer/fileContextActions";
 import { useFileExplorerTree } from "./file-explorer/useFileExplorerTree";
+import { useFileTreeClipboard } from "./file-explorer/use-file-tree-clipboard";
+import { resolveClipboardShortcut } from "./file-explorer/file-clipboard-actions";
 import { buildSiblingPath, getRelativePathDisplay, isSameOrChildPath } from "../utils/filePaths";
 
 function resolveErrorMessage(error: unknown) {
@@ -28,6 +30,8 @@ export function FileExplorer({
   onFileDelete,
   openFilePaths = [],
   active = true,
+  showToolbar = true,
+  refreshSignal = 0,
 }: {
   projectPath: string;
   onFileSelect: (path: string, name: string) => void;
@@ -35,6 +39,13 @@ export function FileExplorer({
   onFileDelete?: (deletedPath: string) => void;
   openFilePaths?: string[];
   active?: boolean;
+  /** 为 false 时不渲染自带刷新工具条（外层已有工具栏时避免重复入口）。 */
+  showToolbar?: boolean;
+  /**
+   * 递增即触发一次树刷新：刷新按已展开节点递归重读，展开态与选中态保留。
+   * 供外层工具栏调用（替代「换 key 重挂载」——那会让展开态归位）。
+   */
+  refreshSignal?: number;
 }) {
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [renameSaving, setRenameSaving] = useState(false);
@@ -52,6 +63,68 @@ export function FileExplorer({
     active,
     onFileSelect,
   });
+
+  const selectedNode = useMemo(
+    () => flatNodes.find((item) => item.node.path === selectedPath)?.node ?? null,
+    [flatNodes, selectedPath],
+  );
+
+  // 外部刷新信号：只在信号真正变化时刷新，挂载那次不重复拉取。
+  const lastRefreshSignal = useRef(refreshSignal);
+  useEffect(() => {
+    if (refreshSignal === lastRefreshSignal.current) {
+      return;
+    }
+    lastRefreshSignal.current = refreshSignal;
+    void refresh();
+  }, [refresh, refreshSignal]);
+
+  // ⌘C 写系统剪贴板（真实文件，可粘到访达），⌘V 把剪贴板里的文件复制进落点目录。
+  const {
+    busy: clipboardBusy,
+    copyEntry,
+    pasteInto,
+  } = useFileTreeClipboard({
+    projectPath,
+    onRefresh: refresh,
+  });
+
+  /** 选中/展开时把焦点交给树容器：点过文件后 ⌘C/⌘V 立即可用。 */
+  const focusTree = useCallback(() => {
+    scrollRef.current?.focus({ preventScroll: true });
+  }, [scrollRef]);
+
+  const handleSelectNode = useCallback(
+    (node: TreeNode) => {
+      focusTree();
+      handleSelect(node);
+    },
+    [focusTree, handleSelect],
+  );
+
+  const handleToggleNode = useCallback(
+    (path: string) => {
+      focusTree();
+      handleToggle(path);
+    },
+    [focusTree, handleToggle],
+  );
+
+  const handleTreeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const shortcut = resolveClipboardShortcut(event.nativeEvent);
+      if (!shortcut) {
+        return;
+      }
+      event.preventDefault();
+      if (shortcut === "copy") {
+        void copyEntry(selectedNode);
+      } else {
+        void pasteInto(selectedNode);
+      }
+    },
+    [copyEntry, pasteInto, selectedNode],
+  );
 
   const virtualizer = useVirtualizer({
     count: flatNodes.length,
@@ -233,6 +306,8 @@ export function FileExplorer({
       relativePath: menuRelativePath,
       onCopyPath: () => handleCopyPath(menuTarget),
       onCopyMentionPath: () => handleCopyMentionPath(menuTarget),
+      onCopyEntry: () => copyEntry(menuTarget),
+      onPasteEntry: () => pasteInto(menuTarget),
       onRename: () => handleRenameRequest(menuTarget),
       onDelete: () => handleDelete(menuTarget),
     });
@@ -241,23 +316,27 @@ export function FileExplorer({
     menuRelativePath,
     handleCopyPath,
     handleCopyMentionPath,
+    copyEntry,
+    pasteInto,
     handleRenameRequest,
     handleDelete,
   ]);
 
   return (
-    <div className="ai-file-explorer">
-      <div className="ai-file-explorer-toolbar">
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          title="刷新文件树"
-          aria-label="刷新文件树"
-          className="ai-file-explorer-refresh"
-        >
-          <RotateCcw size={13} />
-        </button>
-      </div>
+    <div className="ai-file-explorer" aria-busy={clipboardBusy || undefined}>
+      {showToolbar && (
+        <div className="ai-file-explorer-toolbar">
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            title="刷新文件树"
+            aria-label="刷新文件树"
+            className="ai-file-explorer-refresh"
+          >
+            <RotateCcw size={13} />
+          </button>
+        </div>
+      )}
 
       <FileExplorerContextMenu
         open={menuOpen}
@@ -268,8 +347,13 @@ export function FileExplorer({
       >
         <div
           ref={scrollRef}
+          tabIndex={0}
+          onKeyDown={handleTreeKeyDown}
           onContextMenu={handleTreeContextMenu}
           className="ai-file-explorer-tree chat-scroll"
+          role="group"
+          aria-keyshortcuts="Meta+C Meta+V Control+C Control+V"
+          aria-label="文件树：复制选中项（可粘贴到访达等应用），粘贴到当前目录"
         >
           {loading ? (
             <div className="ai-file-explorer-empty">加载中...</div>
@@ -294,8 +378,8 @@ export function FileExplorer({
                       node={node}
                       depth={depth}
                       selected={node.path === selectedPath}
-                      onNodeSelect={handleSelect}
-                      onNodeToggle={handleToggle}
+                      onNodeSelect={handleSelectNode}
+                      onNodeToggle={handleToggleNode}
                     />
                   </div>
                 );

@@ -49,6 +49,7 @@ pub async fn dispatcher_clear_messages(
     if state.session_run_is_active(&workspace_id) {
         return Err("会话正在运行中，请先停止生成后再清空消息".to_string());
     }
+    let log_cleanup = state.log_snapshots().block_workspace(&workspace_id)?;
     let chat_cleanup =
         super::chat_cleanup::prepare(state.db(), state.agent_config().root_dir, &workspace_id)
             .await?;
@@ -73,6 +74,7 @@ pub async fn dispatcher_clear_messages(
             .term_registry()
             .close_session_terms(&state.ssh_manager(), &workspace_for_cleanup)
             .await;
+        log_cleanup.finish(false);
     }
     result
 }

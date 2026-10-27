@@ -65,6 +65,7 @@ pub struct RigPlainChatAgent {
     config: DispatcherAgentConfig,
     mcp_registry: McpRegistry,
     ssh_manager: SshSessionManager,
+    log_snapshots: crate::agent::log_snapshot::LogSnapshotManager,
     term_registry: crate::ssh_tool::term::TermSessionRegistry,
     sub_agent_manager: Option<Arc<SubAgentManager>>,
     app_handle: Option<AppHandle>,
@@ -99,6 +100,7 @@ impl RigPlainChatAgent {
         config: DispatcherAgentConfig,
         mcp_registry: McpRegistry,
         ssh_manager: SshSessionManager,
+        log_snapshots: crate::agent::log_snapshot::LogSnapshotManager,
         term_registry: crate::ssh_tool::term::TermSessionRegistry,
         sub_agent_manager: Option<Arc<SubAgentManager>>,
     ) -> Self {
@@ -107,6 +109,7 @@ impl RigPlainChatAgent {
             config,
             mcp_registry,
             ssh_manager,
+            log_snapshots,
             term_registry,
             sub_agent_manager,
             app_handle: None,
@@ -248,6 +251,12 @@ impl RigPlainChatAgent {
         }
         if self.tool_allowed("ssh_memo_read") {
             prompt.push_str(SSH_MEMO_GUIDANCE);
+        }
+        if crate::agent::rig_ext::tools::log::LOG_TOOL_NAMES
+            .iter()
+            .any(|name| self.tool_allowed(name))
+        {
+            prompt.push_str(prompt::LOG_SEARCH_GUIDANCE);
         }
         prompt
     }

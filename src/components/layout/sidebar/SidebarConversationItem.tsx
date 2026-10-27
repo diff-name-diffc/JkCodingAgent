@@ -5,7 +5,7 @@
  */
 
 import * as React from "react";
-import { LoaderCircle, MoreHorizontal, Trash2 } from "lucide-react";
+import { FolderOpen, LoaderCircle, MoreHorizontal, Trash2 } from "lucide-react";
 import type { ChatCategory, ChatSession } from "../../../types";
 import { formatRelativeTime } from "../../../utils";
 import { cn } from "../../../lib/cn";
@@ -27,6 +27,8 @@ export interface SidebarConversationItemProps {
   categories?: ChatCategory[];
   onMoveSessionToCategory?: (sessionId: string, categoryId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onOpenFiles?: () => void;
+  filesActive?: boolean;
   onSelect: () => void;
 }
 
@@ -39,6 +41,8 @@ export const SidebarConversationItem = React.memo(function SidebarConversationIt
   categories,
   onMoveSessionToCategory,
   onDeleteSession,
+  onOpenFiles,
+  filesActive = false,
   onSelect,
 }: SidebarConversationItemProps) {
   const trimmedTitle = session.title.trim() || "新对话";
@@ -78,6 +82,18 @@ export const SidebarConversationItem = React.memo(function SidebarConversationIt
           </span>
         </span>
       </button>
+      {onOpenFiles && (
+        <button
+          type="button"
+          aria-label={`查看「${trimmedTitle}」的分类文件`}
+          aria-current={filesActive ? "true" : undefined}
+          title="查看分类文件"
+          className={cn("ai-session-files-trigger", filesActive && "is-active")}
+          onClick={onOpenFiles}
+        >
+          <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      )}
       {((categories && onMoveSessionToCategory && categories.length > 0) || onDeleteSession) && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

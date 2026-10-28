@@ -4,19 +4,23 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use rig::tool::ToolExecutionError;
 use serde_json::json;
 use tauri::AppHandle;
 use tokio::sync::{watch, RwLock};
 
 mod local;
+mod metrics;
+mod remote;
+mod support;
 
 pub(crate) use local::validate_text_file;
+pub(crate) use support::blocking;
 
 use super::index::{build_index, IndexError};
 use super::model::{
-    docker_window, ssh_session_id, GenerationManifest, LogSource, SnapshotFile, UpdateOptions,
-    UpdateRecord, UpdateState, SNAPSHOT_SCHEMA_VERSION,
+    docker_window, ssh_session_id, GenerationManifest, LogSource, SnapshotFile, SnapshotMetrics,
+    SourceEvidence, SourceMetrics, UpdateOptions, UpdateRecord, UpdateState,
+    SNAPSHOT_SCHEMA_VERSION,
 };
 use super::store::SnapshotStore;
 use crate::agent::command_history::{self, CommandHistoryStatus};
@@ -24,6 +28,9 @@ use crate::agent::rig_ext::review::RigReviewContext;
 use crate::agent::ssh_review::command_gate::{authorize_ssh_command, SshCommandGateRequest};
 use crate::ssh_tool::SshSessionManager;
 use local::{copy_local_file, resolve_local_sources};
+use metrics::StageClock;
+use remote::parse_fingerprints;
+use support::{check_work, remaining_secs, set_stage, tool_failure};
 
 #[derive(Clone)]
 pub(crate) struct UpdateContext {
@@ -91,6 +98,12 @@ impl UpdateReporter {
         self.sender.send_replace(self.record.clone());
     }
 
+    pub(crate) fn set_metrics(&mut self, metrics: SnapshotMetrics) {
+        self.record.metrics = Some(metrics);
+        self.record.updated_at = Utc::now().to_rfc3339();
+        self.sender.send_replace(self.record.clone());
+    }
+
     pub(crate) fn finish(&mut self, result: Result<(u64, usize), UpdateFailure>) {
         self.record = self.sender.borrow().clone();
         match result {
@@ -151,6 +164,22 @@ pub(crate) async fn execute_update(
     job: UpdateJob,
     mut reporter: UpdateReporter,
 ) -> Result<GenerationManifest, UpdateFailure> {
+    let mut clock = StageClock::new();
+    let result = execute_update_inner(context, store, job, &mut clock, &mut reporter).await;
+    if result.is_err() {
+        clock.finish();
+    }
+    reporter.set_metrics(clock.metrics.clone());
+    result
+}
+
+async fn execute_update_inner(
+    context: UpdateContext,
+    store: SnapshotStore,
+    job: UpdateJob,
+    clock: &mut StageClock,
+    reporter: &mut UpdateReporter,
+) -> Result<GenerationManifest, UpdateFailure> {
     let deadline = Instant::now() + Duration::from_secs(job.options.timeout_secs);
     let sources = if job.options.sources.is_empty() {
         job.current
@@ -167,9 +196,9 @@ pub(crate) async fn execute_update(
         job.options.tail,
     )
     .map_err(UpdateFailure::failed)?;
-    check_work(&reporter, deadline)?;
+    check_work(reporter, deadline)?;
 
-    set_stage(&store, &mut reporter, UpdateState::Reviewing).await?;
+    set_stage(&store, reporter, clock, UpdateState::Reviewing).await?;
     let review_args = json!({
         "snapshot_id": &job.snapshot_id,
         "generation": job.generation,
@@ -205,10 +234,10 @@ pub(crate) async fn execute_update(
             None
         };
         approvals.push(approval);
-        check_work(&reporter, deadline)?;
+        check_work(reporter, deadline)?;
     }
 
-    set_stage(&store, &mut reporter, UpdateState::Syncing).await?;
+    set_stage(&store, reporter, clock, UpdateState::Syncing).await?;
     let staging = blocking({
         let store = store.clone();
         let snapshot_id = job.snapshot_id.clone();
@@ -219,12 +248,14 @@ pub(crate) async fn execute_update(
     let mut files = Vec::with_capacity(sources.len());
     let mut raw_bytes = 0u64;
     for (index, source) in sources.iter().enumerate() {
-        check_work(&reporter, deadline)?;
+        check_work(reporter, deadline)?;
         let file_id = index as u64 + 1;
         let raw_path = format!("raw/{file_id}.log");
         let destination = staging.join(&raw_path);
         let remaining = job.options.max_total_bytes.saturating_sub(raw_bytes).max(1);
-        let bytes = match source {
+        let source_started_at = Utc::now();
+        let source_started = Instant::now();
+        let (bytes, evidence) = match source {
             LogSource::LocalFile { path } => {
                 let source_path = PathBuf::from(path);
                 let copied = blocking({
@@ -244,7 +275,10 @@ pub(crate) async fn execute_update(
                     }
                 })
                 .await??;
-                copied
+                let bytes = copied.bytes;
+                let collection = SourceMetrics::new(source_started_at, source_started, bytes);
+                let evidence = SourceEvidence::file(copied.before, copied.after, bytes, collection);
+                (bytes, evidence)
             }
             LogSource::Docker { .. } | LogSource::SshFile { .. } => {
                 let command = source.remote_command(&window).unwrap_or_default();
@@ -297,7 +331,17 @@ pub(crate) async fn execute_update(
                         result.execution.stderr
                     )));
                 }
-                result.bytes_written
+                let bytes = result.bytes_written;
+                let collection = SourceMetrics::new(source_started_at, source_started, bytes);
+                let evidence = match source {
+                    LogSource::SshFile { .. } => {
+                        let (before, after) = parse_fingerprints(&result.execution.stderr)?;
+                        SourceEvidence::file(before, after, bytes, collection)
+                    }
+                    LogSource::Docker { .. } => SourceEvidence::docker(collection),
+                    LogSource::LocalFile { .. } => unreachable!(),
+                };
+                (bytes, evidence)
             }
         };
         blocking({
@@ -314,6 +358,7 @@ pub(crate) async fn execute_update(
                 job.options.max_total_bytes
             )));
         }
+        clock.set_raw_bytes(raw_bytes);
         reporter.set_counts(raw_bytes, files.len() + 1);
         files.push(SnapshotFile {
             file_id,
@@ -323,10 +368,11 @@ pub(crate) async fn execute_update(
             size_bytes: bytes,
             line_count: 0,
             long_lines: 0,
+            evidence,
         });
     }
 
-    set_stage(&store, &mut reporter, UpdateState::Indexing).await?;
+    set_stage(&store, reporter, clock, UpdateState::Indexing).await?;
     let index = blocking({
         let staging = staging.clone();
         let files = files.clone();
@@ -340,8 +386,22 @@ pub(crate) async fn execute_update(
         IndexError::Failed(message) => UpdateFailure::failed(message),
     })?;
     files = index.files;
+    clock.set_index(
+        files.iter().map(|file| file.line_count).sum(),
+        index.index_bytes,
+    );
+    let warnings = files
+        .iter()
+        .filter(|file| file.evidence.source_changed == Some(true))
+        .map(|file| {
+            format!(
+                "来源在采集期间发生变化，前后指纹或大小不一致：{}",
+                file.source_label
+            )
+        })
+        .collect::<Vec<_>>();
     let now = Utc::now().to_rfc3339();
-    let manifest = GenerationManifest {
+    let mut manifest = GenerationManifest {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         snapshot_id: job.snapshot_id.clone(),
         workspace_id: context.workspace_id.clone(),
@@ -362,6 +422,9 @@ pub(crate) async fn execute_update(
         raw_bytes,
         index_bytes: index.index_bytes,
         index_backend: index.backend,
+        metrics: None,
+        warnings,
+        docker_window: Some(window.clone()),
     };
     blocking({
         let store = store.clone();
@@ -371,7 +434,7 @@ pub(crate) async fn execute_update(
     })
     .await??;
 
-    set_stage(&store, &mut reporter, UpdateState::Publishing).await?;
+    set_stage(&store, reporter, clock, UpdateState::Publishing).await?;
     let _guard = job.lease.write().await;
     blocking({
         let store = store.clone();
@@ -381,55 +444,18 @@ pub(crate) async fn execute_update(
         move || store.publish(&snapshot_id, &job_id, job.generation, old_generation)
     })
     .await??;
-    Ok(manifest)
-}
-
-async fn set_stage(
-    store: &SnapshotStore,
-    reporter: &mut UpdateReporter,
-    state: UpdateState,
-) -> Result<(), UpdateFailure> {
-    reporter.set_state(state);
-    let record = reporter.record();
-    blocking({
+    manifest.metrics = Some(clock.finish());
+    let published_root = store.generation_root(&job.snapshot_id, job.generation)?;
+    match blocking({
         let store = store.clone();
-        move || store.write_update(&record)
+        let manifest = manifest.clone();
+        move || store.write_generation_manifest(&published_root, &manifest)
     })
-    .await??;
-    Ok(())
-}
-
-fn check_work(reporter: &UpdateReporter, deadline: Instant) -> Result<(), UpdateFailure> {
-    if *reporter.cancel.borrow() {
-        return Err(UpdateFailure::cancelled("日志快照更新已取消"));
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("[log-snapshot] 写入最终指标失败：{error}"),
+        Err(error) => eprintln!("[log-snapshot] 最终指标任务失败：{}", error.message),
     }
-    if Instant::now() >= deadline {
-        return Err(UpdateFailure::failed("日志快照更新超过时间预算"));
-    }
-    Ok(())
-}
-
-fn remaining_secs(deadline: Instant) -> u64 {
-    deadline
-        .saturating_duration_since(Instant::now())
-        .as_secs()
-        .max(1)
-}
-
-fn tool_failure(error: ToolExecutionError) -> UpdateFailure {
-    UpdateFailure {
-        cancelled: error.kind() == rig::tool::ToolErrorKind::Cancelled,
-        message: error
-            .model_feedback()
-            .map(str::to_string)
-            .unwrap_or_else(|| error.message().to_string()),
-    }
-}
-
-async fn blocking<T: Send + 'static>(
-    task: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, UpdateFailure> {
-    tokio::task::spawn_blocking(task)
-        .await
-        .map_err(|error| UpdateFailure::failed(format!("日志后台任务失败：{error}")))
+    Ok(manifest)
 }

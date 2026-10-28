@@ -95,6 +95,7 @@ Vitest 用例放被测模块旁 `*.test.ts(x)`（优先纯函数）。Rust 改�
 - 超时：统一超时工具由策略层包（到点取消→宽限收敛→移交后台收口，绝不 drop future）；自管超时工具（`browser_open_url`/`call_sub_agent`/命令执行类，清单以策略表为准）自带预算与优雅终止，**必须登记 `self_managed_settle_ceiling_secs`**；`local_zsh` 走 yield/session 模型（超窗转后台返回 `run_id`、`wait_run_id` 收割；后台仍受 `exec_timeout_secs` 硬超时；审查在启动前）。调用可声明 `timeout_secs` 白名单仅 `generate_image`/`edit_image`/`fetch_image`，单一解析出处 `spec.rs::effective_timeout_secs`（策略层与工具内 HTTP 预算必须共用）；新增白名单须同步五处（match / schema 注入 / 设置中心默认 / `tools/deps.rs` 下传路由 / 守护测试）。
 - 压缩：`compress=true` + 阈值双条件（命令类 12000、默认 5000）；命令类整体截断前先行级截断（单行 >500 字符保行首）；截断标记带可执行恢复指引；工具产物仅供界面查看，模型不可再读。
 - 日志调查工具：`ssh_log_discover` → `ssh_log_snapshot_update`（首次创建/后续同 ID 覆盖更新，sources 可省略复用上一代，支持 Docker、SSH 文件、本地授权文件）→ `ssh_log_snapshot_status` / `cancel` → `ssh_log_search`（fixed 优先 FTS5 trigram，regex/短模式走有界 ripgrep）→ `ssh_log_read`（行/字节分页）。每次更新全量同步并自动建索引，全部成功才原子切换 generation，失败/取消保留旧代次；旧 cursor 不跨代次使用。先 files/count 收敛，再 matches 定位、read 精读，不默认全量日志进上下文。`LogSnapshotManager` 由 `AgentServices` 应用级共享，不随 run 重建；删除/清空先 `block_workspace`，活动更新拒绝清理，清理期间禁止新任务。
+- 日志观测与证据：`update.json` / manifest 记录 review/download/index/publish/total 耗时、索引行数/字节/比例及每来源采集速率；`SnapshotFile.evidence` 保存采集前后 device/inode/size/mtime 元数据指纹和 `sourceChanged`，变更来源进入 search/read 的 `warnings`。指纹不是内容哈希，false 仅表示观测元数据未变；Docker 改存冻结 since/until/tail 窗口，不伪造文件指纹。index.sqlite3 与 wal/shm 显式 `0600`。检索词和待排查字段只放 `pattern/patterns`，结果量只用 `max_matches/max_files/context/max_line_chars`，`max_output_tokens` / `max_tokens` 等模型参数不是日志工具参数。
 
 ### 上下文整形
 

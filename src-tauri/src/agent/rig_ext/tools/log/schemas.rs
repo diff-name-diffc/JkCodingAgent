@@ -92,8 +92,8 @@ pub(super) fn search_parameters() -> Value {
         "type":"object", "additionalProperties":false,
         "properties":{
             "snapshot_id":{"type":"string"},
-            "pattern":{"type":"string","description":"单个搜索模式；与 patterns 二选一。"},
-            "patterns":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"string"},"description":"多个模式按 OR 匹配。"},
+            "pattern":{"type":"string","description":"单个检索词或待排查字段；与 patterns 二选一。不要把 max_output_tokens 等模型参数作为工具参数。"},
+            "patterns":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"string"},"description":"多个检索词或字段按 OR 匹配。结果量只用 max_matches/max_files/context/max_line_chars，模型参数不属于日志工具参数。"},
             "match_mode":{"type":"string","enum":["fixed","regex"],"default":"fixed","description":"fixed 为字面量子串；regex 走本地精确扫描。"},
             "case_sensitive":{"type":"boolean","default":false},
             "output_mode":{"type":"string","enum":["files","count","matches"],"default":"matches","description":"先 files/count 收敛范围，再 matches 获取定位证据。"},

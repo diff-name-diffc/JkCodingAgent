@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio::sync::watch;
 
 use super::{blocking, UpdateContext, UpdateFailure};
-use crate::agent::log_snapshot::model::LogSource;
+use crate::agent::log_snapshot::model::{FileFingerprint, LogSource};
 use crate::agent::rig_ext::tools::common::resolve_path;
 
 pub(super) async fn resolve_local_sources(
@@ -42,6 +42,12 @@ pub(super) async fn resolve_local_sources(
     Ok(resolved)
 }
 
+pub(super) struct LocalCopyOutcome {
+    pub bytes: u64,
+    pub before: FileFingerprint,
+    pub after: FileFingerprint,
+}
+
 pub(super) fn copy_local_file(
     source: &Path,
     destination: &Path,
@@ -49,9 +55,10 @@ pub(super) fn copy_local_file(
     cancel: watch::Receiver<bool>,
     deadline: Instant,
     counter: Arc<AtomicU64>,
-) -> Result<u64, UpdateFailure> {
+) -> Result<LocalCopyOutcome, UpdateFailure> {
     use std::io::{Read, Write};
 
+    let before = local_fingerprint(source)?;
     validate_text_file(source)?;
     let mut input = std::fs::File::open(source)
         .map_err(|error| UpdateFailure::failed(format!("打开本地日志失败：{error}")))?;
@@ -94,7 +101,41 @@ pub(super) fn copy_local_file(
     output
         .flush()
         .map_err(|error| UpdateFailure::failed(format!("刷新本地日志暂存文件失败：{error}")))?;
-    Ok(total)
+    let after = local_fingerprint(source)?;
+    Ok(LocalCopyOutcome {
+        bytes: total,
+        before,
+        after,
+    })
+}
+
+fn local_fingerprint(path: &Path) -> Result<FileFingerprint, UpdateFailure> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| UpdateFailure::failed(format!("读取源文件指纹失败：{error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return Ok(FileFingerprint {
+            device: Some(metadata.dev()),
+            inode: Some(metadata.ino()),
+            size_bytes: metadata.len(),
+            mtime_secs: Some(metadata.mtime()),
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let mtime_secs = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs() as i64);
+        Ok(FileFingerprint {
+            device: None,
+            inode: None,
+            size_bytes: metadata.len(),
+            mtime_secs,
+        })
+    }
 }
 
 pub(crate) fn validate_text_file(path: &Path) -> Result<(), UpdateFailure> {

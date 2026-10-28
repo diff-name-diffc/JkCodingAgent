@@ -15,6 +15,7 @@ pub(super) const LOG_SEARCH_GUIDANCE: &str = "\n\n## 大日志调查\n\n\
 - 先发现后精读：搜索先用 files/count 收敛来源，再用 matches 获取 file_id、line_number、byte_offset，最后 read 读取有限上下文；不要把整份日志放入上下文。\n\
 - 同一快照可重复 update 获取最新日志，省略 sources 会复用上一代来源。更新后 generation 改变，旧 cursor 作废，必须重新搜索。\n\
 - scan_complete 表示是否完成扫描，results_truncated 表示结果是否被限量；不完整时不得断言没有错误或只有这些错误。需要完整性证明时使用 engine=scan 并缩小范围直至完成。\n\
+- 工具参数只按 schema：检索词和待排查字段放 pattern/patterns，max_output_tokens/max_tokens 等模型参数不属于日志工具；结果量只用 max_matches/max_files/context/max_line_chars 控制。\n\
 - 超长行按 byte_offset 和 next_byte_offset 精读；普通上下文按 next_line 分页。远程或本地日志都可能含敏感信息，只提取与问题相关的证据。";
 
 /// 会话图片目录（构造失败按空白名单收紧，fail-closed）。

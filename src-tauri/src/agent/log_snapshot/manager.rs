@@ -123,6 +123,7 @@ impl LogSnapshotManager {
             updated_at: now,
             raw_bytes: 0,
             file_count: 0,
+            metrics: None,
             error: None,
         };
         let (cancel_tx, cancel_rx) = watch::channel(false);

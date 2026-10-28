@@ -161,7 +161,7 @@ fn cancel_tool(deps: LogToolDeps) -> PortableDynamicTool {
 fn search_tool(deps: LogToolDeps) -> PortableDynamicTool {
     PortableDynamicTool::new(
         "ssh_log_search",
-        "在已就绪日志快照中精准搜索。推荐先 output_mode=files/count 收敛，再 matches 获取 file_id/line_number/byte_offset，最后 ssh_log_read 精读。fixed 且长度至少 3 字符自动用 FTS5 索引，regex/短模式自动用 ripgrep；scan_complete 与 results_truncated 必须分开判断。更新后基于新 generation 重新搜索。",
+        "在已就绪日志快照中精准搜索。推荐先 output_mode=files/count 收敛，再 matches 获取 file_id/line_number/byte_offset，最后 ssh_log_read 精读。检索词和待排查字段只放 pattern/patterns，max_output_tokens/max_tokens 等模型参数不是日志工具参数；结果量只用 max_matches/max_files/context/max_line_chars。fixed 且长度至少 3 字符自动用 FTS5 索引，regex/短模式自动用 ripgrep；scan_complete 与 results_truncated 必须分开判断。更新后基于新 generation 重新搜索。",
         schemas::search_parameters(),
         move |args| {
             let deps = deps.clone();
@@ -231,17 +231,20 @@ fn parse_update_options(args: &Value) -> Result<UpdateOptions, ToolExecutionErro
 fn parse_search_request(args: &Value) -> Result<LogSearchRequest, ToolExecutionError> {
     let patterns = string_list_arg(args, "pattern", "patterns").map_err(invalid)?;
     let match_mode = match string_arg(args, "match_mode").as_deref() {
+        None | Some("fixed") => MatchMode::Fixed,
         Some("regex") => MatchMode::Regex,
-        _ => MatchMode::Fixed,
+        Some(other) => return Err(invalid(format!("未知 match_mode：{other}"))),
     };
     let output_mode = match string_arg(args, "output_mode").as_deref() {
+        None | Some("matches") => OutputMode::Matches,
         Some("files") => OutputMode::Files,
         Some("count") => OutputMode::Count,
-        _ => OutputMode::Matches,
+        Some(other) => return Err(invalid(format!("未知 output_mode：{other}"))),
     };
     let engine = match string_arg(args, "engine").as_deref() {
+        None | Some("auto") => SearchEngine::Auto,
         Some("scan") => SearchEngine::Scan,
-        _ => SearchEngine::Auto,
+        Some(other) => return Err(invalid(format!("未知 engine：{other}"))),
     };
     let file_ids = args
         .get("file_ids")

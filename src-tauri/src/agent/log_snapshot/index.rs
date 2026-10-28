@@ -31,6 +31,7 @@ pub(crate) fn build_index(
 ) -> Result<IndexOutcome, IndexError> {
     let index_path = staging.join("index.sqlite3");
     let connection = Connection::open(&index_path).map_err(index_failure)?;
+    set_private_permissions(&index_path).map_err(IndexError::Failed)?;
     connection
         .execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -264,12 +265,25 @@ fn index_size(path: &Path) -> Result<u64, String> {
         PathBuf::from(format!("{}-shm", path.display())),
     ] {
         if candidate.exists() {
+            set_private_permissions(&candidate)?;
             total += std::fs::metadata(&candidate)
                 .map_err(|error| format!("读取索引大小失败：{error}"))?
                 .len();
         }
     }
     Ok(total)
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("收紧日志索引权限失败 {}：{error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -323,6 +337,7 @@ mod tests {
             size_bytes: 28,
             line_count: 0,
             long_lines: 0,
+            evidence: Default::default(),
         };
         let (_cancel_tx, cancel_rx) = watch::channel(false);
         let outcome = build_index(
@@ -334,6 +349,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.files[0].line_count, 3);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("index.sqlite3"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         let connection = Connection::open(dir.path().join("index.sqlite3")).unwrap();
         let (line, offset): (i64, i64) = connection
             .query_row(

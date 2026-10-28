@@ -11,6 +11,7 @@ pub(crate) fn execute(
     generation: &LoadedGeneration,
     request: LogReadRequest,
 ) -> Result<LogReadResult, String> {
+    let started = std::time::Instant::now();
     let (file, path) = store.raw_file_path(generation, request.file_id)?;
     let actual_size = std::fs::metadata(&path)
         .map_err(|error| format!("读取日志文件元数据失败：{error}"))?
@@ -18,10 +19,14 @@ pub(crate) fn execute(
     if actual_size != file.size_bytes {
         return Err("日志代次文件大小与索引不一致，可能已损坏；请重新 update".into());
     }
-    if let Some(offset) = request.byte_offset {
-        return read_bytes(store, generation, request, file, path, offset);
-    }
-    read_lines(store, generation, request, file, path)
+    let mut result = if let Some(offset) = request.byte_offset {
+        read_bytes(store, generation, request, file, path, offset)?
+    } else {
+        read_lines(store, generation, request, file, path)?
+    };
+    result.duration_ms = super::model::duration_ms(started.elapsed());
+    result.warnings = generation.manifest.warnings.clone();
+    Ok(result)
 }
 
 fn read_bytes(
@@ -58,6 +63,8 @@ fn read_bytes(
     Ok(LogReadResult {
         snapshot_id: generation.manifest.snapshot_id.clone(),
         generation: generation.manifest.generation,
+        duration_ms: 0,
+        warnings: Vec::new(),
         file,
         lines: Vec::new(),
         text: Some(String::from_utf8_lossy(&bytes).into_owned()),
@@ -80,6 +87,8 @@ fn read_lines(
     let mut result = LogReadResult {
         snapshot_id: generation.manifest.snapshot_id.clone(),
         generation: generation.manifest.generation,
+        duration_ms: 0,
+        warnings: Vec::new(),
         file: file.clone(),
         lines: Vec::new(),
         text: None,

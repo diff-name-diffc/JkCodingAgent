@@ -143,6 +143,8 @@ async fn local_file_works_through_real_agent_tools_and_repeated_update() {
     );
     assert_eq!(status["update"]["state"], "ready", "{status}");
     assert_eq!(status["current"]["generation"], 1);
+    assert!(status["current"]["metrics"]["indexRatio"].is_number());
+    assert!(status["current"]["files"][0]["evidence"]["fingerprintBefore"].is_object());
 
     let found = json(
         &run(
@@ -153,6 +155,7 @@ async fn local_file_works_through_real_agent_tools_and_repeated_update() {
         .await,
     );
     assert_eq!(found["engine"], "fts5-trigram", "{found}");
+    assert!(found["durationMs"].is_number());
     assert_eq!(found["matches"][0]["lineNumber"], 2);
     let read = run(
         &tools,
@@ -161,6 +164,7 @@ async fn local_file_works_through_real_agent_tools_and_repeated_update() {
     )
     .await;
     assert!(read.contains("ERROR timeout"), "{read}");
+    assert!(json(&read)["durationMs"].is_number());
 
     std::fs::write(&fixture.source, "INFO recovered\n").unwrap();
     run(
@@ -222,4 +226,24 @@ async fn remote_source_is_blocked_before_connection_without_review_config() {
     assert!(audit.records.iter().any(|record| {
         record.server_id == "missing-server" && record.command.contains("docker logs")
     }));
+}
+
+#[tokio::test]
+async fn unknown_search_modes_are_rejected_before_snapshot_access() {
+    let fixture = Fixture::new();
+    let tools = fixture.tools();
+    let error = run(
+        &tools,
+        "ssh_log_search",
+        json!({"snapshot_id":"missing","pattern":"error","match_mode":"wildcard"}),
+    )
+    .await;
+    assert!(error.contains("未知 match_mode"), "{error}");
+    let error = run(
+        &tools,
+        "ssh_log_search",
+        json!({"snapshot_id":"missing","pattern":"error","engine":"semantic"}),
+    )
+    .await;
+    assert!(error.contains("未知 engine"), "{error}");
 }

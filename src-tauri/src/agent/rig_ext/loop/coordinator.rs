@@ -207,8 +207,9 @@ impl Coordinator {
         {
             Ok(ids) => ids,
             Err(error) if error.is::<super::budgets::AdmissionError>() => {
+                let message = crate::shared::error::ensure_error_prefix(&error.to_string());
                 return self
-                    .settle_unexecuted_batch(calls, &format!("错误：{error}；本批未执行"), events)
+                    .settle_unexecuted_batch(calls, &format!("{message}；本批未执行"), events)
                     .await;
             }
             Err(error) => {

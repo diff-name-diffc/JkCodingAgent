@@ -2,6 +2,11 @@ use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod evidence;
+pub(crate) use evidence::{
+    duration_ms, FileFingerprint, SnapshotMetrics, SourceEvidence, SourceMetrics,
+};
+
 pub(crate) const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_SOURCES: usize = 8;
 pub(crate) const DEFAULT_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -28,6 +33,9 @@ pub(crate) enum LogSource {
         path: String,
     },
 }
+
+pub(crate) const FINGERPRINT_BEGIN: &str = "AHA_LOG_FINGERPRINT_BEGIN=";
+pub(crate) const FINGERPRINT_END: &str = "AHA_LOG_FINGERPRINT_END=";
 
 impl LogSource {
     pub(crate) fn validate(&self) -> Result<(), String> {
@@ -112,16 +120,21 @@ impl LogSource {
                 command.push_str(&format!(" {container} 2>&1"));
                 Some(command)
             }
-            Self::SshFile { path, .. } => Some(format!(
-                "cat -- {}",
-                crate::ssh_tool::shell_single_quote(path)
-            )),
+            Self::SshFile { path, .. } => Some(remote_file_command(path)),
             Self::LocalFile { .. } => None,
         }
     }
 }
 
-#[derive(Clone, Debug)]
+fn remote_file_command(path: &str) -> String {
+    let quoted = crate::ssh_tool::shell_single_quote(path);
+    format!(
+        "log_snapshot_stat() {{\n  if stat --version >/dev/null 2>&1; then\n    stat -c \"$1%d:%i:%s:%Y\" -- \"$2\" >&2\n  else\n    stat -f \"$1%d:%i:%z:%m\" -- \"$2\" >&2\n  fi\n}}\nlog_snapshot_stat {FINGERPRINT_BEGIN} {quoted} || exit 4\ncat -- {quoted}\nstatus=$?\nlog_snapshot_stat {FINGERPRINT_END} {quoted} || exit 5\nexit \"$status\""
+    )
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DockerWindow {
     pub since: Option<String>,
     pub until: String,
@@ -283,6 +296,8 @@ pub(crate) struct UpdateRecord {
     pub updated_at: String,
     pub raw_bytes: u64,
     pub file_count: usize,
+    #[serde(default)]
+    pub metrics: Option<SnapshotMetrics>,
     pub error: Option<String>,
 }
 
@@ -296,6 +311,8 @@ pub(crate) struct SnapshotFile {
     pub size_bytes: u64,
     pub line_count: u64,
     pub long_lines: u64,
+    #[serde(default)]
+    pub evidence: SourceEvidence,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -313,6 +330,12 @@ pub(crate) struct GenerationManifest {
     pub raw_bytes: u64,
     pub index_bytes: u64,
     pub index_backend: String,
+    #[serde(default)]
+    pub metrics: Option<SnapshotMetrics>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub docker_window: Option<DockerWindow>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -377,10 +400,12 @@ mod tests {
             path: "/var/log/a'b.log".into(),
             sudo: false,
         };
-        assert_eq!(
-            file.remote_command(&window).unwrap(),
-            "cat -- '/var/log/a'\\''b.log'"
-        );
+        let command = file.remote_command(&window).unwrap();
+        assert!(command.contains("cat -- '/var/log/a'\\''b.log'"));
+        assert!(command.contains("AHA_LOG_FINGERPRINT_BEGIN="));
+        assert!(command.contains("AHA_LOG_FINGERPRINT_END="));
+        assert!(command.contains("status=$?"));
+        assert!(command.ends_with("exit \"$status\""));
     }
 
     #[test]

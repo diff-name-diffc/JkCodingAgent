@@ -120,6 +120,7 @@ pub(crate) struct LogSearchResult {
     pub snapshot_id: String,
     pub generation: u64,
     pub engine: String,
+    pub duration_ms: u64,
     pub output_mode: OutputMode,
     // 完整性标志与续页游标放在主体（matches/files）之前：结果被字符级截断时
     // 保住尾部会丢失的分页信息（工具结果按字段顺序序列化）。
@@ -144,6 +145,7 @@ impl LogSearchResult {
             snapshot_id,
             generation,
             engine,
+            duration_ms: 0,
             output_mode,
             matches: Vec::new(),
             files: Vec::new(),
@@ -196,6 +198,8 @@ impl LogReadRequest {
 pub(crate) struct LogReadResult {
     pub snapshot_id: String,
     pub generation: u64,
+    pub duration_ms: u64,
+    pub warnings: Vec<String>,
     // 分页游标与截断标志先于正文（lines/text）：理由同 LogSearchResult。
     pub next_line: Option<u64>,
     pub next_byte_offset: Option<u64>,

@@ -21,17 +21,20 @@ pub(crate) async fn execute(
     request: LogSearchRequest,
     cancel: Option<watch::Receiver<bool>>,
 ) -> Result<LogSearchResult, String> {
-    if request.can_use_index() {
+    let started = std::time::Instant::now();
+    let source_warnings = generation.manifest.warnings.clone();
+    let mut result = if request.can_use_index() {
         let generation_clone = generation.clone();
         let request_clone = request.clone();
-        let indexed = tokio::task::spawn_blocking(move || {
-            search_index(&generation_clone, &request_clone, cancel)
-        })
-        .await
-        .map_err(|error| format!("日志索引查询任务失败：{error}"))??;
-        return Ok(indexed);
-    }
-    super::scan::execute(generation, request, cancel).await
+        tokio::task::spawn_blocking(move || search_index(&generation_clone, &request_clone, cancel))
+            .await
+            .map_err(|error| format!("日志索引查询任务失败：{error}"))??
+    } else {
+        super::scan::execute(generation, request, cancel).await?
+    };
+    result.duration_ms = super::model::duration_ms(started.elapsed());
+    result.warnings.extend(source_warnings);
+    Ok(result)
 }
 
 fn search_index(

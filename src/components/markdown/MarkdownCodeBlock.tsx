@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { highlightCodeToHtml } from "../../utils/shiki";
 import { useIsDarkTheme } from "../../hooks/useIsDarkTheme";
+import { copyTextToClipboard } from "../../lib/clipboard-fallback";
+import { toast } from "../Toast";
 
 function escapeHtml(value: string) {
   return value
@@ -77,10 +79,14 @@ export function MarkdownCodeBlock({
 
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(code);
+      // 统一走 copyTextToClipboard（原生插件优先）：裸 navigator.clipboard
+      // 在 WKWebView 会静默失败，catch 里又不兜底，复制就会无反馈落空。
+      await copyTextToClipboard(code);
       setCopied(true);
-    } catch {
+    } catch (error) {
+      // 复制失败时清掉上一次成功留下的 ✓，避免按钮停留在「已复制」误导。
       setCopied(false);
+      toast.warning(`复制代码失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

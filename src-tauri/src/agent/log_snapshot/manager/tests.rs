@@ -108,6 +108,23 @@ async fn repeated_update_replaces_generation_and_preserves_exact_search_and_read
         .update_ready(fixture.options().sources.clone())
         .await;
     assert_eq!(first.current.as_ref().unwrap().generation, 1);
+    let metrics = first.current.as_ref().unwrap().metrics.as_ref().unwrap();
+    assert!(metrics.indexed_lines > 0);
+    assert!(metrics.index_bytes > 0);
+    assert!(metrics.index_ratio.unwrap() > 0.0);
+    assert!(
+        metrics.total_duration_ms
+            >= metrics.review_duration_ms
+                + metrics.download_duration_ms
+                + metrics.index_duration_ms
+                + metrics.publish_duration_ms
+    );
+    let evidence = &first.current.as_ref().unwrap().files[0].evidence;
+    assert!(evidence.fingerprint_before.is_some());
+    assert!(evidence.fingerprint_after.is_some());
+    assert_eq!(evidence.source_changed, Some(false));
+    assert!(evidence.collection.is_some());
+    assert!(first.update.as_ref().unwrap().metrics.is_some());
 
     let result = fixture
         .manager
@@ -469,6 +486,7 @@ async fn interrupted_update_is_not_reported_as_ready() {
         updated_at: now,
         raw_bytes: 10,
         file_count: 1,
+        metrics: None,
         error: None,
     };
     fixture.store.write_update(&record).unwrap();
@@ -508,4 +526,58 @@ async fn cursor_is_rejected_after_generation_changes() {
         error.contains("不属于当前日志快照、代次或查询条件"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn source_warnings_are_exposed_in_search_and_read() {
+    let fixture = Fixture::new();
+    fixture
+        .update_ready(fixture.options().sources.clone())
+        .await;
+    let root = fixture.store.generation_root("incident", 1).unwrap();
+    let mut manifest = fixture
+        .store
+        .load_current_generation("incident")
+        .unwrap()
+        .unwrap()
+        .manifest;
+    manifest.warnings.push("测试来源在采集期间变化".into());
+    fixture
+        .store
+        .write_generation_manifest(&root, &manifest)
+        .unwrap();
+    let result = fixture
+        .manager
+        .search(
+            fixture.store.clone(),
+            fixture.search("ERROR", MatchMode::Fixed, SearchEngine::Auto),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("测试来源")));
+    let read = fixture
+        .manager
+        .read(
+            fixture.store.clone(),
+            LogReadRequest {
+                snapshot_id: "incident".into(),
+                file_id: 1,
+                line_number: Some(2),
+                before: 0,
+                after: 0,
+                byte_offset: None,
+                max_bytes: 64 * 1024,
+                max_line_chars: 2000,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(read
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("测试来源")));
 }

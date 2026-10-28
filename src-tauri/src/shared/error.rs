@@ -49,9 +49,17 @@ pub(crate) fn format_anyhow_error(error: &anyhow::Error) -> String {
     out
 }
 
+pub(crate) fn ensure_error_prefix(message: &str) -> String {
+    if message.trim_start().starts_with("错误：") {
+        message.to_string()
+    } else {
+        format!("错误：{message}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::format_anyhow_error;
+    use super::{ensure_error_prefix, format_anyhow_error};
     use anyhow::anyhow;
 
     #[test]
@@ -77,6 +85,12 @@ mod tests {
             !message.contains("LLM 流式请求失败: "),
             "must not collapse the chain into a single Display line: {message}"
         );
+    }
+
+    #[test]
+    fn error_prefix_is_added_exactly_once() {
+        assert_eq!(ensure_error_prefix("boom"), "错误：boom");
+        assert_eq!(ensure_error_prefix("错误：boom"), "错误：boom");
     }
 
     #[test]

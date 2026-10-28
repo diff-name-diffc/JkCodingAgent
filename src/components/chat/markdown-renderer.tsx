@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useMemo, useState } from "react";
+import { createContext, memo, useContext, useMemo, useState, type ComponentProps } from "react";
 import { Play } from "lucide-react";
 import {
   CodeBlock,
@@ -17,6 +17,7 @@ import { cn } from "../../lib/cn";
 import { stableHash } from "../../lib/stable-hash";
 import { NEUTRAL_DARK_THEME, NEUTRAL_LIGHT_THEME } from "../../utils/shiki";
 import { normalizeMarkdownMath } from "../../lib/normalize-math";
+import { toast } from "../Toast";
 import { MarkdownImage } from "../markdown/MarkdownImage";
 import { MarkdownLink } from "../markdown/MarkdownLink";
 import { chatSafeSchema } from "../markdown/sanitize-schema";
@@ -165,6 +166,15 @@ function InlineRunOutput({ record }: { record: PythonCodeRunRecord }) {
 }
 
 /**
+ * 代码块复制失败提示。streamdown 内置复制按钮的写入走全局
+ * navigator.clipboard 兜底链（见 lib/clipboard-fallback.ts），失败时
+ * 默认静默——用户点不出任何反馈，这里把失败显式 toast 出来。
+ */
+function notifyCodeCopyError(error: Error): void {
+  toast.warning(`复制代码失败：${error.message}`);
+}
+
+/**
  * Custom streamdown renderer for python code blocks: streamdown's own
  * <CodeBlock> (Shiki highlighting + header + copy button) plus the Python
  * run button / status badge / inline output carried over from the legacy
@@ -200,7 +210,12 @@ function PythonCodeRenderer({ code, isIncomplete, language }: CustomRendererProp
             运行中…
           </button>
         )}
-        <CodeBlockCopyButton />
+        {/* streamdown 把 CodeBlockCopyButtonProps 声明为与 <button> 原生 props 的
+            交叉类型，onError 与原生错误事件 handler 类型冲突（运行时仅调用
+            自定义回调），这里以目标类型断言绕开。 */}
+        <CodeBlockCopyButton
+          onError={notifyCodeCopyError as ComponentProps<typeof CodeBlockCopyButton>["onError"]}
+        />
       </CodeBlock>
       {record && <InlineRunOutput record={record} />}
     </>
@@ -245,7 +260,9 @@ const streamdownComponents: Components = {
   ...markdownTableComponents,
 };
 const streamdownControls = {
-  code: { copy: true, download: false },
+  // copy 传对象而非 true：保持按钮可见的同时挂上失败回调（boolean 时
+  // streamdown 不透传 onCopy/onError，失败会静默落空）。
+  code: { copy: { onError: notifyCodeCopyError }, download: false },
   table: false,
 } as const;
 const streamdownLinkSafety = { enabled: false } as const;
